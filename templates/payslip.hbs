@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Payslip - {{month}}</title>
+<style>
+  @page {
+    size: A4;
+    margin: 15mm;
+  }
+  body {
+    font-family: 'Arial', sans-serif;
+    font-size: 11px;
+    line-height: 1.2;
+    color: #333;
+    background: #f4f6f9;
+    margin: 0;
+    padding: 0;
+  }
+  .container {
+    width: 100%;
+    background: #fff;
+    padding: 15px;
+    border-radius: 8px;
+    box-sizing: border-box;
+  }
+  .header {
+    text-align: center;
+    border-bottom: 2px solid #007BFF;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+  }
+  .header img {
+    max-height: 50px;
+    margin-bottom: 5px;
+  }
+  .header h1 {
+    margin: 0;
+    font-size: 20px;
+    color: #007BFF;
+  }
+  .header p {
+    margin: 3px 0 0;
+    font-size: 10px;
+    color: #555;
+  }
+  h2 {
+    background: #007BFF;
+    color: #fff;
+    padding: 4px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+    margin: 10px 0 5px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 4px 0 10px;
+    font-size: 11px;
+  }
+  th, td {
+    border: 1px solid #ddd;
+    padding: 4px 6px;
+    text-align: left;
+  }
+  th {
+    background: #f0f8ff;
+    font-weight: bold;
+  }
+  tr:nth-child(even) {
+    background: #f9f9f9;
+  }
+  .totals {
+    font-weight: bold;
+    background: #e9f5ff;
+  }
+  .footer {
+    text-align: center;
+    font-size: 9px;
+    color: #777;
+    border-top: 1px solid #ddd;
+    padding-top: 5px;
+    margin-top: 5px;
+  }
+  table, tr, td, th {
+    page-break-inside: avoid;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- HEADER -->
+  <div class="header">
+    {{#if company_logo}}<img src="{{company_logo}}" alt="Company Logo">{{/if}}
+    <h1>{{company_name}}</h1>
+    <p>{{company_address}}</p>
+  </div>
+
+  <h2>Payslip for {{month}}</h2>
+
+  <!-- EMPLOYEE DETAILS -->
+  <table>
+    <tr><th>Employee Name</th><td>{{employee_name}}</td></tr>
+    <tr><th>Department</th><td>{{department_name}}</td></tr>
+    <tr><th>Designation</th><td>{{designation_name}}</td></tr>
+    <tr><th>ESI Number</th><td>{{esi_number}}</td></tr>
+    <tr><th>UAN Number</th><td>{{uan_number}}</td></tr>
+  </table>
+
+  <!-- BANK DETAILS -->
+  <h2>Bank Details</h2>
+  <table>
+    <tr><th>Bank Name</th><td>{{bank_name}}</td></tr>
+    <tr><th>Account Number</th><td>{{account_no}}</td></tr>
+    <tr><th>IFSC Code</th><td>{{ifsc_code}}</td></tr>
+  </table>
+
+  <!-- ATTENDANCE & LEAVE -->
+  <h2>Attendance Summary</h2>
+  <table>
+    <tr><th>Total Days</th><td>{{total_days}}</td></tr>
+    <tr><th>Present Days</th><td>{{present_days}}</td></tr>
+    <tr><th>Approved Leave Days</th><td>{{approved_leave_days}}</td></tr>
+    <tr><th>LOP Days</th><td>{{lop_days}}</td></tr>
+    <tr><th>Payable Days</th><td>{{payable_days}}</td></tr>
+  </table>
+
+  <!-- MONTHLY EARNINGS & DEDUCTIONS -->
+  <h2>Salary Breakdown</h2>
+  <table>
+    <tr>
+      <th>Earnings</th>
+      <th>Amount (INR)</th>
+      <th>Deductions</th>
+      <th>Amount (INR)</th>
+    </tr>
+    <tr>
+      <td>Basic</td><td>{{basic}}</td>
+      <td>PF</td><td>{{pf}}</td>
+    </tr>
+    <tr>
+      <td>HRA</td><td>{{hra}}</td>
+      <td>ESI</td><td>{{esi}}</td>
+    </tr>
+    <tr>
+      <td>Allowances</td><td>{{allowances}}</td>
+      <td>Professional Tax</td><td>{{pt}}</td>
+    </tr>
+    <tr>
+      <td>Incentives</td><td>{{incentives}}</td>
+      <td>TDS</td><td>{{tds}}</td>
+    </tr>
+    <tr>
+      <td>Total Expenses</td><td>{{total_expenses}}</td>
+      <td>Other Deductions</td><td>{{other_deductions}}</td>
+    </tr>
+    <tr class="totals">
+      <td>Gross / Net Salary</td><td>{{monthly_net}}</td>
+      <td>Total Deductions</td><td>{{monthly_deductions}}</td>
+    </tr>
+  </table>
+
+  <!-- ANNUAL SUMMARY -->
+  <h2>Annual Salary Summary</h2>
+  <table>
+    <tr><th>Annual Gross</th><td>{{annual_gross}}</td></tr>
+    <tr><th>Annual Deductions</th><td>{{annual_deductions}}</td></tr>
+    <tr class="totals"><th>Annual Net Salary</th><td>{{annual_net}}</td></tr>
+  </table>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    This is a system generated payslip and does not require signature.<br>
+    &copy; {{company_name}}
+  </div>
+
+</div>
+</body>
+</html>
