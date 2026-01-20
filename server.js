@@ -20,7 +20,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:8080','http://192.168.1.8:8080',  'http://localhost:5173'],
+  origin: ['http://localhost:3000', 'http://localhost:8080','http://192.168.1.9:8080',  'http://localhost:5173'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -56,6 +56,7 @@ const leavePolicyRoutes = require('./routes/leavePolicyRoutes');
 const reportsRoutes = require('./routes/reports.routes');
 const shiftRoutes = require("./routes/shiftRoutes");
 const dashboardRoutes = require('./routes/dashboardRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 // Use routes
 app.use("/api", demoRoutes);
@@ -81,6 +82,7 @@ app.use('/api/leavepolicy', leavePolicyRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use("/api/shifts", shiftRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 
 
