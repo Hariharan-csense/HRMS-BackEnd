@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Leave Permission Notification</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }
+    .container { max-width: 600px; margin: auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+    .header { background: #28a745; color: white; padding: 20px; text-align: center; }
+    .content { padding: 30px; }
+    .detail { margin: 15px 0; }
+    .label { font-weight: bold; color: #333; }
+    .value { color: #555; margin-left: 10px; }
+    .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+    .btn { display: inline-block; padding: 10px 20px; background: #28a745; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+    .time-badge { background: #e9ecef; padding: 4px 8px; border-radius: 4px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>New Leave Permission Request</h1>
+    </div>
+    <div class="content">
+      <p>Dear Manager/HR,</p>
+      <p>A new leave permission request has been submitted and requires your attention:</p>
+
+      <div class="detail">
+        <span class="label">Employee:</span>
+        <span class="value">{{employeeName}}</span>
+      </div>
+
+      <div class="detail">
+        <span class="label">Permission Date:</span>
+        <span class="value">{{permissionDate}}</span>
+      </div>
+
+      <div class="detail">
+        <span class="label">Time Duration:</span>
+        <span class="value">
+          <span class="time-badge">{{permissionTimeFrom}}</span> to 
+          <span class="time-badge">{{permissionTimeTo}}</span>
+        </span>
+      </div>
+
+      <div class="detail">
+        <span class="label">Reason:</span>
+        <span class="value">{{reason}}</span>
+      </div>
+
+      <div class="detail">
+        <span class="label">Status:</span>
+        <span class="value">{{status}}</span>
+      </div>
+
+      <div class="detail">
+        <span class="label">Request ID:</span>
+        <span class="value">{{permissionId}}</span>
+      </div>
+
+      <p>Please review the permission request in the HRMS system.</p>
+
+      <a href="{{baseUrl}}/leave-permission/approvals" class="btn">View in HRMS</a>
+    </div>
+    <div class="footer">
+      <p>This is an automated message from HRMS. Please do not reply.</p>
+      <p>&copy; {{currentYear}} © {new Date().getFullYear()} Procease HRMS System. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>

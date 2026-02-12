@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>Welcome</title>
+
+<style>
+body {
+  font-family: Arial, sans-serif;
+  background:#f4f6f8;
+  padding:20px;
+}
+.card {
+  max-width:600px;
+  margin:auto;
+  background:#ffffff;
+  border-radius:10px;
+  padding:30px;
+  box-shadow:0 4px 10px rgba(0,0,0,0.05);
+}
+h2 {
+  color:#2c3e50;
+}
+ul {
+  padding-left:18px;
+}
+li {
+  margin-bottom:8px;
+}
+.btn {
+  display:inline-block;
+  padding:12px 20px;
+  background:#4CAF50;
+  color:white;
+  text-decoration:none;
+  border-radius:6px;
+  margin-top:15px;
+}
+.footer {
+  margin-top:25px;
+  font-size:12px;
+  color:#888;
+  text-align:center;
+}
+</style>
+
+</head>
+
+<body>
+
+<div class="card">
+<h2>Welcome {{name}} 👋</h2>
+
+<p>Your employee account has been created successfully.</p>
+
+<ul>
+<li><strong>Email:</strong> {{email}}</li>
+<li><strong>Temporary Password:</strong> {{password}}</li>
+</ul>
+
+<a href="{{baseUrl}}" class="btn">Login to HRMS</a>
+
+<div class="footer">
+© {{currentYear}} HRMS System
+</div>
+
+</div>
+
+</body>
+</html>

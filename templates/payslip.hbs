@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Payslip - {{month}}</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 12mm;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-size: 10px;
+      line-height: 1.4;
+      color: #2c3e50;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      margin: 0;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 100%;
+      background: #ffffff;
+      border-radius: 16px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #17c491 var(--tw-gradient-from-position), #17c491 var(--tw-gradient-to-position));
+      color: white;
+      padding: 30px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .header::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      right: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, transparent 70%);
+      animation: float 6s ease-in-out infinite;
+    }
+
+    @keyframes float {
+
+      0%,
+      100% {
+        transform: translateY(0px) rotate(0deg);
+      }
+
+      50% {
+        transform: translateY(-20px) rotate(180deg);
+      }
+    }
+
+    .header-content {
+      position: relative;
+      z-index: 1;
+    }
+
+    .header img {
+      max-height: 80px;
+      margin-bottom: 10px;
+    }
+
+    .logo-placeholder {
+      font-size: 48px;
+      font-weight: bold;
+      margin-bottom: 10px;
+      color: white;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      opacity: 0.9;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    .header p {
+      margin: 5px 0 0;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.9);
+      font-weight: 400;
+    }
+
+    .payslip-title {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      color: white;
+      padding: 15px 30px;
+      font-size: 16px;
+      font-weight: 600;
+      text-align: center;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      border-bottom: 3px solid #059669;
+    }
+
+    .content {
+      padding: 30px;
+    }
+
+    .section {
+      margin-bottom: 25px;
+      padding: 20px;
+      border-radius: 12px;
+      background: #f8fafc;
+      border-left: 4px solid #667eea;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      transition: transform 0.3s ease;
+    }
+
+    .section:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
+    }
+
+    .section-title {
+      color: #667eea;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 15px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      display: flex;
+      align-items: center;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #e2e8f0;
+    }
+
+    .section-title::before {
+      content: '';
+      width: 20px;
+      height: 3px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      margin-right: 10px;
+      border-radius: 2px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      margin: 0;
+      font-size: 10px;
+      background: white;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    }
+
+    th,
+    td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid #e2e8f0;
+    }
+
+    th {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      color: white;
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    td {
+      font-weight: 500;
+      color: #475569;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:nth-child(even) {
+      background: #f8fafc;
+    }
+
+    tr:hover {
+      background: #f1f5f9;
+      transition: background 0.2s ease;
+    }
+
+    .salary-table {
+      margin: 15px 0;
+    }
+
+    .salary-table th {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    }
+
+    .earnings-col {
+      background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+    }
+
+    .deductions-col {
+      background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+    }
+
+    .totals {
+      font-weight: 700;
+      background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%) !important;
+      color: #0369a1;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .totals td {
+      border-top: 2px solid #0ea5e9;
+      padding-top: 12px;
+    }
+
+    .amount {
+      font-weight: 600;
+      color: #059669;
+      font-family: 'Courier New', monospace;
+    }
+
+    .deduction-amount {
+      color: #dc2626;
+    }
+
+    .footer {
+      background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+      text-align: center;
+      font-size: 9px;
+      color: #64748b;
+      padding: 20px;
+      border-top: 2px solid #e2e8f0;
+      margin-top: 0;
+    }
+
+    .footer::before {
+      content: '✓';
+      display: block;
+      font-size: 20px;
+      color: #10b981;
+      margin-bottom: 8px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 15px;
+      margin: 15px 0;
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 10px;
+      margin: 10px 0;
+    }
+
+    .info-item {
+      background: white;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid #e2e8f0;
+      transition: all 0.3s ease;
+    }
+
+    .info-item:hover {
+      border-color: #667eea;
+      box-shadow: 0 2px 8px rgba(102, 126, 234, 0.15);
+    }
+
+    .info-label {
+      font-size: 9px;
+      color: #64748b;
+      margin-bottom: 2px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .info-value {
+      font-size: 10px;
+      color: #1e293b;
+      font-weight: 600;
+    }
+
+    .highlight-box {
+      background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+      border: 2px solid #f59e0b;
+      border-radius: 8px;
+      padding: 15px;
+      margin: 15px 0;
+      text-align: center;
+    }
+
+    .highlight-box h3 {
+      margin: 0;
+      color: #92400e;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .highlight-amount {
+      font-size: 18px;
+      font-weight: 800;
+      color: #059669;
+      margin: 5px 0;
+    }
+
+    table,
+    tr,
+    td,
+    th {
+      page-break-inside: avoid;
+    }
+
+    .section,
+    .info-item {
+      page-break-inside: avoid;
+    }
+
+    @media print {
+      body {
+        background: white;
+        padding: 0;
+      }
+
+      .container {
+        box-shadow: none;
+        border: 1px solid #ddd;
+      }
+
+      .header::before {
+        display: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <!-- HEADER -->
+    <div class="header">
+      <div class="header-content">
+        {{#if company_logo}}
+        <img src="{{company_logo}}" alt="Company Logo"
+          onerror="this.style.display='none'; this.nextElementSibling.style.display='block';"
+          style="max-height: 90; margin-bottom: 5px; margin-top: 5px">
+        <div class="logo-placeholder" style="display: none; font-size: 48px; font-weight: bold; margin-bottom: 10px;">
+          {{#if company_name}}{{company_name}}{{else}}COMPANY{{/if}}
+        </div>
+        {{else}}
+        <div class="logo-placeholder" style="font-size: 48px; font-weight: bold; margin-bottom: 10px;">
+          {{#if company_name}}{{company_name}}{{else}}COMPANY{{/if}}
+        </div>
+        {{/if}}
+        <h1>{{company_name}}</h1>
+        <p>{{company_address}}</p>
+      </div>
+    </div>
+
+    <div class="payslip-title">
+      Payslip for {{month}}
+    </div>
+
+    <div class="content">
+      <!-- EMPLOYEE DETAILS -->
+      <div class="section">
+        <div class="section-title">Employee Information</div>
+        <div class="info-grid">
+          <div class="info-item">
+            <div class="info-label">Employee Name</div>
+            <div class="info-value">{{employee_name}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Department</div>
+            <div class="info-value">{{department_name}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Designation</div>
+            <div class="info-value">{{designation_name}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">ESI Number</div>
+            <div class="info-value">{{esi_number}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">UAN Number</div>
+            <div class="info-value">{{uan_number}}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- BANK DETAILS -->
+      <div class="section">
+        <div class="section-title">Bank Details</div>
+        <div class="info-grid">
+          <div class="info-item">
+            <div class="info-label">Bank Name</div>
+            <div class="info-value">{{bank_name}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Account Number</div>
+            <div class="info-value">{{account_no}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">IFSC Code</div>
+            <div class="info-value">{{ifsc_code}}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ATTENDANCE & LEAVE -->
+      <div class="section">
+        <div class="section-title">Attendance Summary</div>
+        <div class="info-grid">
+          <div class="info-item">
+            <div class="info-label">Total Days</div>
+            <div class="info-value">{{total_days}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Present Days</div>
+            <div class="info-value">{{present_days}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Approved Leave Days</div>
+            <div class="info-value">{{approved_leave_days}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">LOP Days</div>
+            <div class="info-value">{{lop_days}}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Payable Days</div>
+            <div class="info-value">{{payable_days}}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MONTHLY EARNINGS & DEDUCTIONS -->
+      <div class="section">
+        <div class="section-title">Monthly Salary Breakdown</div>
+        <table class="salary-table">
+          <tr>
+            <th class="earnings-col">Earnings</th>
+            <th class="earnings-col">Amount (INR)</th>
+            <th class="deductions-col">Deductions</th>
+            <th class="deductions-col">Amount (INR)</th>
+          </tr>
+          <tr>
+            <td>Basic Salary</td>
+            <td class="amount">{{basic}}</td>
+            <td>Provident Fund</td>
+            <td class="amount deduction-amount">{{pf}}</td>
+          </tr>
+          <tr>
+            <td>House Rent Allowance</td>
+            <td class="amount">{{hra}}</td>
+            <td>ESI</td>
+            <td class="amount deduction-amount">{{esi}}</td>
+          </tr>
+          <tr>
+            <td>Allowances</td>
+            <td class="amount">{{allowances}}</td>
+            <td>Professional Tax</td>
+            <td class="amount deduction-amount">{{pt}}</td>
+          </tr>
+          <tr>
+            <td>Incentives</td>
+            <td class="amount">{{incentives}}</td>
+            <td>TDS</td>
+            <td class="amount deduction-amount">{{tds}}</td>
+          </tr>
+          <tr>
+            <td>Total Earnings</td>
+            <td class="amount">{{total_expenses}}</td>
+            <td>Other Deductions</td>
+            <td class="amount deduction-amount">{{other_deductions}}</td>
+          </tr>
+          <tr class="totals">
+            <td>Gross Salary</td>
+            <td class="amount">{{monthly_net}}</td>
+            <td>Total Deductions</td>
+            <td class="amount deduction-amount">{{monthly_deductions}}</td>
+          </tr>
+        </table>
+
+        <div class="highlight-box">
+          <h3>Net Salary for {{month}}</h3>
+          <div class="highlight-amount">₹{{monthly_net}}</div>
+        </div>
+      </div>
+
+      <!-- ANNUAL SUMMARY -->
+      <div class="section">
+        <div class="section-title">Annual Salary Summary</div>
+        <table>
+          <tr>
+            <th>Annual Gross Salary</th>
+            <td class="amount">{{annual_gross}}</td>
+          </tr>
+          <tr>
+            <th>Annual Deductions</th>
+            <td class="amount deduction-amount">{{annual_deductions}}</td>
+          </tr>
+          <tr class="totals">
+            <th>Annual Net Salary</th>
+            <td class="amount">{{annual_net}}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <!-- FOOTER -->
+    <div class="footer">
+      This is a system generated payslip and does not require signature.<br>
+      &copy; {{company_name}} | Generated on {{current_date}}
+    </div>
+
+  </div>
+</body>
+
+</html>

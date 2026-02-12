@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Expense Status Update</title>
+</head>
+<body style="margin:0; padding:0; background:#eef1f6; font-family: Arial, Helvetica, sans-serif;">
+
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#eef1f6; padding:30px 0;">
+    <tr>
+      <td align="center">
+
+        <!-- Card -->
+        <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:10px; box-shadow:0 4px 12px rgba(0,0,0,0.08); overflow:hidden;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:#2f80ed; padding:20px 30px; color:#ffffff;">
+              <h1 style="margin:0; font-size:20px;">HRMS System</h1>
+              <p style="margin:4px 0 0; font-size:13px; opacity:0.9;">
+                Expense Status Notification
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:30px; color:#333333;">
+
+              <h2 style="margin-top:0; font-size:18px;">
+                Hello {{employeeName}},
+              </h2>
+
+              <p style="font-size:14px; line-height:1.6;">
+                Your expense request has been
+                <span style="
+                  display:inline-block;
+                  padding:4px 10px;
+                  border-radius:20px;
+                  font-size:12px;
+                  font-weight:bold;
+                  color:#ffffff;
+                  background: {{#if (eq status 'Approved')}}#27ae60{{else}}#e74c3c{{/if}};
+                ">
+                  {{status}}
+                </span>
+              </p>
+
+              <!-- Details Box -->
+              <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px; border:1px solid #e6e9ef; border-radius:8px; overflow:hidden;">
+
+                <tr style="background:#f8fafc;">
+                  <td style="padding:10px 15px; font-weight:bold;">Expense ID</td>
+                  <td style="padding:10px 15px;">{{expenseId}}</td>
+                </tr>
+
+                {{#if expenseDate}}
+                <tr>
+                  <td style="padding:10px 15px; font-weight:bold;">Expense Date</td>
+                  <td style="padding:10px 15px;">{{expenseDate}}</td>
+                </tr>
+                {{/if}}
+
+                <tr style="background:#f8fafc;">
+                  <td style="padding:10px 15px; font-weight:bold;">Amount</td>
+                  <td style="padding:10px 15px;">₹ {{amount}}</td>
+                </tr>
+
+                {{#if category}}
+                <tr>
+                  <td style="padding:10px 15px; font-weight:bold;">Category</td>
+                  <td style="padding:10px 15px;">{{category}}</td>
+                </tr>
+                {{/if}}
+
+                {{#if description}}
+                <tr style="background:#f8fafc;">
+                  <td style="padding:10px 15px; font-weight:bold;">Description</td>
+                  <td style="padding:10px 15px;">{{description}}</td>
+                </tr>
+                {{/if}}
+
+                {{#if approvedAt}}
+                <tr>
+                  <td style="padding:10px 15px; font-weight:bold;">Approved At</td>
+                  <td style="padding:10px 15px;">{{approvedAt}}</td>
+                </tr>
+                {{/if}}
+
+              </table>
+
+              {{#if remarks}}
+              <!-- Remarks -->
+              <div style="margin-top:20px; padding:15px; background:#fff6e5; border-left:4px solid #f39c12; border-radius:6px;">
+                <p style="margin:0; font-size:13px;">
+                  <strong>Remarks:</strong><br />
+                  {{remarks}}
+                </p>
+              </div>
+              {{/if}}
+
+              <p style="margin-top:25px; font-size:13px; color:#555;">
+                You can log in to the HRMS system to view full details and history.
+              </p>
+
+              <!-- Footer Text -->
+              <p style="margin-top:30px; font-size:13px;">
+                Regards,<br />
+                <strong>Accounts / HR Team</strong>
+              </p>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background:#f3f5f9; padding:15px 30px; text-align:center; font-size:11px; color:#888;">
+              © {{currentYear}} © {new Date().getFullYear()} Procease HRMS System. All rights reserved.<br />
+              This is an automated email. Please do not reply.
+            </td>
+          </tr>
+
+        </table>
+        <!-- End Card -->
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Leave Permission Status Update</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }
+    .container { max-width: 600px; margin: auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+    .header { background: {{#if (eq status "Approved")}}#28a745{{else}}#dc3545{{/if}}; color: white; padding: 20px; text-align: center; }
+    .content { padding: 30px; }
+    .detail { margin: 15px 0; }
+    .label { font-weight: bold; color: #333; }
+    .value { color: #555; margin-left: 10px; }
+    .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
+    .btn { display: inline-block; padding: 10px 20px; background: #007BFF; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+    .status-badge { 
+      padding: 6px 12px; 
+      border-radius: 20px; 
+      font-weight: bold; 
+      color: white;
+      {{#if (eq status "Approved")}}
+        background: #28a745;
+      {{else}}
+        background: #dc3545;
+      {{/if}}
+    }
+    .time-badge { background: #e9ecef; padding: 4px 8px; border-radius: 4px; font-size: 0.9em; }
+    .remarks { background: #f8f9fa; padding: 15px; border-left: 4px solid #007BFF; margin: 15px 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Leave Permission {{status}}</h1>
+    </div>
+    <div class="content">
+      <p>Dear {{employeeName}},</p>
+      <p>Your leave permission request has been <span class="status-badge">{{status}}</span>:</p>
+
+      <div class="detail">
+        <span class="label">Permission Date:</span>
+        <span class="value">{{permissionDate}}</span>
+      </div>
+
+      <div class="detail">
+        <span class="label">Time Duration:</span>
+        <span class="value">
+          <span class="time-badge">{{permissionTimeFrom}}</span> to 
+          <span class="time-badge">{{permissionTimeTo}}</span>
+        </span>
+      </div>
+
+      <div class="detail">
+        <span class="label">Request ID:</span>
+        <span class="value">{{permissionId}}</span>
+      </div>
+
+      {{#if approvedAt}}
+      <div class="detail">
+        <span class="label">Processed On:</span>
+        <span class="value">{{approvedAt}}</span>
+      </div>
+      {{/if}}
+
+      {{#if remarks}}
+      <div class="remarks">
+        <strong>Remarks:</strong><br>
+        {{remarks}}
+      </div>
+      {{/if}}
+
+      <p>You can view your permission request details in the HRMS system.</p>
+
+      <a href="{{baseUrl}}/leave-permission/my-requests" class="btn">View in HRMS</a>
+    </div>
+    <div class="footer">
+      <p>This is an automated message from HRMS. Please do not reply.</p>
+      <p>&copy; {{currentYear}} © {new Date().getFullYear()} Procease HRMS System. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
