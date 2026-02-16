@@ -20,7 +20,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:8080','http://192.168.1.11:8080',  'http://localhost:5173'],
+  origin: ['http://localhost:3000', 'http://localhost:8080','http://192.168.1.5:8080',  'http://localhost:5173'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -73,6 +73,8 @@ const recruitmentRoutes = require('./routes/recruitmentRoutes');
 const jobRequirementsRoutes = require('./routes/jobRequirementsRoutes');
 const onboardingRoutes = require('./routes/onboardingRoutes');
 const settlementRoutes = require('./routes/settlementRoutes');
+const organizationRoutes = require('./routes/organizationRoutes');
+const userRoutes = require('./routes/userRoutes');
 
 
 // Use routes
@@ -116,6 +118,8 @@ app.use("/api/recruitment", recruitmentRoutes);
 app.use("/api/job-requirements", jobRequirementsRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 app.use("/api/settlement", settlementRoutes);
+app.use("/api/organizations", organizationRoutes);
+app.use("/api/users", userRoutes);
 
 
 

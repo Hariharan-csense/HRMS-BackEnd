@@ -291,11 +291,49 @@ const createOnboardingEmployee = async (req, res) => {
       phone,
       position,
       department,
-      start_date,
+      // Accept both start_date and startDate for backward compatibility
+      start_date: rawStartDate1,
+      startDate: rawStartDate2,
       location,
       manager,
-      notes
+      notes,
+      assignedHR
     } = req.body;
+
+    // Use either start_date or startDate, with start_date taking precedence
+    const rawStartDate = rawStartDate1 || rawStartDate2;
+
+    // Validate that start_date is provided
+    if (!rawStartDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Start date is required'
+      });
+    }
+
+    // Validate and format the date
+    let formattedDate;
+    try {
+      // Check if the date is in YYYY-MM-DD format
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(rawStartDate)) {
+        throw new Error('Invalid date format');
+      }
+      
+      // Parse the date to validate it
+      const date = new Date(rawStartDate);
+      if (isNaN(date.getTime())) {
+        throw new Error('Invalid date');
+      }
+      
+      // Format as YYYY-MM-DD for MySQL
+      formattedDate = rawStartDate;
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid date format. Please use YYYY-MM-DD format (e.g., 2026-03-12)'
+      });
+    }
 
     // Check duplicate employee
     const existingEmployee = await knex('onboarding_employees')
@@ -339,11 +377,11 @@ const createOnboardingEmployee = async (req, res) => {
       const insertResult = await trx('onboarding_employees').insert({
         company_id: companyId,
         name,
-        email,
+        email,  
         phone,
         position,
         department,
-        start_date,
+        start_date: formattedDate,
         location,
         manager,
         notes,

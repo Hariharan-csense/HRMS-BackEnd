@@ -1,13 +1,13 @@
 // src/routes/authRoutes.js
 const express = require('express');
-const { registerUser, changePassword, initiateForgotPassword, verifyOTP, resetPassword } = require('../controllers/authController');
+const { registerUser, login, logout, refreshAccessToken, changePassword, initiateForgotPassword, verifyOTP, resetPassword } = require('../controllers/authController');
 const { protect, adminOnly } = require('../middleware/authMiddleware');
-const { login,logout } = require('../controllers/authController');
 const router = express.Router();
 
 // POST /api/auth/register  → Only admin can register new users
 router.post('/register', registerUser);
 router.post('/login', login);
+router.post('/refresh-token', refreshAccessToken);
 router.post('/reset-password',protect,changePassword);
 router.post('/logout',logout);
 

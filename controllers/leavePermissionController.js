@@ -62,7 +62,21 @@ const applyLeavePermission = async (req, res) => {
       // ===============================
       // CREATE LEAVE PERMISSION APPLICATION
       // ===============================
-      const permission_id = await generateAutoNumber(companyId, 'permission');
+      // Generate permission ID (PRM001 format)
+      const lastPermission = await knex('leave_permissions')
+        .where({ company_id: companyId })
+        .orderBy('id', 'desc')
+        .first();
+
+      let nextNumber = 1;
+      if (lastPermission && lastPermission.permission_id) {
+        const match = lastPermission.permission_id.match(/PRM(\d+)/);
+        if (match) {
+          nextNumber = parseInt(match[1]) + 1;
+        }
+      }
+
+      const permission_id = `PRM${nextNumber.toString().padStart(3, '0')}`;
 
       const [newId] = await knex('leave_permissions').insert({
         company_id: companyId,

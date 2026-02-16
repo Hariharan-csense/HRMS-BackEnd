@@ -98,7 +98,21 @@ const createClient = async (req, res) => {
       });
     }
 
-    const clientId = await generateAutoNumber(companyId, 'client');
+    // Generate client ID (CL001 format)
+    const lastClient = await knex('clients')
+      .where({ company_id: companyId })
+      .orderBy('id', 'desc')
+      .first();
+
+    let nextNumber = 1;
+    if (lastClient && lastClient.client_id) {
+      const match = lastClient.client_id.match(/CL(\d+)/);
+      if (match) {
+        nextNumber = parseInt(match[1]) + 1;
+      }
+    }
+
+    const clientId = `CL${nextNumber.toString().padStart(3, '0')}`;
 
     const [newClientId] = await knex('clients').insert({
       client_id: clientId,

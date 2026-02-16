@@ -40,8 +40,8 @@ router.delete('/plans/:id', superAdminOnly, deletePlan);
 router.get('/all', superAdminOnly, getAllSubscriptions);
 
 // Admin/Company subscription routes (authenticated users)
-router.use(adminOnly);
 router.get('/current', getCompanySubscription);
+router.use(adminOnly);
 router.post('/start-trial', startTrial);
 router.post('/upgrade', upgradeSubscription);
 router.post('/upgrade/create-order', createUpgradeOrder);

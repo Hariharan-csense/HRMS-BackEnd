@@ -3,6 +3,17 @@ const moment = require('moment');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
+const getBillingDuration = (billingCycle) => {
+  const cycle = String(billingCycle || '').toLowerCase();
+  if (['yearly', 'annual', 'year'].includes(cycle)) return { count: 1, unit: 'year' };
+  return { count: 1, unit: 'month' };
+};
+
+const getEndDateForPlan = (startDate, billingCycle) => {
+  const { count, unit } = getBillingDuration(billingCycle);
+  return moment(startDate).add(count, unit).toDate();
+};
+
 const razorpay = process.env.RAZORPAY_KEY_ID && 
                  process.env.RAZORPAY_KEY_SECRET &&
                  process.env.RAZORPAY_KEY_ID !== 'your_actual_razorpay_key_id_here' &&
@@ -200,7 +211,7 @@ const verifyUpgradePayment = async (req, res) => {
     }
 
     const startDate = moment().toDate();
-    const endDate = moment().add(1, 'month').toDate();
+    const endDate = getEndDateForPlan(startDate, plan.billing_cycle);
 
     const currentSubscription = await trx('company_subscriptions')
       .where('company_id', companyId)
@@ -572,6 +583,7 @@ const getCompanySubscription = async (req, res) => {
         'subscription_plans.description as plan_description',
         'subscription_plans.price as plan_price',
         'subscription_plans.max_users as plan_max_users',
+        'subscription_plans.billing_cycle as plan_billing_cycle',
         'subscription_plans.storage_gb as plan_storage_gb'
       )
       .join('subscription_plans', 'company_subscriptions.plan_id', 'subscription_plans.id')
@@ -592,9 +604,9 @@ const getCompanySubscription = async (req, res) => {
     const endDate = moment(subscription.end_date);
     const daysRemaining = endDate.diff(today, 'days');
     
-    // Check if trial is active
+    // Check if trial is active (trial is active only if today is before trial_end_date)
     const isTrialActive = subscription.status === 'trial' && 
-                         moment().isBefore(subscription.trial_end_date);
+                         moment().startOf('day').isBefore(moment(subscription.trial_end_date).startOf('day'));
 
     res.json({
       success: true,
@@ -603,7 +615,7 @@ const getCompanySubscription = async (req, res) => {
         days_remaining: Math.max(0, daysRemaining),
         is_trial_active: isTrialActive,
         trial_days_remaining: isTrialActive ? 
-          moment(subscription.trial_end_date).diff(today, 'days') : 0,
+          moment(subscription.trial_end_date).diff(today, 'days') : Math.max(0, moment(subscription.trial_end_date).diff(today, 'days')),
         storage_usage_percentage: subscription.storage_gb > 0 ? 
           Math.round((subscription.used_storage_mb || 0) / (subscription.storage_gb * 1024) * 100) : 0
       }
@@ -649,8 +661,8 @@ const startTrial = async (req, res) => {
     }
 
     const startDate = moment().toDate();
-    const trialEndDate = moment().add(plan.trial_days, 'days').toDate();
-    const endDate = moment(trialEndDate).add(1, 'month').toDate();
+    const trialEndDate = moment(startDate).add(plan.trial_days, 'days').toDate();
+    const endDate = getEndDateForPlan(trialEndDate, plan.billing_cycle);
 
     // Create trial subscription
     const [subscriptionId] = await db('company_subscriptions').insert({
@@ -708,7 +720,7 @@ const upgradeSubscription = async (req, res) => {
       .first();
 
     const startDate = moment().toDate();
-    const endDate = moment().add(1, 'month').toDate();
+    const endDate = getEndDateForPlan(startDate, plan.billing_cycle);
 
     let subscriptionId;
     

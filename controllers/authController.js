@@ -1,7 +1,8 @@
 // src/controllers/authController.js
 const knex = require('../db/db');
 const bcrypt = require('bcryptjs');
-const { generateToken } = require('../utils/jwt');
+const jwt = require('jsonwebtoken');
+const { generateAccessToken, generateRefreshToken } = require('../utils/jwt');
 const { transporter } = require('../utils/mailer');
 const moment = require('moment');
 
@@ -294,8 +295,12 @@ const registerUser = async (req, res) => {
           .add(defaultPlan.trial_days, 'days')
           .toDate();
 
+        const billingUnit = ['yearly', 'annual', 'year'].includes(String(defaultPlan.billing_cycle || '').toLowerCase())
+          ? 'year'
+          : 'month';
+
         const endDate = moment(trialEndDate)
-          .add(1, 'month')
+          .add(1, billingUnit)
           .toDate();
 
         await trx('company_subscriptions').insert({
@@ -321,12 +326,15 @@ const registerUser = async (req, res) => {
     ).catch(err => console.error('Registration mail failed:', err));
 
     /* ---------------- TOKEN ---------------- */
-    const token = generateToken({
+    const tokenUser = {
       id: createdUser.id,
       email: createdUser.email,
       role: createdUser.role,
       company_id: createdUser.company_id
-    });
+    };
+
+    const accessToken = generateAccessToken({ ...tokenUser, type: 'admin' });
+    const refreshToken = generateRefreshToken({ ...tokenUser, type: 'admin' });
 
     /* ---------------- RESPONSE ---------------- */
     res.status(201).json({
@@ -344,7 +352,9 @@ const registerUser = async (req, res) => {
         company_id: createdUser.company_id,
         avatar: createdUser.avatar
       },
-      token
+      token: accessToken,
+      accessToken,
+      refreshToken
     });
 
   } catch (error) {
@@ -398,7 +408,7 @@ const login = async (req, res) => {
     }
 
     // 🔥 TOKEN WITH DEPARTMENT & DESIGNATION
-    const token = generateToken({
+    const tokenUser = {
       id: user.id,
       email: user.email,
       role: user.role || 'employee',
@@ -408,7 +418,10 @@ const login = async (req, res) => {
       // 🔥 IMPORTANT
       department_id: user.department_id || null,
       designation_id: user.designation_id || null
-    });
+    };
+
+    const accessToken = generateAccessToken(tokenUser);
+    const refreshToken = generateRefreshToken(tokenUser);
 
     const fullName = user.first_name
       ? `${user.first_name} ${user.last_name || ''}`.trim()
@@ -433,7 +446,9 @@ const login = async (req, res) => {
     res.json({
       success: true,
       message: 'Login successful',
-      token,
+      token: accessToken,
+      accessToken,
+      refreshToken,
       user: {
         id: user.id,
         name: fullName,
@@ -457,6 +472,71 @@ const login = async (req, res) => {
   }
 };
 
+const refreshAccessToken = async (req, res) => {
+  const { refreshToken } = req.body;
+
+  if (!refreshToken) {
+    return res.status(400).json({ message: 'Refresh token is required' });
+  }
+
+  try {
+    const decoded = jwt.verify(
+      refreshToken,
+      process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET
+    );
+
+    if (decoded.tokenType && decoded.tokenType !== 'refresh') {
+      return res.status(401).json({ message: 'Invalid token type' });
+    }
+
+    let user = null;
+    let userType = decoded.type;
+    let companyId = null;
+
+    if (userType === 'admin') {
+      user = await knex('users').where({ id: decoded.id }).first();
+      if (!user) {
+        return res.status(401).json({ message: 'Admin user not found' });
+      }
+      companyId = user.company_id;
+    } else if (userType === 'employee') {
+      user = await knex('employees').where({ id: decoded.id }).first();
+      if (!user) {
+        return res.status(401).json({ message: 'Employee not found' });
+      }
+      if (!user.company_id) {
+        return res.status(403).json({ message: 'Employee not assigned to any company' });
+      }
+      companyId = user.company_id;
+    } else {
+      return res.status(401).json({ message: 'Invalid user type' });
+    }
+
+    const tokenUser = {
+      id: user.id,
+      email: user.email,
+      role: user.role || 'employee',
+      type: userType,
+      company_id: companyId,
+      department_id: user.department_id || null,
+      designation_id: user.designation_id || null
+    };
+
+    const accessToken = generateAccessToken(tokenUser);
+
+    res.json({
+      success: true,
+      token: accessToken,
+      accessToken
+    });
+  } catch (error) {
+    console.error('Refresh token error:', error.message);
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ message: 'Refresh token expired' });
+    }
+    return res.status(401).json({ message: 'Invalid refresh token' });
+  }
+};
 
 
 const changePassword = async (req, res) => {
@@ -745,6 +825,7 @@ const resetPassword = async (req, res) => {
 
 module.exports = {
   login,
+  refreshAccessToken,
   registerUser,
   changePassword,
   logout,
@@ -752,6 +833,3 @@ module.exports = {
   verifyOTP,
   resetPassword
 };
-
-
-

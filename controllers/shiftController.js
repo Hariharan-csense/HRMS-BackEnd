@@ -59,8 +59,21 @@ exports.createShift = async (req, res) => {
       });
     }
 
-    /* 🔥 AUTO GENERATE SHIFT CODE */
-    const shiftCode = await generateAutoNumber(companyId, "shift");
+    /* 🔥 AUTO GENERATE SHIFT CODE (SHF001 format) */
+    const lastShift = await db("shifts")
+      .where({ company_id: companyId })
+      .orderBy('id', 'desc')
+      .first();
+
+    let nextNumber = 1;
+    if (lastShift && lastShift.shift_code) {
+      const match = lastShift.shift_code.match(/SHF(\d+)/);
+      if (match) {
+        nextNumber = parseInt(match[1]) + 1;
+      }
+    }
+
+    const shiftCode = `SHF${nextNumber.toString().padStart(3, '0')}`;
 
     await db("shifts").insert({
       shift_code: shiftCode,

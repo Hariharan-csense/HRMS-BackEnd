@@ -54,7 +54,7 @@ const addRole = async (req, res) => {
       return res.status(400).json({ message: 'Role name already exists in your company' });
     }
 
-    const role_id = await generateAutoNumber(companyId,'ROLE');
+    const role_id = await generateRoleId(companyId);
 
     // Normalize permissions to 0/1 numeric for each action
     const structuredModules = {};

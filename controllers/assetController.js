@@ -119,8 +119,21 @@ const addAsset = async (req, res) => {
         throw new Error('SERIAL_EXISTS');
       }
 
-      // Auto asset ID (AST0001)
-      const asset_id = await generateAutoNumber(companyId, 'asset', trx);
+      // Generate asset ID (AST0001 format)
+      const lastAsset = await trx('assets')
+        .where({ company_id: companyId })
+        .orderBy('id', 'desc')
+        .first();
+
+      let nextNumber = 1;
+      if (lastAsset && lastAsset.asset_id) {
+        const match = lastAsset.asset_id.match(/AST(\d+)/);
+        if (match) {
+          nextNumber = parseInt(match[1]) + 1;
+        }
+      }
+
+      const asset_id = `AST${nextNumber.toString().padStart(4, '0')}`;
 
       // Fetch employee name if assigned
       let employeeName = null;

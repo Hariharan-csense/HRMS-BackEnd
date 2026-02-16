@@ -214,7 +214,21 @@ const submitExpense = async (req, res) => {
       ? `/uploads/expenses/company_${companyId}/${req.file.filename}`
       : null;
 
-    const expense_id = await generateAutoNumber(companyId, 'Expense');
+    // Generate expense ID (EXP001 format)
+    const lastExpense = await knex('expenses')
+      .where({ company_id: companyId })
+      .orderBy('id', 'desc')
+      .first();
+
+    let nextNumber = 1;
+    if (lastExpense && lastExpense.expense_id) {
+      const match = lastExpense.expense_id.match(/EXP(\d+)/);
+      if (match) {
+        nextNumber = parseInt(match[1]) + 1;
+      }
+    }
+
+    const expense_id = `EXP${nextNumber.toString().padStart(3, '0')}`;
 
     // 📝 Insert expense
 const [id] = await knex('expenses').insert({

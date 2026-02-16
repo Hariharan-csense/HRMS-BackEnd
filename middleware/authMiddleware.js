@@ -16,6 +16,11 @@
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+      // Only allow access tokens for protected routes
+      if (decoded.tokenType && decoded.tokenType !== 'access') {
+        return res.status(401).json({ message: 'Invalid token type' });
+      }
+
       let user = null;
       let userType = null;
       let companyId = null;

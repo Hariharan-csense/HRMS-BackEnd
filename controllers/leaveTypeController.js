@@ -21,11 +21,21 @@ exports.createLeaveType = async (req, res) => {
       });
     }
 
-    // 🔢 AUTO GENERATE leave_type_id
-    const leaveTypeId = await generateAutoNumber(
-      companyId,
-      'leaveType'
-    );
+    // 🔢 AUTO GENERATE leave_type_id (LVT001 format)
+    const lastLeaveType = await knex('leave_types')
+      .where({ company_id: companyId })
+      .orderBy('id', 'desc')
+      .first();
+
+    let nextNumber = 1;
+    if (lastLeaveType && lastLeaveType.leave_type_id) {
+      const match = lastLeaveType.leave_type_id.match(/LVT(\d+)/);
+      if (match) {
+        nextNumber = parseInt(match[1]) + 1;
+      }
+    }
+
+    const leaveTypeId = `LVT${nextNumber.toString().padStart(3, '0')}`;
 
     await knex('leave_types').insert({
       company_id: companyId,

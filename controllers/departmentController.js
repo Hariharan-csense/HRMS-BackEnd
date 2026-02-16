@@ -29,8 +29,37 @@ const addDepartment = async (req, res) => {
       return res.status(400).json({ message: 'Department name already exists in your company' });
     }
 
-    const dept_id = await generateAutoNumber(companyId,'department');
-    const cost_center = await generateAutoNumber(companyId,'costcenter');
+    // Generate department ID (DEP001 format)
+    const lastDept = await knex('departments')
+      .where({ company_id: companyId })
+      .orderBy('id', 'desc')
+      .first();
+
+    let nextDeptNumber = 1;
+    if (lastDept && lastDept.dept_id) {
+      const match = lastDept.dept_id.match(/DEP(\d+)/);
+      if (match) {
+        nextDeptNumber = parseInt(match[1]) + 1;
+      }
+    }
+
+    const dept_id = `DEP${nextDeptNumber.toString().padStart(3, '0')}`;
+
+    // Generate cost center (CC001 format)
+    const lastCostCenter = await knex('departments')
+      .where({ company_id: companyId })
+      .orderBy('id', 'desc')
+      .first();
+
+    let nextCostNumber = 1;
+    if (lastCostCenter && lastCostCenter.cost_center) {
+      const match = lastCostCenter.cost_center.match(/CC(\d+)/);
+      if (match) {
+        nextCostNumber = parseInt(match[1]) + 1;
+      }
+    }
+
+    const cost_center = `CC${nextCostNumber.toString().padStart(3, '0')}`;
 
     const [newId] = await knex('departments').insert({
       company_id: companyId, // ← Company isolation

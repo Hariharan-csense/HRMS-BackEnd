@@ -338,7 +338,21 @@ const applyLeave = async (req, res) => {
 
         if (!unpaid) {
           // Create a company-scoped Unpaid Leave type if not present
-          const lt_code = await generateAutoNumber(companyId, 'leave');
+          // Generate leave type ID (LVT001 format)
+          const lastLeaveType = await knex('leave_types')
+            .where({ company_id: companyId })
+            .orderBy('id', 'desc')
+            .first();
+
+          let nextNumber = 1;
+          if (lastLeaveType && lastLeaveType.leave_type_id) {
+            const match = lastLeaveType.leave_type_id.match(/LVT(\d+)/);
+            if (match) {
+              nextNumber = parseInt(match[1]) + 1;
+            }
+          }
+
+          const lt_code = `LVT${nextNumber.toString().padStart(3, '0')}`;
           await knex('leave_types').insert({
             leave_type_id: lt_code,
             name: 'Unpaid Leave',
@@ -390,7 +404,21 @@ const applyLeave = async (req, res) => {
       // ===============================
       // CREATE LEAVE APPLICATION
       // ===============================
-      const application_id = await generateAutoNumber(companyId, 'leave');
+      // Generate application ID (APP001 format)
+      const lastApplication = await knex('leave_applications')
+        .where({ company_id: companyId })
+        .orderBy('id', 'desc')
+        .first();
+
+      let nextNumber = 1;
+      if (lastApplication && lastApplication.application_id) {
+        const match = lastApplication.application_id.match(/APP(\d+)/);
+        if (match) {
+          nextNumber = parseInt(match[1]) + 1;
+        }
+      }
+
+      const application_id = `APP${nextNumber.toString().padStart(3, '0')}`;
 
       // ensure leaveType is available for notification later
       if (!leaveType) {

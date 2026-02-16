@@ -63,9 +63,11 @@ const createNotification = async (req, res) => {
       created_at: new Date()
     };
 
-    const [notification] = await knex('notifications')
+    const insertResult = await knex('notifications')
       .insert(notificationData)
       .returning('*');
+
+    const notification = Array.isArray(insertResult) ? insertResult[0] : insertResult;
 
     res.status(201).json({
       success: true,
@@ -96,10 +98,12 @@ const markNotificationAsRead = async (req, res) => {
       return res.status(401).json({ message: 'User not authenticated' });
     }
 
-    const [updatedNotification] = await knex('notifications')
+    const updateResult = await knex('notifications')
       .where({ id: notificationId, user_id: userId })
       .update({ read: true })
       .returning('*');
+
+    const updatedNotification = Array.isArray(updateResult) ? updateResult[0] : updateResult;
 
     if (!updatedNotification) {
       return res.status(404).json({ message: 'Notification not found' });

@@ -34,7 +34,21 @@ const addBranch = async (req, res) => {
   }
 
   try {
-    const branch_id = await generateAutoNumber(companyId,'branch');
+    // Generate branch ID (BR001 format)
+    const lastBranch = await knex('branches')
+      .where({ company_id: companyId })
+      .orderBy('id', 'desc')
+      .first();
+
+    let nextNumber = 1;
+    if (lastBranch && lastBranch.branch_id) {
+      const match = lastBranch.branch_id.match(/BR(\d+)/);
+      if (match) {
+        nextNumber = parseInt(match[1]) + 1;
+      }
+    }
+
+    const branch_id = `BR${nextNumber.toString().padStart(3, '0')}`;
 
     const [newId] = await knex('branches').insert({
       company_id: companyId, // ← Company isolation
