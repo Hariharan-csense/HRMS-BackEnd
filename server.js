@@ -20,7 +20,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:8080','http://192.168.1.5:8080',  'http://localhost:5173'],
+  origin: ['http://localhost:3000', 'http://localhost:8080','http://192.168.1.2:8080',  'http://localhost:5173'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Serve uploaded files (images, documents, etc.)
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Import routes
 const demoRoutes = require("./routes/demo");
@@ -75,6 +75,8 @@ const onboardingRoutes = require('./routes/onboardingRoutes');
 const settlementRoutes = require('./routes/settlementRoutes');
 const organizationRoutes = require('./routes/organizationRoutes');
 const userRoutes = require('./routes/userRoutes');
+const surveyRoutes = require('./routes/surveyRoutes');
+const pulseSurveyRoutes = require('./routes/pulseSurveyRoutes');
 
 
 // Use routes
@@ -120,6 +122,8 @@ app.use("/api/onboarding", onboardingRoutes);
 app.use("/api/settlement", settlementRoutes);
 app.use("/api/organizations", organizationRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/surveys", surveyRoutes);
+app.use("/api/pulse-surveys", pulseSurveyRoutes);
 
 
 

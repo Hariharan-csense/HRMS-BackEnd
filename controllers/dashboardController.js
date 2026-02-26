@@ -39,14 +39,16 @@ const getAdminDashboardData = async (req, res) => {
       .where({ company_id: companyId })
       .whereRaw('DATE(check_in) = ?', [today]);
 
-    const presentToday = attendanceTodayRaw.filter(a => a.status === 'present' || a.status === 'late').length;
+    const presentToday = attendanceTodayRaw.filter(a =>
+      ['present', 'late'].includes(String(a.status || '').toLowerCase().trim())
+    ).length;
     const totalAttendanceToday = attendanceTodayRaw.length;
     const flaggedToday = attendanceTodayRaw.filter(a => a.auto_flag === 1).length;
 
     const presentYesterdayResult = await knex('attendance')
       .where({ company_id: companyId })
       .whereRaw('DATE(check_in) = ?', [yesterdayStr])
-      .whereIn('status', ['present', 'late'])
+      .whereRaw("LOWER(TRIM(status)) IN ('present','late')")
       .count('* as count')
       .first();
     const presentYesterday = Number(presentYesterdayResult?.count || 0);
@@ -293,10 +295,10 @@ const getAdminDashboardData = async (req, res) => {
       .where({ company_id: companyId })
       .whereRaw('DATE(check_in) >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)')
       .select(
-        knex.raw(`DATE_FORMAT(check_in, '%b') as month`),
-        knex.raw(`COUNT(CASE WHEN status = 'present' THEN 1 END) as present`),
-        knex.raw(`COUNT(CASE WHEN status = 'absent' THEN 1 END) as absent`),
-        knex.raw(`COUNT(CASE WHEN status = 'half_day' THEN 1 END) as half`)
+        knex.raw(`DATE_FORMAT(check_in, '%b-%Y') as month`),
+        knex.raw(`COUNT(CASE WHEN LOWER(TRIM(status)) IN ('present','late') THEN 1 END) as present`),
+        knex.raw(`COUNT(CASE WHEN LOWER(TRIM(status)) = 'absent' THEN 1 END) as absent`),
+        knex.raw(`COUNT(CASE WHEN LOWER(TRIM(status)) = 'half_day' THEN 1 END) as half`)
       )
       .groupByRaw(`DATE_FORMAT(check_in, '%b-%Y')`)
       .orderByRaw(`MIN(check_in)`);
@@ -348,9 +350,9 @@ const getAdminDashboardData = async (req, res) => {
         .whereRaw('DATE(a.check_in) = ?', [today])
         .select(
           'd.name as dept',
-          knex.raw(`COUNT(CASE WHEN a.status = 'present' THEN 1 END) as present`),
-          knex.raw(`COUNT(CASE WHEN a.status = 'absent' THEN 1 END) as absent`),
-          knex.raw(`COUNT(CASE WHEN a.status = 'half_day' THEN 1 END) as half`),
+          knex.raw(`COUNT(CASE WHEN LOWER(TRIM(a.status)) IN ('present','late') THEN 1 END) as present`),
+          knex.raw(`COUNT(CASE WHEN LOWER(TRIM(a.status)) = 'absent' THEN 1 END) as absent`),
+          knex.raw(`COUNT(CASE WHEN LOWER(TRIM(a.status)) = 'half_day' THEN 1 END) as half`),
           knex.raw('COUNT(*) as total')
         )
         .groupBy('d.name')
@@ -371,9 +373,9 @@ const getAdminDashboardData = async (req, res) => {
         .whereRaw('DATE(a.check_in) = ?', [today])
         .whereNull('e.department_id')
         .select(
-          knex.raw(`COUNT(CASE WHEN a.status = 'present' THEN 1 END) as present`),
-          knex.raw(`COUNT(CASE WHEN a.status = 'absent' THEN 1 END) as absent`),
-          knex.raw(`COUNT(CASE WHEN a.status = 'half_day' THEN 1 END) as half`),
+          knex.raw(`COUNT(CASE WHEN LOWER(TRIM(a.status)) IN ('present','late') THEN 1 END) as present`),
+          knex.raw(`COUNT(CASE WHEN LOWER(TRIM(a.status)) = 'absent' THEN 1 END) as absent`),
+          knex.raw(`COUNT(CASE WHEN LOWER(TRIM(a.status)) = 'half_day' THEN 1 END) as half`),
           knex.raw('COUNT(*) as total')
         )
         .first();
@@ -496,13 +498,13 @@ const getEmployeeDashboardData = async (req, res) => {
     // Format monthly attendance for chart
     const attendanceChartData = monthlyAttendance.map(day => ({
       date: new Date(day.date).getDate(),
-      present: day.status === 'present' ? 1 : 0,
+      present: (day.status === 'present' || day.status === 'late') ? 1 : 0,
       absent: day.status === 'absent' ? 1 : 0,
       half: day.status === 'half_day' ? 1 : 0
     }));
 
     // Calculate monthly summary
-    const presentDays = monthlyAttendance.filter(a => a.status === 'present').length;
+    const presentDays = monthlyAttendance.filter(a => a.status === 'present' || a.status === 'late').length;
     const absentDays = monthlyAttendance.filter(a => a.status === 'absent').length;
     const halfDays = monthlyAttendance.filter(a => a.status === 'half_day').length;
 
@@ -804,7 +806,7 @@ const getManagerDashboardData = async (req, res) => {
       .where('e.department_id', departmentId)
       .whereNotNull('a.check_in')
       .whereRaw('DATE(a.check_in) = CURDATE()')
-      .where('a.status', 'present')
+      .whereIn('a.status', ['present', 'late'])
       .countDistinct('a.employee_id as count')
       .first();
 
@@ -834,7 +836,7 @@ const getManagerDashboardData = async (req, res) => {
       .whereRaw('MONTH(a.check_in) = MONTH(CURDATE())')
       .whereRaw('YEAR(a.check_in) = YEAR(CURDATE())')
       .select(
-        knex.raw("SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present_count"),
+        knex.raw("SUM(CASE WHEN a.status = 'present' OR a.status = 'late' THEN 1 ELSE 0 END) as present_count"),
         knex.raw("SUM(CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END) as absent_count"),
         knex.raw("COUNT(a.id) as total_records")
       )
@@ -860,7 +862,7 @@ const getManagerDashboardData = async (req, res) => {
         'a.employee_id',
         'e.first_name',
         'e.last_name',
-        knex.raw("SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present_days"),
+        knex.raw("SUM(CASE WHEN a.status = 'present' OR a.status = 'late' THEN 1 ELSE 0 END) as present_days"),
         knex.raw("SUM(CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END) as absent_days"),
         knex.raw("COUNT(a.id) as total_days")
       );

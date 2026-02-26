@@ -5,6 +5,7 @@ const {
   checkIn, 
   checkOut, 
   getAttendanceLogs, 
+  getAttendanceByEmployeeAndMonth,
   createOverride, 
   processOverride, 
   getEmployeeSummary,
@@ -30,5 +31,8 @@ router.put('/overrides/:overrideId/process', protect, processOverride);
 // Reports
 router.get('/summary/employee/:employeeId', protect, getEmployeeSummary);
 router.get('/overrides', protect, getOverrides);
+
+// Payroll helper: employee monthly attendance (employee code or id)
+router.get('/:employeeId/:month', protect, getAttendanceByEmployeeAndMonth);
 
 module.exports = router;

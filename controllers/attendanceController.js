@@ -3,11 +3,46 @@
   const { doCheckIn, doCheckOut } = require('../services/attendance.service');
   const { getEmployeeShift } = require('../utils/shift.util');
 
+  // Resolve the real employees.id for the logged-in user.
+  // - employee login: req.user.id already points to employees.id
+  // - admin login: req.user.id points to users.id, so map by email + company
+  const resolveAttendanceEmployeeId = async (req) => {
+    const companyId = Number(req.user?.company_id);
+    if (!companyId) {
+      throw new Error('Company not assigned to user');
+    }
+
+    // Employee token path (already employees.id)
+    if (req.user?.type === 'employee') {
+      const employee = await knex('employees')
+        .where({ id: Number(req.user.id), company_id: companyId })
+        .first();
+      if (employee) return Number(employee.id);
+    }
+
+    // Admin token path (users.id -> employees.id by email)
+    if (req.user?.type === 'admin' && req.user?.email) {
+      const employee = await knex('employees')
+        .where('company_id', companyId)
+        .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+        .first();
+      if (employee) return Number(employee.id);
+    }
+
+    // Last fallback: try req.user.id directly as employee id
+    const fallbackEmployee = await knex('employees')
+      .where({ id: Number(req.user?.id), company_id: companyId })
+      .first();
+    if (fallbackEmployee) return Number(fallbackEmployee.id);
+
+    throw new Error('Employee profile not found for this account');
+  };
+
   // Check current attendance status
   const getAttendanceStatus = async (req, res) => {
     try {
-      const employeeId = req.user.id;
-      const companyId = req.user.company_id;
+      const companyId = Number(req.user.company_id);
+      const employeeId = await resolveAttendanceEmployeeId(req);
       
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -251,8 +286,8 @@
 
   const checkIn = async (req, res) => {
     try {
-      // 1️⃣ Get and cast employeeId and companyId
-      const employeeId = Number(req.body.employeeId);
+      // 1️⃣ Resolve employeeId + companyId from authenticated user context
+      const employeeId = await resolveAttendanceEmployeeId(req);
       const companyId = Number(req.user?.company_id);
 
       // 2️⃣ Validate inputs
@@ -265,14 +300,11 @@
 
       console.log("Check-in called with:", { employeeId, companyId });
 
-      // 3️⃣ Fetch the employee's shift
+      // 3️⃣ Fetch shift if assigned. Do not block check-in when shift is missing
+      // (e.g. admin users without shift assignment).
       const shift = await getEmployeeShift(employeeId, companyId);
-
       if (!shift) {
-        return res.status(400).json({
-          success: false,
-          message: "No active shift found for this employee"
-        });
+        console.warn("Check-in without assigned shift:", { employeeId, companyId });
       }
 
       // 4️⃣ Insert attendance record
@@ -282,7 +314,7 @@
         imageData: req.file?.path || null,
         location: req.body.location ? JSON.parse(req.body.location) : null,
         deviceInfo: 'Web',
-        shiftId: shift.id,
+        shiftId: shift?.id || null,
         shiftType: 'regular'  // Use string that will be converted to numeric
       });
 
@@ -302,8 +334,9 @@
 
   const checkOut = async (req, res) => {
     try {
+      const employeeId = await resolveAttendanceEmployeeId(req);
       await doCheckOut({
-        employeeId: req.user.id,
+        employeeId,
         companyId: req.user.company_id,
         imageData: req.file?.path || null,
         location: req.body.location ? JSON.parse(req.body.location) : null,
@@ -546,6 +579,84 @@ const getAttendanceLogs = async (req, res) => {
   }
 };
 
+// Get employee monthly attendance for payroll (company scoped)
+const getAttendanceByEmployeeAndMonth = async (req, res) => {
+  const companyId = req.user.company_id;
+  if (!companyId) {
+    return res.status(400).json({ message: 'Company not assigned to user' });
+  }
+
+  const { employeeId, month } = req.params;
+  if (!employeeId || !month) {
+    return res.status(400).json({ message: 'Employee and month are required' });
+  }
+
+  const match = String(month).match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    return res.status(400).json({ message: 'Invalid month format. Expected YYYY-MM' });
+  }
+
+  const year = Number(match[1]);
+  const monthNum = Number(match[2]);
+  if (monthNum < 1 || monthNum > 12) {
+    return res.status(400).json({ message: 'Invalid month value. Expected 01-12' });
+  }
+
+  const startDate = new Date(year, monthNum - 1, 1, 0, 0, 0, 0);
+  const endDate = new Date(year, monthNum, 0, 23, 59, 59, 999);
+
+  try {
+    // Resolve employee by employee_id (code) first; fall back to numeric DB id.
+    let employee = await knex('employees')
+      .where({ employee_id: employeeId, company_id: companyId })
+      .first();
+
+    if (!employee && /^\d+$/.test(String(employeeId))) {
+      employee = await knex('employees')
+        .where({ id: Number(employeeId), company_id: companyId })
+        .first();
+    }
+
+    if (!employee) {
+      return res.status(404).json({ message: 'Employee not found or access denied' });
+    }
+
+    // 🔒 Access control: admin/hr/finance can view any; manager can view dept+self; others self only.
+    if (req.user.type !== 'admin' && !['admin', 'hr', 'finance'].includes(req.user.role)) {
+      const loggedInEmployee = await knex('employees')
+        .where({ id: req.user.id, company_id: companyId })
+        .first();
+
+      if (!loggedInEmployee) {
+        return res.status(403).json({ message: 'User not found' });
+      }
+
+      if (loggedInEmployee.role === 'manager') {
+        const sameDepartment = employee.department_id && employee.department_id === loggedInEmployee.department_id;
+        const isSelf = employee.id === loggedInEmployee.id;
+        if (!sameDepartment && !isSelf) {
+          return res.status(403).json({ message: 'Access denied' });
+        }
+      } else if (employee.id !== loggedInEmployee.id) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+    }
+
+    const attendance = await knex('attendance')
+      .where({ employee_id: employee.id, company_id: companyId })
+      .whereBetween('check_in', [startDate.toISOString(), endDate.toISOString()])
+      .orderBy('check_in', 'asc');
+
+    return res.json({
+      success: true,
+      attendance
+    });
+  } catch (error) {
+    console.error('Get monthly attendance error:', error);
+    return res.status(500).json({ message: 'Error fetching attendance' });
+  }
+};
+
   
   
   const createOverride = async (req, res) => {
@@ -554,7 +665,7 @@ const getAttendanceLogs = async (req, res) => {
       return res.status(400).json({ message: 'Company not assigned to user' });
     }
 
-    const { attendanceId, employeeId, originalStatus, overriddenStatus, reason } = req.body;
+    const { attendanceId, employeeId, date, originalStatus, overriddenStatus, reason } = req.body;
     const userId = req.user.id;
 
     try {
@@ -563,22 +674,68 @@ const getAttendanceLogs = async (req, res) => {
         return res.status(403).json({ message: 'Not authorized to create overrides' });
       }
 
-      // Verify attendance belongs to company
-      const attendance = await knex('attendance')
-        .where({ id: attendanceId, company_id: companyId })
-        .first();
+      if (!reason || !String(reason).trim()) {
+        return res.status(400).json({ message: 'Reason is required' });
+      }
+
+      if (!attendanceId && !employeeId) {
+        return res.status(400).json({ message: 'Attendance Record ID or Employee ID is required' });
+      }
+
+      let attendance = null;
+
+      // Backward compatible path: use attendanceId when available
+      if (attendanceId) {
+        attendance = await knex('attendance')
+          .where({ id: attendanceId, company_id: companyId })
+          .first();
+      }
+
+      // New path: resolve attendance by employee code/id (+ optional date)
+      if (!attendance && employeeId) {
+        const normalizedEmployeeId = String(employeeId).trim();
+        const employeeQuery = knex('employees')
+          .where({ company_id: companyId })
+          .andWhere((qb) => {
+            qb.whereRaw('LOWER(employee_id) = LOWER(?)', [normalizedEmployeeId]);
+            if (!Number.isNaN(Number(normalizedEmployeeId))) {
+              qb.orWhere('id', Number(normalizedEmployeeId));
+            }
+          })
+          .first();
+
+        const employee = await employeeQuery;
+
+        if (!employee) {
+          return res.status(404).json({ message: 'Employee not found in this company' });
+        }
+
+        const attendanceQuery = knex('attendance')
+          .where({
+            company_id: companyId,
+            employee_id: employee.id
+          });
+
+        if (date) {
+          attendanceQuery.whereRaw('DATE(check_in) = ?', [date]);
+        } else {
+          attendanceQuery.orderBy('check_in', 'desc');
+        }
+
+        attendance = await attendanceQuery.first();
+      }
 
       if (!attendance) {
-        return res.status(404).json({ message: 'Attendance record not found or access denied' });
+        return res.status(404).json({ message: 'Attendance record not found for given input' });
       }
 
       const [override] = await knex('attendance_overrides')
         .insert({
           company_id: companyId,
-          attendance_id: attendanceId,
-          employee_id: employeeId,
+          attendance_id: attendance.id,
+          employee_id: attendance.employee_id,
           original_status: originalStatus || attendance.status,
-          overridden_status: overriddenStatus,
+          overridden_status: overriddenStatus || attendance.status,
           reason,
           requested_by: userId,
           approved_by: req.user.role === 'admin' ? userId : null,
@@ -589,8 +746,8 @@ const getAttendanceLogs = async (req, res) => {
       // If admin approved immediately
       if (override.status === 'approved') {
         await knex('attendance')
-          .where('id', attendanceId)
-          .update({ status: overriddenStatus });
+          .where('id', attendance.id)
+          .update({ status: overriddenStatus || attendance.status });
       }
 
       // await logAudit('create_override', 'attendance_overrides', override.id, userId, {
@@ -648,7 +805,7 @@ const getAttendanceLogs = async (req, res) => {
           .update({ status: override.overridden_status });
       }
 
-      await logAudit(`override_${status}`, 'attendance_overrides', overrideId, userId, { status, comment });
+      // await logAudit(`override_${status}`, 'attendance_overrides', overrideId, userId, { status, comment });
 
       res.json({
         success: true,
@@ -794,6 +951,7 @@ const getAttendanceLogs = async (req, res) => {
     checkIn,
     checkOut,
     getAttendanceLogs,
+    getAttendanceByEmployeeAndMonth,
     createOverride,
     processOverride,
     getEmployeeSummary,

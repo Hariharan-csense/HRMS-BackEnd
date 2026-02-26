@@ -101,7 +101,19 @@ const createUpgradeOrder = async (req, res) => {
       });
     }
 
-    const amountPaise = Math.round(Number(plan.price) * 100);
+    // Calculate amount based on billing cycle
+    let amount;
+    const { count, unit } = getBillingDuration(plan.billing_cycle);
+    
+    if (unit === 'year') {
+      // For yearly billing, calculate with discount (pay for 10 months, get 12)
+      amount = Math.round(Number(plan.price) * 10 * 100);
+    } else {
+      // For monthly billing, use monthly price
+      amount = Math.round(Number(plan.price) * 100);
+    }
+    
+    const amountPaise = amount;
     if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
       return res.status(400).json({
         success: false,
@@ -130,7 +142,9 @@ const createUpgradeOrder = async (req, res) => {
         plan: {
           id: plan.id,
           name: plan.name,
-          price: Number(plan.price)
+          price: Number(plan.price),
+          billing_cycle: plan.billing_cycle,
+          display_price: unit === 'year' ? Math.round(Number(plan.price) * 10) : Number(plan.price)
         },
         key_id: process.env.RAZORPAY_KEY_ID
       }
@@ -210,6 +224,10 @@ const verifyUpgradePayment = async (req, res) => {
       });
     }
 
+    // Calculate the actual paid amount based on billing cycle
+    const { count, unit } = getBillingDuration(plan.billing_cycle);
+    const paidAmount = unit === 'year' ? Math.round(Number(plan.price) * 10) : Number(plan.price);
+
     const startDate = moment().toDate();
     const endDate = getEndDateForPlan(startDate, plan.billing_cycle);
 
@@ -229,7 +247,7 @@ const verifyUpgradePayment = async (req, res) => {
           status: 'active',
           max_users: plan.max_users,
           storage_gb: plan.storage_gb || 1,
-          paid_amount: plan.price,
+          paid_amount: paidAmount,
           last_payment_date: new Date(),
           next_billing_date: endDate,
           payment_details: JSON.stringify({
@@ -249,7 +267,7 @@ const verifyUpgradePayment = async (req, res) => {
         status: 'active',
         max_users: plan.max_users,
         storage_gb: plan.storage_gb || 1,
-        paid_amount: plan.price,
+        paid_amount: paidAmount,
         last_payment_date: new Date(),
         next_billing_date: endDate,
         payment_details: JSON.stringify({
@@ -264,7 +282,7 @@ const verifyUpgradePayment = async (req, res) => {
     await trx('subscription_payments').insert({
       company_id: companyId,
       subscription_id: subscriptionId,
-      amount: plan.price,
+      amount: paidAmount,
       payment_method: 'upi',
       transaction_id: razorpay_payment_id,
       payment_reference: razorpay_order_id,
@@ -281,7 +299,7 @@ const verifyUpgradePayment = async (req, res) => {
       data: {
         subscription_id: subscriptionId,
         plan_name: plan.name,
-        amount_paid: Number(plan.price),
+        amount_paid: paidAmount,
         next_billing_date: endDate
       }
     });
@@ -719,6 +737,10 @@ const upgradeSubscription = async (req, res) => {
       .orderBy('created_at', 'desc')
       .first();
 
+    // Calculate the actual paid amount based on billing cycle
+    const { count, unit } = getBillingDuration(plan.billing_cycle);
+    const paidAmount = unit === 'year' ? Math.round(Number(plan.price) * 10) : Number(plan.price);
+
     const startDate = moment().toDate();
     const endDate = getEndDateForPlan(startDate, plan.billing_cycle);
 
@@ -735,7 +757,7 @@ const upgradeSubscription = async (req, res) => {
           status: 'active',
           max_users: plan.max_users,
           storage_gb: plan.storage_gb || 1,
-          paid_amount: plan.price,
+          paid_amount: paidAmount,
           last_payment_date: new Date(),
           next_billing_date: endDate,
           updated_at: new Date()
@@ -751,7 +773,7 @@ const upgradeSubscription = async (req, res) => {
         status: 'active',
         max_users: plan.max_users,
         storage_gb: plan.storage_gb || 1,
-        paid_amount: plan.price,
+        paid_amount: paidAmount,
         last_payment_date: new Date(),
         next_billing_date: endDate
       });
@@ -761,7 +783,7 @@ const upgradeSubscription = async (req, res) => {
     await db('subscription_payments').insert({
       company_id: companyId,
       subscription_id: subscriptionId,
-      amount: plan.price,
+      amount: paidAmount,
       payment_method: payment_method,
       transaction_id: `TXN${Date.now()}`,
       payment_reference: payment_details,
@@ -775,7 +797,7 @@ const upgradeSubscription = async (req, res) => {
       data: {
         subscription_id: subscriptionId,
         plan_name: plan.name,
-        amount_paid: plan.price,
+        amount_paid: paidAmount,
         next_billing_date: endDate
       }
     });

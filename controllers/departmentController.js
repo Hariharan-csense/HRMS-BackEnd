@@ -10,10 +10,21 @@ const addDepartment = async (req, res) => {
     return res.status(400).json({ message: 'You are not assigned to any company' });
   }
 
-  const { name, head_name, description } = req.body;
+  const { name, head_id, description } = req.body;
 
   if (!name?.trim()) {
     return res.status(400).json({ message: 'Department name is required' });
+  }
+
+  // Validate head_id if provided
+  if (head_id) {
+    const employee = await knex('employees')
+      .where({ id: head_id, company_id: companyId })
+      .first();
+    
+    if (!employee) {
+      return res.status(400).json({ message: 'Invalid employee selection or employee not found in your company' });
+    }
   }
 
   try {
@@ -61,19 +72,28 @@ const addDepartment = async (req, res) => {
 
     const cost_center = `CC${nextCostNumber.toString().padStart(3, '0')}`;
 
+    // Get employee name if head_id is provided
+    let head_name = null;
+    if (head_id) {
+      const employee = await knex('employees')
+        .where({ id: head_id })
+        .first();
+      head_name = employee ? `${employee.first_name} ${employee.last_name}` : null;
+    }
+
     const [newId] = await knex('departments').insert({
       company_id: companyId, // ← Company isolation
       dept_id,
       name: name.trim(),
       cost_center,
-      head_name: head_name?.trim() || null,
-      head_id: null, // will link later
+      head_name: head_name,
+      head_id: head_id || null,
       description: description?.trim() || null
     });
 
     const newDept = await knex('departments')
       .where({ id: newId })
-      .select('id', 'dept_id', 'name', 'cost_center', 'head_name', 'description', 'created_at', 'updated_at')
+      .select('id', 'dept_id', 'name', 'cost_center', 'head_name', 'head_id', 'description', 'created_at', 'updated_at')
       .first();
 
     res.status(201).json({
@@ -99,7 +119,7 @@ const getDepartments = async (req, res) => {
   try {
     const departments = await knex('departments')
       .where({ company_id: companyId })
-      .select('id', 'dept_id', 'name', 'cost_center', 'head_name', 'description', 'created_at', 'updated_at')
+      .select('id', 'dept_id', 'name', 'cost_center', 'head_name', 'head_id', 'description', 'created_at', 'updated_at')
       .orderBy('name');
 
     res.json({
@@ -122,10 +142,21 @@ const updateDepartment = async (req, res) => {
   }
 
   const { id } = req.params;
-  const { name, head_name, description } = req.body;
+  const { name, head_id, description } = req.body;
 
   if (!name?.trim()) {
     return res.status(400).json({ message: 'Department name is required' });
+  }
+
+  // Validate head_id if provided
+  if (head_id) {
+    const employee = await knex('employees')
+      .where({ id: head_id, company_id: companyId })
+      .first();
+    
+    if (!employee) {
+      return res.status(400).json({ message: 'Invalid employee selection or employee not found in your company' });
+    }
   }
 
   try {
@@ -151,15 +182,25 @@ const updateDepartment = async (req, res) => {
       return res.status(400).json({ message: 'Department name already exists in your company' });
     }
 
+    // Get employee name if head_id is provided
+    let head_name = null;
+    if (head_id) {
+      const employee = await knex('employees')
+        .where({ id: head_id })
+        .first();
+      head_name = employee ? `${employee.first_name} ${employee.last_name}` : null;
+    }
+
     await knex('departments').where({ id }).update({
       name: name.trim(),
-      head_name: head_name?.trim() || null,
+      head_name: head_name,
+      head_id: head_id || null,
       description: description?.trim() || null
     });
 
     const updated = await knex('departments')
       .where({ id })
-      .select('id', 'dept_id', 'name', 'cost_center', 'head_name', 'description', 'created_at', 'updated_at')
+      .select('id', 'dept_id', 'name', 'cost_center', 'head_name', 'head_id', 'description', 'created_at', 'updated_at')
       .first();
 
     res.json({

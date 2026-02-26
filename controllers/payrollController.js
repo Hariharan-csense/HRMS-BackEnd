@@ -5,7 +5,6 @@ const path = require('path');
 const handlebars = require('handlebars');
 const pdf = require('html-pdf');
 const { sendEmailWithAttachment } = require('../utils/mailer'); // SMTP module
-const puppeteer = require('puppeteer');
 
 
 
@@ -44,6 +43,50 @@ const calculatePayableDays = async (employeeId, month, companyId) => {
   return Math.round(payableDays);
 };
 
+const toNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const toBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') return value.toLowerCase() === 'true' || value === '1';
+  return fallback;
+};
+
+const calculateAmountFromPercentage = (base, percentage) => {
+  return Number(((base * percentage) / 100).toFixed(2));
+};
+
+const roundTo2 = (value) => Number((Number(value) || 0).toFixed(2));
+
+const normalizeAttendanceStatus = (status) => {
+  const s = String(status || '').toLowerCase().trim();
+  if (s === 'half-day' || s === 'half_day') return 'half';
+  return s;
+};
+
+const generatePdfFromHtml = (html, pdfPath) => {
+  return new Promise((resolve, reject) => {
+    pdf
+      .create(html, {
+        format: 'A4',
+        border: {
+          top: '8mm',
+          right: '8mm',
+          bottom: '8mm',
+          left: '8mm'
+        }
+      })
+      .toFile(pdfPath, (err, result) => {
+        if (err) return reject(err);
+        resolve(result);
+      });
+  });
+};
+
 // Save or Update Salary Structure (company scoped)
 const saveSalaryStructure = async (req, res) => {
   const companyId = req.user.company_id;
@@ -58,7 +101,11 @@ const saveSalaryStructure = async (req, res) => {
     allowances = 0,
     incentives = 0,
     pf = 0,
+    pf_percentage,
+    pf_enabled,
     esi = 0,
+    esi_percentage,
+    esi_enabled,
     pt = 0,
     tds = 0,
     other_deductions = 0
@@ -81,8 +128,21 @@ const saveSalaryStructure = async (req, res) => {
     // Use the actual database ID for further operations
     const actualEmployeeId = employeeRecord.id;
 
-    const gross = Number(basic) + Number(hra) + Number(allowances) + Number(incentives);
-    const deductions = Number(pf) + Number(esi) + Number(pt) + Number(tds) + Number(other_deductions);
+    const basicAmount = toNumber(basic);
+    const pfEnabled = toBoolean(pf_enabled, toNumber(pf) > 0 || toNumber(pf_percentage) > 0);
+    const esiEnabled = toBoolean(esi_enabled, toNumber(esi) > 0 || toNumber(esi_percentage) > 0);
+    const pfPercentage = toNumber(pf_percentage);
+    const esiPercentage = toNumber(esi_percentage);
+    const hasPfPercentage = pf_percentage !== undefined && pf_percentage !== null && pf_percentage !== '';
+    const hasEsiPercentage = esi_percentage !== undefined && esi_percentage !== null && esi_percentage !== '';
+    const pfAmount = pfEnabled
+      ? (hasPfPercentage ? calculateAmountFromPercentage(basicAmount, pfPercentage) : toNumber(pf))
+      : 0;
+    const esiAmount = esiEnabled
+      ? (hasEsiPercentage ? calculateAmountFromPercentage(basicAmount, esiPercentage) : toNumber(esi))
+      : 0;
+
+    const gross = basicAmount + toNumber(hra) + toNumber(allowances) + toNumber(incentives);
 
     const existing = await knex('payroll_structures')
       .where({ employee_id: actualEmployeeId, company_id: companyId })
@@ -93,16 +153,16 @@ const saveSalaryStructure = async (req, res) => {
       await knex('payroll_structures')
         .where({ employee_id: actualEmployeeId, company_id: companyId })
         .update({
-          basic: Number(basic),
-          hra: Number(hra),
-          allowances: Number(allowances),
-          incentives: Number(incentives),
+          basic: basicAmount,
+          hra: toNumber(hra),
+          allowances: toNumber(allowances),
+          incentives: toNumber(incentives),
           gross,
-          pf: Number(pf),
-          esi: Number(esi),
-          pt: Number(pt),
-          tds: Number(tds),
-          other_deductions: Number(other_deductions)
+          pf: pfAmount,
+          esi: esiAmount,
+          pt: toNumber(pt),
+          tds: toNumber(tds),
+          other_deductions: toNumber(other_deductions)
         });
 
       const updated = await knex('payroll_structures')
@@ -119,16 +179,16 @@ const saveSalaryStructure = async (req, res) => {
       await knex('payroll_structures').insert({
         company_id: companyId,
         employee_id: actualEmployeeId,
-        basic: Number(basic),
-        hra: Number(hra),
-        allowances: Number(allowances),
-        incentives: Number(incentives),
+        basic: basicAmount,
+        hra: toNumber(hra),
+        allowances: toNumber(allowances),
+        incentives: toNumber(incentives),
         gross,
-        pf: Number(pf),
-        esi: Number(esi),
-        pt: Number(pt),
-        tds: Number(tds),
-        other_deductions: Number(other_deductions)
+        pf: pfAmount,
+        esi: esiAmount,
+        pt: toNumber(pt),
+        tds: toNumber(tds),
+        other_deductions: toNumber(other_deductions)
       });
 
       const newStructure = await knex('payroll_structures')
@@ -508,23 +568,21 @@ const processPayroll = async (req, res) => {
     // ===============================
     // ATTENDANCE (PRESENT)
     // ===============================
-    const attendanceDays = await knex('attendance')
+    const attendanceRows = await knex('attendance')
       .where({
         employee_id: empId,
         company_id: companyId,
       })
-      .whereIn('status', ['present', 'late'])
-      .whereNotNull('check_in')
       .andWhereRaw('MONTH(check_in) = ? AND YEAR(check_in) = ?', [monthNum, year])
-      .select(knex.raw("DATE(check_in) as day"))
-      .groupBy('day');
+      .select(
+        knex.raw("DATE(check_in) as day"),
+        'status',
+        'hours_worked'
+      );
 
-    const presentDays = attendanceDays.length;
-    const presentDateSet = new Set(
-      attendanceDays
-        .map((r) => (r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day).slice(0, 10)))
-        .filter(Boolean)
-    );
+    const presentDateSet = new Set();
+    const halfDayDateSet = new Set();
+    const attendanceCreditByDay = new Map();
 
     const holidayRows = await knex('holidays')
       .where({ company_id: companyId })
@@ -538,6 +596,64 @@ const processPayroll = async (req, res) => {
       return day === 0 || day === 6;
     };
 
+    const employeeShift = await knex('shifts')
+      .where({ id: employee.shift_id, company_id: companyId })
+      .first();
+
+    const halfDayThresholdHours = Number(employeeShift?.half_day_threshold) > 0
+      ? Number(employeeShift.half_day_threshold)
+      : 4;
+    let fullDayThresholdHours = 8;
+    if (employeeShift?.start_time && employeeShift?.end_time) {
+      const [sh, sm] = String(employeeShift.start_time).split(':').map(Number);
+      const [eh, em] = String(employeeShift.end_time).split(':').map(Number);
+      if (Number.isFinite(sh) && Number.isFinite(sm) && Number.isFinite(eh) && Number.isFinite(em)) {
+        const start = new Date(2000, 0, 1, sh, sm, 0, 0);
+        const end = new Date(2000, 0, 1, eh, em, 0, 0);
+        if (end < start) end.setDate(end.getDate() + 1);
+        const hours = (end - start) / (1000 * 60 * 60);
+        if (hours > 0) fullDayThresholdHours = hours;
+      }
+    }
+
+    for (const row of attendanceRows) {
+      const dayKey = row.day instanceof Date ? row.day.toISOString().slice(0, 10) : String(row.day).slice(0, 10);
+      if (!dayKey) continue;
+
+      const dayObj = new Date(dayKey);
+      if (isWeekend(dayObj) || holidayDateSet.has(dayKey)) continue;
+
+      const status = normalizeAttendanceStatus(row.status);
+      const hoursWorked = Number(row.hours_worked || 0);
+      let credit = 0;
+
+      if (status === 'absent') {
+        credit = 0;
+      } else if (status === 'half') {
+        credit = 0.5;
+      } else if (hoursWorked > 0) {
+        if (hoursWorked >= halfDayThresholdHours && hoursWorked < fullDayThresholdHours) {
+          credit = 0.5;
+        } else if (hoursWorked >= fullDayThresholdHours) {
+          credit = 1;
+        } else {
+          credit = 0;
+        }
+      } else if (status === 'present' || status === 'late') {
+        credit = 1;
+      }
+
+      const existingCredit = attendanceCreditByDay.get(dayKey) || 0;
+      if (credit > existingCredit) {
+        attendanceCreditByDay.set(dayKey, credit);
+      }
+    }
+
+    for (const [dayKey, credit] of attendanceCreditByDay.entries()) {
+      if (credit >= 1) presentDateSet.add(dayKey);
+      if (credit > 0 && credit < 1) halfDayDateSet.add(dayKey);
+    }
+
     // ===============================
     // APPROVED LEAVES (PAID)
     // ===============================
@@ -547,10 +663,7 @@ const processPayroll = async (req, res) => {
         company_id: companyId,
         status: 'approved'
       })
-      .andWhereRaw(
-        '(MONTH(from_date) = ? AND YEAR(from_date) = ?) OR (MONTH(to_date) = ? AND YEAR(to_date) = ?)',
-        [monthNum, year, monthNum, year]
-      )
+      .andWhereRaw('from_date <= ? AND to_date >= ?', [endDate, startDate])
       .select('from_date', 'to_date');
 
     const leaveDateSet = new Set();
@@ -586,28 +699,21 @@ const processPayroll = async (req, res) => {
       }
     }
 
-    let payableDays = 0;
-    for (let day = 1; day <= totalDays; day++) {
-      const d = new Date(year, monthNum - 1, day);
-      const key = d.toISOString().slice(0, 10);
-      if (isWeekend(d) || holidayDateSet.has(key)) {
-        continue;
-      }
+    const attendancePayableDays = Array.from(attendanceCreditByDay.values()).reduce((sum, c) => sum + c, 0);
+    const leavePayableDays = Array.from(leaveDateSet.values()).reduce((sum, dayKey) => {
+      return sum + (attendanceCreditByDay.has(dayKey) ? 0 : 1);
+    }, 0);
 
-      if (presentDateSet.has(key) || leaveDateSet.has(key)) {
-        payableDays++;
-      }
-    }
+    let payableDays = roundTo2(attendancePayableDays + leavePayableDays);
+    if (payableDays > workingDays) payableDays = workingDays;
 
-    let lopDays = workingDays - payableDays;
+    let lopDays = roundTo2(workingDays - payableDays);
     if (lopDays < 0) lopDays = 0;
 
-    // Fix: Don't deduct entire salary if employee has 0 present days
-    // LOP should only apply if there are some present days
     let lopAmount = 0;
-    if (lopDays > 0) {
-      const dailyGross = monthlyGross / totalDays;
-      lopAmount = Math.round(dailyGross * lopDays);
+    if (lopDays > 0 && workingDays > 0) {
+      const dailyGross = monthlyGross / workingDays;
+      lopAmount = roundTo2(dailyGross * lopDays);
     }
 
     const monthlyDeductions =
@@ -628,6 +734,7 @@ const processPayroll = async (req, res) => {
 
     let monthlyNet =
       monthlyGross - monthlyDeductions - lopAmount + totalExpenses;
+    monthlyNet = roundTo2(monthlyNet);
 
     // Ensure net doesn't go negative due to calculation errors
     if (monthlyNet < 0) {
@@ -641,9 +748,9 @@ const processPayroll = async (req, res) => {
     // ===============================
     // ANNUAL
     // ===============================
-    const annualGross = monthlyGross * 12;
-    const annualDeductions = monthlyDeductions * 12;
-    const annualNet = annualGross - annualDeductions;
+    const annualGross = roundTo2(monthlyGross * 12);
+    const annualDeductions = roundTo2(monthlyDeductions * 12);
+    const annualNet = roundTo2(monthlyNet * 12);
 
     // ===============================
     // SAVE PAYROLL
@@ -653,7 +760,7 @@ const processPayroll = async (req, res) => {
       company_id: companyId,
       month,
       total_days: totalDays,
-      present_days: presentDays,
+      present_days: presentDateSet.size,
       approved_leave_days: approvedLeaveDays,
       payable_days: payableDays,
       lop_days: lopDays,
@@ -716,7 +823,7 @@ const processPayroll = async (req, res) => {
 
       month,
       total_days: totalDays,
-      present_days: presentDays,
+      present_days: presentDateSet.size,
       approved_leave_days: approvedLeaveDays,
       lop_days: lopDays,
       payable_days: payableDays,
@@ -745,11 +852,7 @@ const processPayroll = async (req, res) => {
 
     const pdfPath = path.join(pdfDir, `payslip-${empId}-${month}.pdf`);
 
-    const browser = await puppeteer.launch({ headless: true });
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    await page.pdf({ path: pdfPath, format: 'A4', printBackground: true });
-    await browser.close();
+    await generatePdfFromHtml(html, pdfPath);
 
     // ===============================
     // SEND EMAIL
@@ -1208,6 +1311,14 @@ const getSalaryStructures = async (req, res) => {
           
         return {
           ...structure,
+          pf_enabled: Number(structure.pf || 0) > 0,
+          pf_percentage: Number(structure.basic || 0) > 0
+            ? Number(((Number(structure.pf || 0) / Number(structure.basic || 0)) * 100).toFixed(2))
+            : 0,
+          esi_enabled: Number(structure.esi || 0) > 0,
+          esi_percentage: Number(structure.basic || 0) > 0
+            ? Number(((Number(structure.esi || 0) / Number(structure.basic || 0)) * 100).toFixed(2))
+            : 0,
           employee_name: employee ? `${employee.first_name} ${employee.last_name}` : 'N/A',
           employee_code: employee?.emp_id || 'N/A'
         };
@@ -1236,7 +1347,11 @@ const updateSalaryStructure = async (req, res) => {
     allowances = 0,
     incentives = 0,
     pf = 0,
+    pf_percentage,
+    pf_enabled,
     esi = 0,
+    esi_percentage,
+    esi_enabled,
     pt = 0,
     tds = 0,
     other_deductions = 0
@@ -1256,32 +1371,39 @@ const updateSalaryStructure = async (req, res) => {
       return res.status(404).json({ message: 'Salary structure not found or access denied' });
     }
 
-    const gross =
-      Number(basic) +
-      Number(hra) +
-      Number(allowances) +
-      Number(incentives);
+    const basicAmount = toNumber(basic);
+    const pfEnabled = toBoolean(pf_enabled, toNumber(pf) > 0 || toNumber(pf_percentage) > 0);
+    const esiEnabled = toBoolean(esi_enabled, toNumber(esi) > 0 || toNumber(esi_percentage) > 0);
+    const pfPercentage = toNumber(pf_percentage);
+    const esiPercentage = toNumber(esi_percentage);
+    const hasPfPercentage = pf_percentage !== undefined && pf_percentage !== null && pf_percentage !== '';
+    const hasEsiPercentage = esi_percentage !== undefined && esi_percentage !== null && esi_percentage !== '';
+    const pfAmount = pfEnabled
+      ? (hasPfPercentage ? calculateAmountFromPercentage(basicAmount, pfPercentage) : toNumber(pf))
+      : 0;
+    const esiAmount = esiEnabled
+      ? (hasEsiPercentage ? calculateAmountFromPercentage(basicAmount, esiPercentage) : toNumber(esi))
+      : 0;
 
-    const deductions =
-      Number(pf) +
-      Number(esi) +
-      Number(pt) +
-      Number(tds) +
-      Number(other_deductions);
+    const gross =
+      basicAmount +
+      toNumber(hra) +
+      toNumber(allowances) +
+      toNumber(incentives);
 
     await knex('payroll_structures')
       .where({ id, company_id: companyId })
       .update({
-        basic: Number(basic),
-        hra: Number(hra),
-        allowances: Number(allowances),
-        incentives: Number(incentives),
+        basic: basicAmount,
+        hra: toNumber(hra),
+        allowances: toNumber(allowances),
+        incentives: toNumber(incentives),
         gross,
-        pf: Number(pf),
-        esi: Number(esi),
-        pt: Number(pt),
-        tds: Number(tds),
-        other_deductions: Number(other_deductions),
+        pf: pfAmount,
+        esi: esiAmount,
+        pt: toNumber(pt),
+        tds: toNumber(tds),
+        other_deductions: toNumber(other_deductions),
         updated_at: knex.fn.now()
       });
 

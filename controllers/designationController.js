@@ -22,10 +22,10 @@ const addDesignation = async (req, res) => {
     return res.status(400).json({ message: 'You are not assigned to any company' });
   }
 
-  const { name, level_grade, description } = req.body;
+  const { name, description } = req.body;
 
-  if (!name?.trim() || !level_grade?.trim()) {
-    return res.status(400).json({ message: 'Name and Level/Grade are required' });
+  if (!name?.trim()) {
+    return res.status(400).json({ message: 'Name is required' });
   }
 
   try {
@@ -44,13 +44,12 @@ const addDesignation = async (req, res) => {
       company_id: companyId, // ← Company isolation
       desg_id,
       name: name.trim(),
-      level_grade: level_grade.trim(),
       description: description?.trim() || null
     });
 
     const newDesg = await knex('designations')
       .where({ id: newId })
-      .select('id', 'desg_id', 'name', 'level_grade', 'description', 'created_at', 'updated_at')
+      .select('id', 'desg_id', 'name', 'description', 'created_at', 'updated_at')
       .first();
 
     res.status(201).json({
@@ -76,8 +75,8 @@ const getDesignations = async (req, res) => {
   try {
     const designations = await knex('designations')
       .where({ company_id: companyId })
-      .select('id', 'desg_id', 'name', 'level_grade', 'description', 'created_at', 'updated_at')
-      .orderBy('level_grade');
+      .select('id', 'desg_id', 'name', 'description', 'created_at', 'updated_at')
+      .orderBy('name');
 
     res.json({
       success: true,
@@ -99,10 +98,10 @@ const updateDesignation = async (req, res) => {
   }
 
   const { id } = req.params;
-  const { name, level_grade, description } = req.body;
+  const { name, description } = req.body;
 
-  if (!name?.trim() || !level_grade?.trim()) {
-    return res.status(400).json({ message: 'Name and Level/Grade are required' });
+  if (!name?.trim()) {
+    return res.status(400).json({ message: 'Name is required' });
   }
 
   try {
@@ -127,13 +126,12 @@ const updateDesignation = async (req, res) => {
 
     await knex('designations').where({ id }).update({
       name: name.trim(),
-      level_grade: level_grade.trim(),
       description: description?.trim() || null
     });
 
     const updated = await knex('designations')
       .where({ id })
-      .select('id', 'desg_id', 'name', 'level_grade', 'description', 'created_at', 'updated_at')
+      .select('id', 'desg_id', 'name', 'description', 'created_at', 'updated_at')
       .first();
 
     res.json({

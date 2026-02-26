@@ -80,118 +80,118 @@ const  {generateAutoNumber}  = require('../utils/generateAutoNumber');
 //   }
 // };
 
-const addAsset = async (req, res) => {
-  const companyId = req.user.company_id;
+  const addAsset = async (req, res) => {
+    const companyId = req.user.company_id;
 
-  if (!companyId) {
-    return res.status(400).json({ message: 'You are not assigned to any company' });
-  }
+    if (!companyId) {
+      return res.status(400).json({ message: 'You are not assigned to any company' });
+    }
 
-  const {
-    name,
-    type,
-    serial_number,
-    assigned_employee_id,
-    issue_date,
-    status = 'Active',
-    location,
-    value = 0,
-    description
-  } = req.body;
+    const {
+      name,
+      type,
+      serial_number,
+      assigned_employee_id,
+      issue_date,
+      status = 'Active',
+      location,
+      value = 0,
+      description
+    } = req.body;
 
-  if (!name?.trim() || !type?.trim() || !serial_number?.trim()) {
-    return res.status(400).json({
-      message: 'Asset Name, Type and Serial Number are required'
-    });
-  }
+    if (!name?.trim() || !type?.trim() || !serial_number?.trim()) {
+      return res.status(400).json({
+        message: 'Asset Name, Type and Serial Number are required'
+      });
+    }
 
-  try {
-    await knex.transaction(async trx => {
-      // Serial number unique per company
-      const existing = await trx('assets')
-        .where({
-          serial_number: serial_number.trim(),
-          company_id: companyId
-        })
-        .first();
-
-      if (existing) {
-        throw new Error('SERIAL_EXISTS');
-      }
-
-      // Generate asset ID (AST0001 format)
-      const lastAsset = await trx('assets')
-        .where({ company_id: companyId })
-        .orderBy('id', 'desc')
-        .first();
-
-      let nextNumber = 1;
-      if (lastAsset && lastAsset.asset_id) {
-        const match = lastAsset.asset_id.match(/AST(\d+)/);
-        if (match) {
-          nextNumber = parseInt(match[1]) + 1;
-        }
-      }
-
-      const asset_id = `AST${nextNumber.toString().padStart(4, '0')}`;
-
-      // Fetch employee name if assigned
-      let employeeName = null;
-      if (assigned_employee_id) {
-        const employee = await trx('employees')
-          .where({ id: parseInt(assigned_employee_id) })
-          .select('first_name', 'last_name')
+    try {
+      await knex.transaction(async trx => {
+        // Serial number unique per company
+        const existing = await trx('assets')
+          .where({
+            serial_number: serial_number.trim(),
+            company_id: companyId
+          })
           .first();
 
-        if (employee) {
-          employeeName = `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
-        } else {
-          throw new Error('EMPLOYEE_NOT_FOUND');
+        if (existing) {
+          throw new Error('SERIAL_EXISTS');
         }
+
+        // Generate asset ID (AST0001 format)
+        const lastAsset = await trx('assets')
+          .where({ company_id: companyId })
+          .orderBy('id', 'desc')
+          .first();
+
+        let nextNumber = 1;
+        if (lastAsset && lastAsset.asset_id) {
+          const match = lastAsset.asset_id.match(/AST(\d+)/);
+          if (match) {
+            nextNumber = parseInt(match[1]) + 1;
+          }
+        }
+
+        const asset_id = `AST${nextNumber.toString().padStart(4, '0')}`;
+
+        // Fetch employee name if assigned
+        let employeeName = null;
+        if (assigned_employee_id) {
+          const employee = await trx('employees')
+            .where({ id: parseInt(assigned_employee_id) })
+            .select('first_name', 'last_name')
+            .first();
+
+          if (employee) {
+            employeeName = `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
+          } else {
+            throw new Error('EMPLOYEE_NOT_FOUND');
+          }
+        }
+
+        const [newId] = await trx('assets').insert({
+          company_id: companyId,
+          asset_id,
+          name: name.trim(),
+          type: type.trim(),
+          serial_number: serial_number.trim(),
+          assigned_employee_id: assigned_employee_id ? parseInt(assigned_employee_id) : null,
+          assigned_employee_name: employeeName,
+          issue_date: issue_date || null,
+          status,
+          location: location?.trim() || null,
+          value: parseFloat(value) || 0,
+          description: description?.trim() || null
+        });
+
+        const newAsset = await trx('assets')
+          .where({ id: newId })
+          .first();
+
+        res.status(201).json({
+          success: true,
+          message: 'Asset added successfully!',
+          asset: newAsset
+        });
+      });
+
+    } catch (error) {
+      if (error.message === 'SERIAL_EXISTS') {
+        return res.status(400).json({
+          message: 'Serial Number already exists in your company'
+        });
+      }
+      if (error.message === 'EMPLOYEE_NOT_FOUND') {
+        return res.status(400).json({
+          message: 'Assigned employee not found'
+        });
       }
 
-      const [newId] = await trx('assets').insert({
-        company_id: companyId,
-        asset_id,
-        name: name.trim(),
-        type: type.trim(),
-        serial_number: serial_number.trim(),
-        assigned_employee_id: assigned_employee_id ? parseInt(assigned_employee_id) : null,
-        assigned_employee_name: employeeName,
-        issue_date: issue_date || null,
-        status,
-        location: location?.trim() || null,
-        value: parseFloat(value) || 0,
-        description: description?.trim() || null
-      });
-
-      const newAsset = await trx('assets')
-        .where({ id: newId })
-        .first();
-
-      res.status(201).json({
-        success: true,
-        message: 'Asset added successfully!',
-        asset: newAsset
-      });
-    });
-
-  } catch (error) {
-    if (error.message === 'SERIAL_EXISTS') {
-      return res.status(400).json({
-        message: 'Serial Number already exists in your company'
-      });
+      console.error('Add asset error:', error);
+      res.status(500).json({ message: 'Server error' });
     }
-    if (error.message === 'EMPLOYEE_NOT_FOUND') {
-      return res.status(400).json({
-        message: 'Assigned employee not found'
-      });
-    }
-
-    console.error('Add asset error:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
+  };
 
 
 

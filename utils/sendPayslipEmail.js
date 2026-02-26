@@ -1,8 +1,16 @@
 const fs = require('fs');
 const path = require('path');
 const handlebars = require('handlebars');
-const puppeteer = require('puppeteer');
+const pdf = require('html-pdf');
 const { sendEmailWithAttachment } = require('../utils/mailer'); // your SMTP module
+
+const generatePdfFromHtml = (html, pdfPath) =>
+  new Promise((resolve, reject) => {
+    pdf.create(html, { format: 'A4' }).toFile(pdfPath, (err, result) => {
+      if (err) return reject(err);
+      resolve(result);
+    });
+  });
 
 const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
   // Fetch company details
@@ -25,16 +33,12 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
     employee_name: `${employee.first_name} ${employee.last_name || ''}`
   });
 
-  // Generate PDF using Puppeteer
+  // Generate PDF using html-pdf
   const pdfDir = path.join(__dirname, 'temp');
   if (!fs.existsSync(pdfDir)) fs.mkdirSync(pdfDir, { recursive: true });
   const pdfPath = path.join(pdfDir, `payslip-${employee.id}-${payrollData.month}.pdf`);
 
-  const browser = await puppeteer.launch({ headless: true });
-  const page = await browser.newPage();
-  await page.setContent(html, { waitUntil: 'networkidle0' });
-  await page.pdf({ path: pdfPath, format: 'A4', printBackground: true });
-  await browser.close();
+  await generatePdfFromHtml(html, pdfPath);
 
   // Send email with PDF attachment
   await sendEmailWithAttachment(

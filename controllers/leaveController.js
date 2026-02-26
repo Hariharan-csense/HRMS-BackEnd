@@ -4,6 +4,11 @@ const upload = require('../middleware/leaveAttachmentUpload');
 const { sendLeaveNotification } = require('../utils/sendLeaveNotification');
 const { sendLeaveStatusNotification } = require('../utils/sendLeaveStatusNotification');
 const {generateAutoNumber} = require('../utils/generateAutoNumber');
+const {
+  assignLeaveBalancesForEmployee,
+  backfillLeaveBalancesForLeaveType,
+  reconcileMissingLeaveBalances
+} = require('../services/leaveBalanceService');
 
 // Auto generate IDs per company
 const generateId = async (table, prefix, companyId) => {
@@ -26,64 +31,14 @@ const initializeLeaveBalance = async (
   year = new Date().getFullYear()
 ) => {
   try {
-    // 1️⃣ Get employee details to check employment type
-    const employee = await knex('employees')
-      .where({ id: employeeId, company_id: companyId })
-      .select('employment_type', 'doj')
-      .first();
-
-    if (!employee) {
-      console.warn('Employee not found for leave initialization');
-      return;
+    const result = await assignLeaveBalancesForEmployee(employeeId, companyId, { year });
+    if (!result.success) {
+      console.warn(`Leave balance initialization skipped for employee ${employeeId}: ${result.reason}`);
     }
-
-    // 2️⃣ Check if employee is in probation - skip leave calculation
-    if (employee.employment_type === 'Probation') {
-      console.log(`Employee ${employeeId} is in probation - skipping leave calculation`);
-      return;
-    }
-
-    // 3️⃣ Get active leave types for company
-    const leaveTypes = await knex('leave_types')
-      .where({
-        status: 'active',
-        company_id: companyId
-      })
-      .select('id', 'name', 'annual_limit');
-
-    if (!leaveTypes.length) {
-      console.warn('No active leave types found');
-      return;
-    }
-
-    for (const lt of leaveTypes) {
-      const existing = await knex('leave_balances')
-        .where({
-          employee_id: employeeId,
-          company_id: companyId,
-          leave_type_id: lt.id,
-          year
-        })
-        .first();
-
-      if (!existing) {
-        await knex('leave_balances').insert({
-          company_id: companyId,          // ✅ REQUIRED
-          employee_id: employeeId,
-          leave_type_id: lt.id,
-          opening_balance: lt.annual_limit,
-          availed: 0,
-          available: lt.annual_limit,
-          year
-        });
-
-        console.log(
-          `Initialized ${lt.name} balance for employee ${employeeId}: ${lt.annual_limit} days`
-        );
-      }
-    }
+    return result;
   } catch (error) {
     console.error('Error initializing leave balance:', error);
+    return { success: false, inserted: 0, reason: 'error' };
   }
 };
 
@@ -1036,95 +991,15 @@ const getLeaveBalance = async (req, res) => {
 
 const calculateLeaveForConfirmedEmployee = async (employeeId, companyId) => {
   try {
-    // 1️⃣ Get employee details
-    const employee = await knex('employees')
-      .where({ id: employeeId, company_id: companyId })
-      .select('employment_type', 'doj')
-      .first();
-
-    if (!employee) {
-      console.warn('Employee not found for leave calculation');
-      return { success: false, message: 'Employee not found' };
+    const result = await assignLeaveBalancesForEmployee(employeeId, companyId);
+    if (!result.success) {
+      return { success: false, message: result.reason };
     }
-
-    // 2️⃣ Check if employee is now full-time
-    if (employee.employment_type !== 'Full-Time') {
-      return { success: false, message: 'Employee is not full-time' };
-    }
-
-    // 3️⃣ Get active leave types for company
-    const leaveTypes = await knex('leave_types')
-      .where({
-        status: 'active',
-        company_id: companyId
-      })
-      .select('id', 'name', 'annual_limit');
-
-    if (!leaveTypes.length) {
-      return { success: false, message: 'No active leave types found' };
-    }
-
-    const currentYear = new Date().getFullYear();
-    const results = [];
-
-    for (const lt of leaveTypes) {
-      const existing = await knex('leave_balances')
-        .where({
-          employee_id: employeeId,
-          company_id: companyId,
-          leave_type_id: lt.id,
-          year: currentYear
-        })
-        .first();
-
-      if (!existing) {
-        // Calculate pro-rated leave based on date of joining
-        const doj = new Date(employee.doj);
-        const today = new Date();
-        const yearStart = new Date(currentYear, 0, 1);
-        const yearEnd = new Date(currentYear, 11, 31);
-        
-        // If employee joined this year, calculate pro-rated leave
-        let proratedDays = lt.annual_limit;
-        if (doj >= yearStart) {
-          const daysInYear = (yearEnd - yearStart) / (1000 * 60 * 60 * 24) + 1;
-          const daysWorked = (today - doj) / (1000 * 60 * 60 * 24) + 1;
-          proratedDays = Math.floor((lt.annual_limit * daysWorked) / daysInYear);
-        }
-
-        await knex('leave_balances').insert({
-          company_id: companyId,
-          employee_id: employeeId,
-          leave_type_id: lt.id,
-          opening_balance: proratedDays,
-          availed: 0,
-          available: proratedDays,
-          year: currentYear
-        });
-
-        console.log(
-          `Calculated ${lt.name} balance for confirmed employee ${employeeId}: ${proratedDays} days`
-        );
-
-        results.push({
-          leave_type_name: lt.name,
-          days_allocated: proratedDays
-        });
-      } else {
-        results.push({
-          leave_type_name: lt.name,
-          days_allocated: existing.available,
-          message: 'Leave balance already exists'
-        });
-      }
-    }
-
-    return { 
-      success: true, 
-      message: 'Leave calculated successfully for confirmed employee',
-      results 
+    return {
+      success: true,
+      message: result.inserted > 0 ? 'Leave calculated successfully for confirmed employee' : 'No new leave balances created',
+      inserted: result.inserted
     };
-
   } catch (error) {
     console.error('Error calculating leave for confirmed employee:', error);
     return { success: false, message: 'Server error' };
@@ -1208,9 +1083,23 @@ const getRelevantUsers = async (req, res) => {
       return res.status(400).json({ message: 'You are not assigned to any company' });
     }
 
+    const userSelectColumns = [
+      'id',
+      knex.raw("CONCAT(first_name, ' ', last_name) AS name"),
+      'department_id',
+      'role'
+    ];
+
+    const getUsersByRole = async (roleName) => {
+      return knex('employees')
+        .whereRaw("TRIM(LOWER(role)) = ?", [roleName])
+        .andWhere({ company_id: companyId })
+        .select(...userSelectColumns);
+    };
+
     let result;
 
-    // Employee-specific path: need employee record to find their department
+    // Employee -> department head + all HR + all Admin
     if (userRole === 'employee') {
       const employee = await knex('employees')
         .where({ id: userId, company_id: companyId })
@@ -1218,52 +1107,46 @@ const getRelevantUsers = async (req, res) => {
 
       if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
-      // Get department head (supporting both head_name and head columns)
+      // Get department head using current schema (head_name, head_id)
       const departmentHead = await knex('departments')
         .where({ id: employee.department_id, company_id: companyId })
-        .select('head_name', 'head')
+        .select('head_name', 'head_id')
         .first();
 
-      const hrUsers = await knex('employees')
-        .whereRaw("TRIM(LOWER(role)) = ?", ['hr'])
-        .andWhere({ company_id: companyId })
-        .select(
-          'id',
-          knex.raw("CONCAT(first_name, ' ', last_name) AS name"),
-          'department_id',
-          'role'
-        );
+      const [hrUsers, adminUsers] = await Promise.all([
+        getUsersByRole('hr'),
+        getUsersByRole('admin')
+      ]);
 
-      const headName = departmentHead ? (departmentHead.head_name || departmentHead.head || null) : null;
+      let manager = null;
+      if (departmentHead?.head_id) {
+        const headEmployee = await knex('employees')
+          .where({ id: departmentHead.head_id, company_id: companyId })
+          .select(...userSelectColumns)
+          .first();
+        if (headEmployee) {
+          manager = headEmployee;
+        }
+      }
+      if (!manager && departmentHead?.head_name) {
+        manager = { name: departmentHead.head_name };
+      }
 
       result = {
-        manager: headName ? { name: headName } : null,
+        manager,
+        admin: adminUsers,
         hr: hrUsers
       };
 
-    } else if (['admin', 'manager', 'hr'].includes(userRole)) {
-      // Admin/Manager/HR: Get all Admin + HR scoped to company
-      const adminUsers = await knex('employees')
-        .whereRaw("TRIM(LOWER(role)) = ?", ['admin'])
-        .andWhere({ company_id: companyId })
-        .select(
-          'id',
-          knex.raw("CONCAT(first_name, ' ', last_name) AS name"),
-          'department_id',
-          'role'
-        );
+    // Admin/Manager -> only HR list
+    } else if (['admin', 'manager'].includes(userRole)) {
+      const hrUsers = await getUsersByRole('hr');
+      result = { hr: hrUsers };
 
-      const hrUsers = await knex('employees')
-        .whereRaw("TRIM(LOWER(role)) = ?", ['hr'])
-        .andWhere({ company_id: companyId })
-        .select(
-          'id',
-          knex.raw("CONCAT(first_name, ' ', last_name) AS name"),
-          'department_id',
-          'role'
-        );
-
-      result = { admin: adminUsers, hr: hrUsers };
+    // HR -> only Admin list
+    } else if (userRole === 'hr') {
+      const adminUsers = await getUsersByRole('admin');
+      result = { admin: adminUsers };
 
     } else {
       return res.status(403).json({ message: 'Access denied' });
@@ -1287,5 +1170,8 @@ module.exports = {
   getLeaveBalance,
   initializeLeaveBalance,
   calculateLeaveForConfirmedEmployee,
-  getRelevantUsers
+  getRelevantUsers,
+  assignLeaveBalancesForEmployee,
+  backfillLeaveBalancesForLeaveType,
+  reconcileMissingLeaveBalances
 };

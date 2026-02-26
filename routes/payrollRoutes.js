@@ -29,6 +29,9 @@ router.put('/processing/:id/status', protect, adminOnly, updatePayrollStatus);
 // Get payroll records
 router.get('/', protect, getPayrollRecords);
 
+// Alias for frontend: list payslips/payroll records
+router.get('/payslips', protect, getPayrollRecords);
+
 // Get employee payslips (for employees to see their own payslips)
 router.get('/employee/payslips', protect, getEmployeePayslips);
 

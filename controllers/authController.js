@@ -361,6 +361,16 @@ const registerUser = async (req, res) => {
 
     console.error('Registration error:', error);
 
+    // Normalize DB unique-constraint errors into a user-friendly message
+    if (
+      error?.code === 'ER_DUP_ENTRY' ||
+      String(error?.message || '').toLowerCase().includes('duplicate entry')
+    ) {
+      return res.status(400).json({
+        message: 'Email already exists'
+      });
+    }
+
     res.status(500).json({
       message: error.message || 'Server error during registration'
     });

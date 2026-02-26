@@ -4,10 +4,11 @@ const router = express.Router();
 const profilePhotoUpload = require('../middleware/profilePhotoUpload');
 
 
-const { protect } = require('../middleware/authMiddleware');
+const { protect, adminOnly } = require('../middleware/authMiddleware');
 const {
   getMyProfile,
-  updateMyProfile
+  updateMyProfile,
+  deleteMyAccountAndOrganization
 } = require('../controllers/profileController');
 
 // 🔐 All routes protected by token
@@ -24,5 +25,8 @@ router.put(
   profilePhotoUpload,   // ✅ ONLY for profile
   updateMyProfile
 );
+
+// DELETE admin account + full organization data
+router.delete('/me/account', protect, adminOnly, deleteMyAccountAndOrganization);
 
 module.exports = router;

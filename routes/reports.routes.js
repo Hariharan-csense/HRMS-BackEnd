@@ -10,7 +10,7 @@ const {
   getExpenseReport,
 } = require('../controllers/reports.controller');
 
-const { adminOnly, financeOnly, protect, restrictTo } = require('../middleware/authMiddleware'); // adjust path if needed
+const { financeOnly, protect, restrictTo } = require('../middleware/authMiddleware'); // adjust path if needed
 
 // Apply auth to all reports routes
 
@@ -19,7 +19,7 @@ router.get('/attendance', protect, getAttendanceReport); // any authenticated us
 
 router.get('/payroll', protect, financeOnly, getPayrollReport); // finance or admin
 
-router.get('/expenses', protect, adminOnly, getExpenseReport);
+router.get('/expenses', protect, restrictTo('admin', 'finance'), getExpenseReport);
 
 router.get('/leaves', protect, restrictTo('admin', 'hr', 'manager'), getLeaveReport);
 // admin only

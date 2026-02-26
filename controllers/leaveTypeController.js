@@ -1,5 +1,5 @@
 const knex = require('../db/db');
-const { generateAutoNumber } = require('../utils/generateAutoNumber');
+const { backfillLeaveBalancesForLeaveType } = require('../services/leaveBalanceService');
 
 exports.createLeaveType = async (req, res) => {
   try {
@@ -37,7 +37,7 @@ exports.createLeaveType = async (req, res) => {
 
     const leaveTypeId = `LVT${nextNumber.toString().padStart(3, '0')}`;
 
-    await knex('leave_types').insert({
+    const [newLeaveTypeId] = await knex('leave_types').insert({
       company_id: companyId,
       leave_type_id: leaveTypeId,
       name,
@@ -48,6 +48,15 @@ exports.createLeaveType = async (req, res) => {
       description: description ?? null,
       status: 'active'
     });
+
+    try {
+      const backfillResult = await backfillLeaveBalancesForLeaveType(companyId, newLeaveTypeId);
+      console.log(
+        `Leave balance backfill completed for leave type ${leaveTypeId} - employees: ${backfillResult.employeesProcessed}, inserted: ${backfillResult.inserted}`
+      );
+    } catch (backfillError) {
+      console.error(`Leave balance backfill failed for leave type ${leaveTypeId}:`, backfillError);
+    }
 
     return res.status(201).json({
       message: 'Leave type created successfully',

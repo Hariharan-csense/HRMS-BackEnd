@@ -5,6 +5,20 @@ const knex = require('../db/db'); // ← Fixed path (CommonJS require)
 // Helper to get current year if not provided
 const getYear = (req) => Number(req.query.year) || new Date().getFullYear();
 
+const resolveCompanyId = async (req) => {
+  let companyId = req.user?.company_id;
+
+  if (!companyId && req.user?.email) {
+    const employee = await knex('employees')
+      .where({ email: req.user.email })
+      .whereNotNull('company_id')
+      .first('company_id');
+    companyId = employee?.company_id || null;
+  }
+
+  return companyId || null;
+};
+
 /* =========================
    ATTENDANCE REPORT
 ========================= */
@@ -13,27 +27,47 @@ const getYear = (req) => Number(req.query.year) || new Date().getFullYear();
 // Final Fixed getAttendanceReport (replace in reports.controller.js)
 
 const getAttendanceReport = async (req, res) => {
-  const companyId = req.user.company_id;
-  const year = getYear(req); // e.g., 2026
-
   try {
+    const companyId = await resolveCompanyId(req);
+    const year = getYear(req); // e.g., 2026
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company context missing for report generation',
+      });
+    }
+
+    const attendanceHasCompanyId = await knex.schema.hasColumn('attendance', 'company_id');
+
     // Fetch monthly aggregates (only months with attendance data)
-    const trendRaw = await knex('attendance')
+    let trendQuery = knex('attendance')
       .select(
-        knex.raw("DATE_FORMAT(check_in, '%M') as month"),
+        knex.raw("DATE_FORMAT(check_in, '%Y-%m') as ym_key"),
+        knex.raw("DATE_FORMAT(check_in, '%M') as month_name"),
         knex.raw("SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END) as present"),
         knex.raw("SUM(CASE WHEN status = 'absent' THEN 1 ELSE 0 END) as absent"),
         knex.raw("SUM(CASE WHEN status = 'half' THEN 1 ELSE 0 END) as half")
-      )
-      .where({ company_id: companyId })
+      );
+
+    if (attendanceHasCompanyId) {
+      trendQuery = trendQuery.where('attendance.company_id', companyId);
+    } else {
+      trendQuery = trendQuery
+        .join('employees as aemp', 'aemp.id', 'attendance.employee_id')
+        .where('aemp.company_id', companyId);
+    }
+
+    const trendRaw = await trendQuery
       .whereNotNull('check_in')
       .andWhereRaw('YEAR(check_in) = ?', [year])
-      .groupByRaw("DATE_FORMAT(check_in, '%Y-%m')");
+      .groupByRaw("DATE_FORMAT(check_in, '%Y-%m'), DATE_FORMAT(check_in, '%M')")
+      .orderByRaw("DATE_FORMAT(check_in, '%Y-%m')");
 
     // Create a map for quick lookup
     const monthMap = {};
     trendRaw.forEach(row => {
-      monthMap[row.month] = {
+      monthMap[row.month_name] = {
         present: Number(row.present || 0),
         absent: Number(row.absent || 0),
         half: Number(row.half || 0),
@@ -60,24 +94,41 @@ const getAttendanceReport = async (req, res) => {
       .first();
 
     // Company-wide average attendance % (weighted by actual attendance records)
-    const avgAttendanceRaw = await knex('attendance')
+    let avgAttendanceQuery = knex('attendance')
       .select(
         knex.raw("SUM(CASE WHEN status = 'present' THEN 1 WHEN status = 'half' THEN 0.5 ELSE 0 END) / COUNT(*) * 100 as avg_att")
-      )
-      .where({ company_id: companyId })
+      );
+
+    if (attendanceHasCompanyId) {
+      avgAttendanceQuery = avgAttendanceQuery.where('attendance.company_id', companyId);
+    } else {
+      avgAttendanceQuery = avgAttendanceQuery
+        .join('employees as aemp', 'aemp.id', 'attendance.employee_id')
+        .where('aemp.company_id', companyId);
+    }
+
+    const avgAttendanceRaw = await avgAttendanceQuery
       .whereNotNull('check_in')
       .andWhereRaw('YEAR(check_in) = ?', [year])
       .first();
 
     // Today's stats (use DATE(check_in) for accurate date match)
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const todayStats = await knex('attendance')
-      .select('status')
-      .count('* as count')
-      .where({ company_id: companyId })
+    let todayStatsQuery = knex('attendance')
+      .select('attendance.status')
+      .count('* as count');
+
+    if (attendanceHasCompanyId) {
+      todayStatsQuery = todayStatsQuery.where('attendance.company_id', companyId);
+    } else {
+      todayStatsQuery = todayStatsQuery
+        .join('employees as aemp', 'aemp.id', 'attendance.employee_id')
+        .where('aemp.company_id', companyId);
+    }
+
+    const todayStats = await todayStatsQuery
       .whereNotNull('check_in')
-      .whereRaw('DATE(check_in) = ?', [today])
-      .groupBy('status');
+      .whereRaw('DATE(check_in) = CURDATE()')
+      .groupBy('attendance.status');
 
     const presentToday = todayStats.find(s => s.status === 'present')?.count || 0;
     const onLeaveToday = todayStats.find(s => s.status === 'leave')?.count || 0; // will be 0 if no 'leave' status
@@ -246,49 +297,88 @@ const getPayrollReport = async (req, res) => {
    EXPENSE REPORT
 ========================= */
 const getExpenseReport = async (req, res) => {
-  const companyId = req.user.company_id;
-  const year = getYear(req);
-
   try {
+    const companyId = await resolveCompanyId(req);
+    const year = getYear(req);
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company context missing for report generation',
+      });
+    }
+
     console.log(`Fetching expense report for company: ${companyId}, year: ${year}`);
+    const expensesHasCompanyId = await knex.schema.hasColumn('expenses', 'company_id');
 
     // First, check if any expenses exist at all
-    const allExpenses = await knex('expenses')
-      .where({ company_id: companyId })
+    let allExpensesQuery = knex('expenses as e');
+    if (expensesHasCompanyId) {
+      allExpensesQuery = allExpensesQuery.where('e.company_id', companyId);
+    } else {
+      allExpensesQuery = allExpensesQuery
+        .join('employees as eemp', 'eemp.id', 'e.employee_id')
+        .where('eemp.company_id', companyId);
+    }
+
+    const allExpenses = await allExpensesQuery
       .select('category', 'amount', 'status');
     
     console.log('All expenses for company:', JSON.stringify(allExpenses, null, 2));
 
     // First, get all categories to ensure we don't miss any
-    const allCategories = await knex('expenses')
-      .distinct('category')
-      .where({ company_id: companyId })
+    let allCategoriesQuery = knex('expenses as e')
+      .distinct('e.category');
+
+    if (expensesHasCompanyId) {
+      allCategoriesQuery = allCategoriesQuery.where('e.company_id', companyId);
+    } else {
+      allCategoriesQuery = allCategoriesQuery
+        .join('employees as eemp', 'eemp.id', 'e.employee_id')
+        .where('eemp.company_id', companyId);
+    }
+
+    const allCategories = await allCategoriesQuery
       .pluck('category');
 
     console.log('All categories found:', allCategories);
 
     // Get category data without year filter first to debug
-    const allCategoryData = await knex('expenses')
-      .select('category')
-      .sum('amount as amount')
-      .where({ 
-        company_id: companyId, 
-        status: 'Approved'  // Match database enum values
-      })
-      .groupBy('category');
+    let allCategoryDataQuery = knex('expenses as e')
+      .select('e.category as category')
+      .sum('e.amount as amount')
+      .andWhereRaw('LOWER(e.status) = ?', ['approved']);
+
+    if (expensesHasCompanyId) {
+      allCategoryDataQuery = allCategoryDataQuery.where('e.company_id', companyId);
+    } else {
+      allCategoryDataQuery = allCategoryDataQuery
+        .join('employees as eemp', 'eemp.id', 'e.employee_id')
+        .where('eemp.company_id', companyId);
+    }
+
+    const allCategoryData = await allCategoryDataQuery
+      .groupBy('e.category');
 
     console.log('All category data (no year filter):', JSON.stringify(allCategoryData, null, 2));
 
     // Then get data with year filter
-    const categoryData = await knex('expenses')
-      .select('category')
-      .sum('amount as amount')
-      .where({ 
-        company_id: companyId, 
-        status: 'Approved'  // Match database enum values
-      })
-      .andWhereRaw('YEAR(expense_date) = ?', [year])
-      .groupBy('category');
+    let categoryDataQuery = knex('expenses as e')
+      .select('e.category as category')
+      .sum('e.amount as amount')
+      .andWhereRaw('LOWER(e.status) = ?', ['approved'])
+      .andWhereRaw('YEAR(e.expense_date) = ?', [year]);
+
+    if (expensesHasCompanyId) {
+      categoryDataQuery = categoryDataQuery.where('e.company_id', companyId);
+    } else {
+      categoryDataQuery = categoryDataQuery
+        .join('employees as eemp', 'eemp.id', 'e.employee_id')
+        .where('eemp.company_id', companyId);
+    }
+
+    const categoryData = await categoryDataQuery
+      .groupBy('e.category');
 
     console.log('Filtered category data (with year filter):', JSON.stringify(categoryData, null, 2));
 
@@ -306,7 +396,15 @@ const getExpenseReport = async (req, res) => {
       const fallbackData = await knex('expenses')
         .select('category')
         .sum('amount as amount')
-        .where({ company_id: companyId })
+        .modify((queryBuilder) => {
+          if (expensesHasCompanyId) {
+            queryBuilder.where('expenses.company_id', companyId);
+          } else {
+            queryBuilder
+              .join('employees as eemp', 'eemp.id', 'expenses.employee_id')
+              .where('eemp.company_id', companyId);
+          }
+        })
         .groupBy('category');
       
       summaryData = fallbackData
@@ -323,23 +421,43 @@ const getExpenseReport = async (req, res) => {
 
     // Get stats with proper null handling
     const [totalClaims, totalAmount, pendingAmount] = await Promise.all([
-      knex('expenses')
+      knex('expenses as e')
         .count('* as count')
-        .where({ company_id: companyId })
-        .first(),
-      knex('expenses')
-        .sum('amount as total')
-        .where({ 
-          company_id: companyId, 
-          status: 'Approved'  // Match database enum values
+        .modify((queryBuilder) => {
+          if (expensesHasCompanyId) {
+            queryBuilder.where('e.company_id', companyId);
+          } else {
+            queryBuilder
+              .join('employees as eemp', 'eemp.id', 'e.employee_id')
+              .where('eemp.company_id', companyId);
+          }
         })
         .first(),
-      knex('expenses')
-        .sum('amount as total')
-        .where({ 
-          company_id: companyId, 
-          status: 'Pending'  // Match database enum values
+      knex('expenses as e')
+        .sum('e.amount as total')
+        .modify((queryBuilder) => {
+          if (expensesHasCompanyId) {
+            queryBuilder.where('e.company_id', companyId);
+          } else {
+            queryBuilder
+              .join('employees as eemp', 'eemp.id', 'e.employee_id')
+              .where('eemp.company_id', companyId);
+          }
         })
+        .andWhereRaw('LOWER(e.status) = ?', ['approved'])
+        .first(),
+      knex('expenses as e')
+        .sum('e.amount as total')
+        .modify((queryBuilder) => {
+          if (expensesHasCompanyId) {
+            queryBuilder.where('e.company_id', companyId);
+          } else {
+            queryBuilder
+              .join('employees as eemp', 'eemp.id', 'e.employee_id')
+              .where('eemp.company_id', companyId);
+          }
+        })
+        .andWhereRaw('LOWER(e.status) = ?', ['pending'])
         .first()
     ]);
 

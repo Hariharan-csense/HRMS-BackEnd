@@ -5,6 +5,7 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const { sendEmployeeWelcomeMail } = require('../utils/sendEmployeeWelcomeMail');
 const {initializeLeaveBalance, calculateLeaveForConfirmedEmployee} = require('../controllers/leaveController');
+const { isEmployeeFullTime } = require('../services/leaveBalanceService');
 const cleanupFiles = (files) => {
   if (files) {
     Object.values(files).flat().forEach(file => {
@@ -15,6 +16,36 @@ const cleanupFiles = (files) => {
     });
   }
 };
+
+const buildEmployeeDocumentRows = async (files, employeeId, companyId) => {
+  if (!files || files.length === 0) return [];
+
+  const columns = await knex('employee_documents').columnInfo();
+  const hasColumn = (name) => Object.prototype.hasOwnProperty.call(columns, name);
+
+  return files.map((file) => {
+    const row = {};
+
+    if (hasColumn('company_id')) row.company_id = companyId;
+    row.employee_id = employeeId;
+
+    // Support both old schema (`type`, `original_name`) and new schema
+    if (hasColumn('type')) row.type = file.fieldname;
+    if (hasColumn('fieldname')) row.fieldname = file.fieldname;
+    if (hasColumn('filename')) row.filename = file.originalname;
+    if (hasColumn('original_name')) row.original_name = file.originalname;
+
+    // Store a public URL path instead of absolute disk path
+    const publicPath = `/uploads/employees/company_${companyId}/${file.filename}`;
+    row.file_path = publicPath;
+
+    if (hasColumn('mimetype')) row.mimetype = file.mimetype;
+    if (hasColumn('size')) row.size = file.size;
+
+    return row;
+  });
+};
+
 const addEmployee = async (req, res) => {
   const companyId = req.user.company_id;
 
@@ -34,6 +65,8 @@ const addEmployee = async (req, res) => {
     marital_status,
     email,
     mobile,
+    office_phone,
+    office_email,
     emergency_contact_name,
     emergency_contact_phone,
     doj,
@@ -52,7 +85,8 @@ const addEmployee = async (req, res) => {
     bank_name,
     account_number,
     ifsc_code,
-    role = 'employee'
+    role = 'employee',
+    location_tracking_enabled = 0
   } = req.body;
 
   if (!employee_id || !first_name || !last_name || !email || !doj) {
@@ -117,6 +151,14 @@ if (shift_id) {
 }
 
 
+    const normalizedLocationTrackingEnabled =
+      location_tracking_enabled === 1 ||
+      location_tracking_enabled === '1' ||
+      location_tracking_enabled === true ||
+      location_tracking_enabled === 'true'
+        ? 1
+        : 0;
+
     let employeeId;
     let message;
 
@@ -145,6 +187,8 @@ if (shift_id) {
     marital_status: marital_status || null,
     email: email.trim().toLowerCase(),
     mobile: mobile || null,
+    office_phone: office_phone || null,
+    office_email: office_email || null,
     emergency_contact_name: emergency_contact_name || null,
     emergency_contact_phone: emergency_contact_phone || null,
     doj,
@@ -159,7 +203,8 @@ if (shift_id) {
     pan: pan || null,
     uan: uan || null,
     esic: esic || null,
-    role: normalizedRole
+    role: normalizedRole,
+    location_tracking_enabled: normalizedLocationTrackingEnabled
   });
 
       employeeId = id;
@@ -203,6 +248,8 @@ if (shift_id) {
   marital_status: marital_status || null,
   email: email.trim().toLowerCase(),
   mobile: mobile || null,
+  office_phone: office_phone || null,
+  office_email: office_email || null,
   emergency_contact_name: emergency_contact_name || null,
   emergency_contact_phone: emergency_contact_phone || null,
   doj,
@@ -218,7 +265,8 @@ if (shift_id) {
   uan: uan || null,
   esic: esic || null,
   password: hashedPassword,
-  role: normalizedRole
+  role: normalizedRole,
+  location_tracking_enabled: normalizedLocationTrackingEnabled
 });
 
       console.log(`[EMPLOYEE CREATION DEBUG] New Employee ID: ${newId}, Email: ${email.trim().toLowerCase()}, Temp Password: ${tempPassword}`);
@@ -306,15 +354,7 @@ if (req.files) {
 console.log(`Total files to save: ${allFiles.length}`); // ← DEBUG
 
 if (allFiles.length > 0) {
-  const documents = allFiles.map(file => ({
-    company_id: companyId,
-    employee_id: employeeId,
-    filename: file.originalname,
-    fieldname: file.fieldname,        // photo, id_proof, etc.
-    file_path: file.path.replace(/\\/g, '/'), // Windows path fix if needed
-    mimetype: file.mimetype,
-    size: file.size
-  }));
+  const documents = await buildEmployeeDocumentRows(allFiles, employeeId, companyId);
 
   await knex('employee_documents').insert(documents);
   console.log(`Successfully inserted ${allFiles.length} documents for employee ${employeeId}`);
@@ -400,7 +440,8 @@ const getEmployees = async (req, res) => {
     // NON-ADMIN & NON-MANAGER → Only self
     if (
       req.user.role !== "admin" &&
-      req.user.role !== "manager"
+      req.user.role !== "manager" &&
+      req.user.role !== "hr"
     ) {
       baseQuery.where("e.id", req.user.id);
     }
@@ -724,6 +765,7 @@ const updateEmployee = async (req, res) => {
     ifsc_code,
     role,
     shift_id,
+    location_tracking_enabled,
   } = req.body;
 
   try {
@@ -774,6 +816,15 @@ const updateEmployee = async (req, res) => {
     if (uan !== undefined) updateData.uan = uan || null;
     if (esic !== undefined) updateData.esic = esic || null;
     if (shift_id !== undefined) updateData.shift_id = shift_id ? parseInt(shift_id) : null;
+    if (location_tracking_enabled !== undefined) {
+      updateData.location_tracking_enabled =
+        location_tracking_enabled === 1 ||
+        location_tracking_enabled === '1' ||
+        location_tracking_enabled === true ||
+        location_tracking_enabled === 'true'
+          ? 1
+          : 0;
+    }
 
     // Role handling with HR restriction
     if (role !== undefined) {
@@ -811,7 +862,11 @@ const updateEmployee = async (req, res) => {
         .update(updateData);
 
       // Check if employee transitioned from probation to full-time
-      if (updateData.employment_type === 'Full-Time' && employee.employment_type === 'Probation') {
+      if (
+        updateData.employment_type !== undefined &&
+        isEmployeeFullTime(updateData.employment_type) &&
+        !isEmployeeFullTime(employee.employment_type)
+      ) {
         console.log(`Employee ${id} transitioned from probation to full-time - calculating leave`);
         const leaveResult = await calculateLeaveForConfirmedEmployee(id, companyId);
         if (leaveResult.success) {
@@ -888,15 +943,7 @@ if (req.files) {
 }
 
 if (allFiles.length > 0) {
-  const documents = allFiles.map(file => ({
-    company_id: companyId,
-    employee_id: id,
-    filename: file.originalname,
-    fieldname: file.fieldname,
-    file_path: file.path.replace(/\\/g, '/'),
-    mimetype: file.mimetype,
-    size: file.size
-  }));
+  const documents = await buildEmployeeDocumentRows(allFiles, id, companyId);
 
   await knex('employee_documents').insert(documents);
   console.log(`Uploaded ${allFiles.length} new documents for employee ${id}`);

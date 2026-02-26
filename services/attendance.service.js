@@ -1,5 +1,5 @@
 const knex = require('../db/db');
-const { calculateStandardHours, determineShiftType } = require('../utils/shift.util');
+const { determineShiftType } = require('../utils/shift.util');
 const { verifyFace, saveImage } = require('../utils/face.util');
 const { getEmployeeShift } = require('../utils/shift.util');
 const path = require('path');
@@ -90,7 +90,19 @@ async function doCheckIn({
       }
     }
 
-    if (checkInTime > shiftStart) {
+    const gracePeriodMinutes = Number(employeeShift?.grace_period) > 0
+      ? Number(employeeShift.grace_period)
+      : 0;
+    const halfDayThresholdHours = Number(employeeShift?.half_day_threshold) > 0
+      ? Number(employeeShift.half_day_threshold)
+      : 4;
+
+    const lateCutoff = new Date(shiftStart.getTime() + gracePeriodMinutes * 60 * 1000);
+    const halfDayCutoff = new Date(shiftStart.getTime() + halfDayThresholdHours * 60 * 60 * 1000);
+
+    if (checkInTime > halfDayCutoff) {
+      attendanceStatus = 'half_day';
+    } else if (checkInTime > lateCutoff) {
       attendanceStatus = 'late';
     }
   }
@@ -145,8 +157,14 @@ async function doCheckOut({
   if (hoursWorked < 0.0167) hoursWorked = 0.0167;
 
   const employeeShift = await getEmployeeShift(employeeId, companyId);
-  const standardHours = calculateStandardHours(employeeShift);
+  const standardHours =
+    Number(employeeShift?.standard_hours) > 0
+      ? Number(employeeShift.standard_hours)
+      : 8;
+  // Keep day status determined at check-in by shift start + grace + half-day cutoff.
+  // Checkout should only finalize hours/overtime, not downgrade/upgrade attendance status.
   const overtimeHours = Math.max(0, hoursWorked - standardHours);
+  const finalStatus = record.status || 'present';
 
   await knex('attendance')
     .where('id', record.id)
@@ -156,7 +174,8 @@ async function doCheckOut({
       overtime_hours: overtimeHours,
       check_out_location: location ? JSON.stringify(location) : null,
       check_out_image_url: imageData ? `/uploads/attendance/company_${companyId}/${path.basename(imageData)}` : null,
-      device_info: deviceInfo
+      device_info: deviceInfo,
+      status: finalStatus
     });
 
   return true;
