@@ -32,9 +32,9 @@ const addRole = async (req, res) => {
   } = req.body;
 
   // Basic validation
-  if (!name?.trim() || !approval_authority?.trim() || !data_visibility?.trim()) {
+  if (!name?.trim()) {
     return res.status(400).json({
-      message: 'Name, Approval Authority and Data Visibility are required'
+      message: 'Role name is required'
     });
   }
 
@@ -72,8 +72,8 @@ const addRole = async (req, res) => {
       company_id: companyId,
       role_id,
       name: name.trim(),
-      approval_authority: approval_authority.trim(),
-      data_visibility: data_visibility.trim(),
+      approval_authority: (approval_authority || '').trim(),
+      data_visibility: (data_visibility || '').trim(),
       modules: JSON.stringify(structuredModules),
       description: description?.trim() || null
     });
@@ -137,8 +137,8 @@ const updateRole = async (req, res) => {
   const { id } = req.params;
   const { name, approval_authority, data_visibility, modules, description } = req.body;
 
-  if (!name?.trim() || !approval_authority?.trim() || !data_visibility?.trim()) {
-    return res.status(400).json({ message: 'Name, Approval Authority and Data Visibility are required' });
+  if (!name?.trim()) {
+    return res.status(400).json({ message: 'Role name is required' });
   }
 
   try {
@@ -177,8 +177,14 @@ const updateRole = async (req, res) => {
 
     await knex('roles').where({ id }).update({
       name: name.trim(),
-      approval_authority: approval_authority.trim(),
-      data_visibility: data_visibility.trim(),
+      approval_authority:
+        typeof approval_authority === 'string'
+          ? approval_authority.trim()
+          : (role.approval_authority || ''),
+      data_visibility:
+        typeof data_visibility === 'string'
+          ? data_visibility.trim()
+          : (role.data_visibility || ''),
       modules: JSON.stringify(updatedModules),
       description: description?.trim() || null
     });

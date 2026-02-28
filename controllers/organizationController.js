@@ -16,7 +16,7 @@ const getOrganizations = async (req, res) => {
     // For super admin, get all companies with subscription info and user counts
     // For regular users, get only their company
     let organizations;
-    if (req.user.role === 'superadmin' || req.user.type === 'superadmin') {
+    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
       console.log('Fetching all companies for superadmin');
       organizations = await db('companies')
         .leftJoin('company_subscriptions', 'companies.id', 'company_subscriptions.company_id')
@@ -163,7 +163,7 @@ const getOrganizationById = async (req, res) => {
     });
     
     let organization;
-    if (req.user.role === 'superadmin' || req.user.type === 'superadmin') {
+    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
       organization = await db('companies').where({ id }).first();
     } else {
       organization = await db('companies')
@@ -229,7 +229,7 @@ const updateOrganization = async (req, res) => {
     });
     
     let organization;
-    if (req.user.role === 'superadmin' || req.user.type === 'superadmin') {
+    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
       organization = await db('companies').where({ id }).first();
     } else {
       organization = await db('companies')
@@ -249,7 +249,7 @@ const updateOrganization = async (req, res) => {
       updated_at: new Date()
     };
     
-    if (req.user.role === 'superadmin' || req.user.type === 'superadmin') {
+    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
       await db('companies').where({ id }).update(updateData);
     } else {
       await db('companies')
@@ -285,7 +285,7 @@ const deleteOrganization = async (req, res) => {
     
     // First check if there are any users associated with this company
     let users;
-    if (req.user.role === 'superadmin' || req.user.type === 'superadmin') {
+    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
       users = await db('users').where({ company_id: id }).first();
     } else {
       users = await db('users')
@@ -301,7 +301,7 @@ const deleteOrganization = async (req, res) => {
     }
     
     let deleted;
-    if (req.user.role === 'superadmin' || req.user.type === 'superadmin') {
+    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
       deleted = await db('companies').where({ id }).del();
     } else {
       deleted = await db('companies')

@@ -483,6 +483,51 @@ const updateExpenseStatus = async (req, res) => {
   }
 };
 
+const deleteExpense = async (req, res) => {
+  const companyId = req.user.company_id;
+  if (!companyId) {
+    return res.status(400).json({ message: 'You are not assigned to any company' });
+  }
+
+  const { expense_id } = req.params;
+  if (!expense_id) {
+    return res.status(400).json({ message: 'Expense ID is required' });
+  }
+
+  try {
+    const expense = await knex('expenses')
+      .where({ expense_id, company_id: companyId })
+      .first();
+
+    if (!expense) {
+      return res.status(404).json({ message: 'Expense not found or access denied' });
+    }
+
+    const isAdminOrFinance = req.user.role === 'admin' || req.user.role === 'finance';
+    const isOwner = Number(expense.employee_id) === Number(req.user.id);
+
+    if (!isAdminOrFinance && !isOwner) {
+      return res.status(403).json({ message: 'You are not allowed to delete this expense' });
+    }
+
+    if (String(expense.status || '').toLowerCase() !== 'pending' && !isAdminOrFinance) {
+      return res.status(400).json({ message: 'Only pending expenses can be deleted' });
+    }
+
+    await knex('expenses')
+      .where({ expense_id, company_id: companyId })
+      .del();
+
+    res.json({
+      success: true,
+      message: 'Expense deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete expense error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 
 const scanReceiptOnly = async (req, res) => {
   try {
@@ -724,6 +769,7 @@ module.exports = {
   submitExpense,
   getExpenses,
   updateExpenseStatus,
+  deleteExpense,
   scanReceiptOnly,
   exportExpenses
 };

@@ -3,6 +3,7 @@ const {
   submitExpense,
   getExpenses,
   updateExpenseStatus,
+  deleteExpense,
   scanReceiptOnly,
   exportExpenses
 } = require('../controllers/expenseController');
@@ -28,5 +29,8 @@ router.post('/export', protect, adminOrFinance, exportExpenses);
 
 // Approve/Reject - token + Admin/Finance role required
 router.put('/:expense_id', protect, adminOrFinance, updateExpenseStatus);
+
+// Delete expense - owner/admin/finance (controller enforces access rules)
+router.delete('/:expense_id', protect, deleteExpense);
 
 module.exports = router;

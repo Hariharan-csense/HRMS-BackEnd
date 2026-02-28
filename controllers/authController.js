@@ -437,19 +437,30 @@ const login = async (req, res) => {
       ? `${user.first_name} ${user.last_name || ''}`.trim()
       : user.name || 'User';
 
-    // Handle roles for admin users
+    // Build roles array without downgrading superadmin to admin.
     let userRoles = [user.role || 'employee'];
-    if (userType === 'admin' && user.roles) {
-      // If user has stored roles (JSON string), parse it
-      try {
-        if (typeof user.roles === 'string') {
-          userRoles = JSON.parse(user.roles);
-        } else if (Array.isArray(user.roles)) {
-          userRoles = user.roles;
+    if (userType === 'admin') {
+      if (user.roles) {
+        try {
+          if (typeof user.roles === 'string') {
+            userRoles = JSON.parse(user.roles);
+          } else if (Array.isArray(user.roles)) {
+            userRoles = user.roles;
+          }
+        } catch (e) {
+          console.error('Error parsing user roles:', e);
+          userRoles = [user.role || 'admin'];
         }
-      } catch (e) {
-        console.error('Error parsing user roles:', e);
-        userRoles = [user.role || 'employee'];
+      }
+
+      // Ensure DB role always exists in roles array (critical for superadmin).
+      if (user.role && !userRoles.includes(user.role)) {
+        userRoles = [user.role, ...userRoles];
+      }
+
+      // Fallback for legacy rows with no explicit role.
+      if (!userRoles.length) {
+        userRoles = [user.role || 'admin'];
       }
     }
 
