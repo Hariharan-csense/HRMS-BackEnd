@@ -1,5 +1,6 @@
   // src/controllers/attendanceController.js
   const knex = require('../db/db');
+  const { hasAnyRole } = require('../middleware/authMiddleware');
   const { doCheckIn, doCheckOut } = require('../services/attendance.service');
   const { getEmployeeShift } = require('../utils/shift.util');
 
@@ -479,8 +480,8 @@ const getAttendanceLogs = async (req, res) => {
     // ===============================
     let loggedInUser = null;
 
-    // Admin might not exist in employees table
-    if (req.user.role !== 'admin') {
+    const hasCompanyWideAccess = hasAnyRole(req.user, ['admin', 'hr', 'finance', 'ceo', 'superadmin']);
+    if (!hasCompanyWideAccess) {
       loggedInUser = await knex('employees')
         .where({ id: req.user.id, company_id: companyId })
         .first();
@@ -500,9 +501,9 @@ const getAttendanceLogs = async (req, res) => {
     // ===============================
     // Access Control
     // ===============================
-    if (req.user.role === 'admin') {
+    if (hasCompanyWideAccess) {
       // Admin → all employees, no restriction
-    } else if (loggedInUser.role === 'manager') {
+    } else if (hasAnyRole(loggedInUser, ['manager'])) {
       // Manager → self + same department
       baseQuery.where(function () {
         this.where('e.department_id', loggedInUser.department_id)
@@ -516,7 +517,7 @@ const getAttendanceLogs = async (req, res) => {
     // ===============================
     // Filters
     // ===============================
-    if (employeeId && (req.user.role === 'admin' || loggedInUser?.role === 'manager')) {
+    if (employeeId && (hasCompanyWideAccess || hasAnyRole(loggedInUser, ['manager']))) {
       baseQuery.where('a.employee_id', employeeId);
     }
 
@@ -622,7 +623,7 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
     }
 
     // 🔒 Access control: admin/hr/finance can view any; manager can view dept+self; others self only.
-    if (req.user.type !== 'admin' && !['admin', 'hr', 'finance'].includes(req.user.role)) {
+    if (!hasAnyRole(req.user, ['admin', 'hr', 'finance', 'ceo', 'superadmin'])) {
       const loggedInEmployee = await knex('employees')
         .where({ id: req.user.id, company_id: companyId })
         .first();
@@ -631,7 +632,7 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
         return res.status(403).json({ message: 'User not found' });
       }
 
-      if (loggedInEmployee.role === 'manager') {
+      if (hasAnyRole(loggedInEmployee, ['manager'])) {
         const sameDepartment = employee.department_id && employee.department_id === loggedInEmployee.department_id;
         const isSelf = employee.id === loggedInEmployee.id;
         if (!sameDepartment && !isSelf) {
@@ -670,7 +671,7 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
 
     try {
       // Check permission
-      if (!req.user.role || !['hr', 'admin'].includes(req.user.role)) {
+      if (!hasAnyRole(req.user, ['hr', 'admin', 'ceo', 'superadmin'])) {
         return res.status(403).json({ message: 'Not authorized to create overrides' });
       }
 
@@ -738,8 +739,8 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
           overridden_status: overriddenStatus || attendance.status,
           reason,
           requested_by: userId,
-          approved_by: req.user.role === 'admin' ? userId : null,
-          status: req.user.role === 'admin' ? 'approved' : 'pending'
+          approved_by: hasAnyRole(req.user, ['admin', 'ceo', 'superadmin']) ? userId : null,
+          status: hasAnyRole(req.user, ['admin', 'ceo', 'superadmin']) ? 'approved' : 'pending'
         })
         .returning('*');
 
@@ -777,7 +778,7 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
     const userId = req.user.id;
 
     try {
-      if (!req.user.role || !['hr', 'admin'].includes(req.user.role)) {
+      if (!hasAnyRole(req.user, ['hr', 'admin', 'ceo', 'superadmin'])) {
         return res.status(403).json({ message: 'Not authorized to process overrides' });
       }
 
@@ -828,7 +829,7 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
     const { startDate, endDate } = req.query;
 
     // 🔒 Employee access control
-    if (req.user.role === 'employee' && employeeId != req.user.id) {
+    if (hasAnyRole(req.user, ['employee']) && !hasAnyRole(req.user, ['manager', 'hr', 'admin', 'ceo', 'superadmin']) && employeeId != req.user.id) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -887,7 +888,7 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
 
     try {
       // Check permission
-      if (!req.user.role || !['hr', 'admin'].includes(req.user.role)) {
+      if (!hasAnyRole(req.user, ['hr', 'admin', 'ceo', 'superadmin'])) {
         return res.status(403).json({ message: 'Not authorized to view overrides' });
       }
 

@@ -7,13 +7,14 @@ const {
   deleteAutoNumber
 } = require('../controllers/autoNumbercontroller');
 
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 
 // Apply authentication middleware first
 router.use(protect);
 
-// Apply admin-only middleware
-router.use(adminOnly);
+// Apply module/action RBAC middleware
+router.use(requirePermission("organization", "update", { submodule: "role_management" }));
 
 router.get('/', getAutoNumbers);          // GET all auto numbers
 router.post('/', createAutoNumber);       // POST create auto number

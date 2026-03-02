@@ -1,10 +1,11 @@
 const db = require("../db/db");
 
-const requireAuthType = (req, res, type) => {
-  if (!req.user || req.user.type !== type) {
+const requireAuthType = (req, res) => {
+  if (!req.user) {
     res.status(403).json({ message: "Access denied" });
     return false;
   }
+  // Route-level RBAC (requirePermission) is the source of truth.
   return true;
 };
 

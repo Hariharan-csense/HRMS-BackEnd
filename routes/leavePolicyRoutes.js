@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 //const leavePolicyController = require('../controllers/leavePolicyController');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 const {
   getAllLeavePolicies,
   getLeavePolicyById,
@@ -10,11 +11,11 @@ const {
   deleteLeavePolicy
 } = require('../controllers/leavePolicyController');
 
-router.get('/', protect, adminOnly, getAllLeavePolicies);
-router.get('/:id', protect, adminOnly, getLeavePolicyById);
-router.post('/', protect, adminOnly, createLeavePolicy);
-router.put('/:id', protect, adminOnly, updateLeavePolicy);
-router.delete('/:id', protect, adminOnly, deleteLeavePolicy);
+router.get('/', protect, requirePermission("leave", "view", { submodule: "config" }), getAllLeavePolicies);
+router.get('/:id', protect, requirePermission("leave", "view", { submodule: "config" }), getLeavePolicyById);
+router.post('/', protect, requirePermission("leave", "create", { submodule: "config" }), createLeavePolicy);
+router.put('/:id', protect, requirePermission("leave", "update", { submodule: "config" }), updateLeavePolicy);
+router.delete('/:id', protect, requirePermission("leave", "delete", { submodule: "config" }), deleteLeavePolicy);
 
 
 module.exports = router;

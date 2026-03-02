@@ -11,12 +11,13 @@ const {
   deleteHoliday 
 } = require('../controllers/holidayController');
 
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 
 // Routes
-router.post('/', protect, adminOnly, createHoliday);        // Create holiday (admin only)
-router.get('/', protect, getAllHolidays);                   // Get all holidays (authenticated users)
-router.put('/:id', protect, adminOnly, updateHoliday);      // Update holiday (admin only)
-router.delete('/:id', protect, adminOnly, deleteHoliday);   // Delete holiday (admin only)
+router.post('/', protect, requirePermission("leave", "create", { submodule: "config" }), createHoliday);
+router.get('/', protect, requirePermission("leave", "view", { submodule: "config" }), getAllHolidays);
+router.put('/:id', protect, requirePermission("leave", "update", { submodule: "config" }), updateHoliday);
+router.delete('/:id', protect, requirePermission("leave", "delete", { submodule: "config" }), deleteHoliday);
 
 module.exports = router;

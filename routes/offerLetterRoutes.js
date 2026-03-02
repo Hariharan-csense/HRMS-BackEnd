@@ -13,12 +13,13 @@ const {
   deleteOfferTemplate
 } = require('../controllers/offerLetterController');
 const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 
 // Apply authentication middleware to all routes
 router.use(protect);
 
 // Offer Letters routes
-router.get('/', getOfferLetters);
+router.get('/', requirePermission("hr_management", "view", { submodule: "offer_letters" }), getOfferLetters);
 router.get('/stats', async (req, res) => {
   try {
     const companyId = req.user.company_id;
@@ -48,16 +49,16 @@ router.get('/stats', async (req, res) => {
 });
 
 // Offer Templates routes (must come before /:id to avoid conflicts)
-router.get('/templates', getOfferTemplates);
-router.post('/templates', createOfferTemplate);
-router.put('/templates/:id', updateOfferTemplate);
-router.delete('/templates/:id', deleteOfferTemplate);
+router.get('/templates', requirePermission("hr_management", "view", { submodule: "offer_letters" }), getOfferTemplates);
+router.post('/templates', requirePermission("hr_management", "create", { submodule: "offer_letters" }), createOfferTemplate);
+router.put('/templates/:id', requirePermission("hr_management", "update", { submodule: "offer_letters" }), updateOfferTemplate);
+router.delete('/templates/:id', requirePermission("hr_management", "delete", { submodule: "offer_letters" }), deleteOfferTemplate);
 
 // Offer Letters by ID (must come after templates)
-router.get('/:id', getOfferLetterById);
-router.post('/', createOfferLetter);
-router.put('/:id', updateOfferLetter);
-router.delete('/:id', deleteOfferLetter);
-router.post('/:id/send', sendOfferLetter);
+router.get('/:id', requirePermission("hr_management", "view", { submodule: "offer_letters" }), getOfferLetterById);
+router.post('/', requirePermission("hr_management", "create", { submodule: "offer_letters" }), createOfferLetter);
+router.put('/:id', requirePermission("hr_management", "update", { submodule: "offer_letters" }), updateOfferLetter);
+router.delete('/:id', requirePermission("hr_management", "delete", { submodule: "offer_letters" }), deleteOfferLetter);
+router.post('/:id/send', requirePermission("hr_management", "approve", { submodule: "offer_letters" }), sendOfferLetter);
 
 module.exports = router;

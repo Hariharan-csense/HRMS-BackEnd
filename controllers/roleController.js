@@ -1,6 +1,8 @@
 // src/controllers/roleController.js
 const knex = require('../db/db');
 const { generateAutoNumber } = require('../utils/generateAutoNumber');
+const { RBAC_ACTIONS, RBAC_MODULE_CATALOG } = require("../config/rbacCatalog");
+const { normalizeModulesPayload, parseModulesFromDb } = require("../utils/rbac");
 
 // Auto generate Role ID: ROLE001, ROLE002... per company
 const generateRoleId = async (companyId) => {
@@ -56,17 +58,7 @@ const addRole = async (req, res) => {
 
     const role_id = await generateRoleId(companyId);
 
-    // Normalize permissions to 0/1 numeric for each action
-    const structuredModules = {};
-    Object.keys(modules).forEach(mod => {
-      structuredModules[mod] = {
-        create: modules[mod]?.create ? 1 : 0,
-        edit: modules[mod]?.edit ? 1 : 0,
-        view: modules[mod]?.view ? 1 : 0,
-        approve: modules[mod]?.approve ? 1 : 0,
-        reject: modules[mod]?.reject ? 1 : 0
-      };
-    });
+    const structuredModules = normalizeModulesPayload(modules);
 
     const [newId] = await knex('roles').insert({
       company_id: companyId,
@@ -82,7 +74,7 @@ const addRole = async (req, res) => {
       .where({ id: newId })
       .first();
 
-    newRole.modules = JSON.parse(newRole.modules);
+    newRole.modules = parseModulesFromDb(newRole.modules);
 
     res.status(201).json({
       success: true,
@@ -110,9 +102,9 @@ const getRoles = async (req, res) => {
       .select('id', 'role_id', 'name', 'approval_authority', 'data_visibility', 'modules', 'description', 'created_at', 'updated_at')
       .orderBy('name');
 
-    const parsedRoles = roles.map(role => ({
+    const parsedRoles = roles.map((role) => ({
       ...role,
-      modules: JSON.parse(role.modules)
+      modules: parseModulesFromDb(role.modules),
     }));
 
     res.json({
@@ -161,19 +153,9 @@ const updateRole = async (req, res) => {
       return res.status(400).json({ message: 'Role name already exists in your company' });
     }
 
-    const currentModules = JSON.parse(role.modules);
-    const updatedModules = { ...currentModules };
-
-    // Update only provided modules
-    Object.keys(modules || {}).forEach(mod => {
-      updatedModules[mod] = {
-        create: modules[mod]?.create ? 1 : 0,
-        edit: modules[mod]?.edit ? 1 : 0,
-        view: modules[mod]?.view ? 1 : 0,
-        approve: modules[mod]?.approve ? 1 : 0,
-        reject: modules[mod]?.reject ? 1 : 0
-      };
-    });
+    const currentModules = parseModulesFromDb(role.modules);
+    const incomingModules = normalizeModulesPayload(modules || {});
+    const updatedModules = { ...currentModules, ...incomingModules };
 
     await knex('roles').where({ id }).update({
       name: name.trim(),
@@ -190,7 +172,7 @@ const updateRole = async (req, res) => {
     });
 
     const updated = await knex('roles').where({ id }).first();
-    updated.modules = JSON.parse(updated.modules);
+    updated.modules = parseModulesFromDb(updated.modules);
 
     res.json({
       success: true,
@@ -478,6 +460,13 @@ const getRoleAssignments = async (req, res) => {
 };
 
 module.exports = {
+  getPermissionCatalog: async (req, res) => {
+    res.json({
+      success: true,
+      actions: RBAC_ACTIONS,
+      modules: RBAC_MODULE_CATALOG,
+    });
+  },
   addRole,
   getRoles,
   updateRole,

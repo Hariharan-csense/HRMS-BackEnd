@@ -11,38 +11,39 @@ const {
   updateSalaryStructure,
   deleteSalaryStructure,
 } = require('../controllers/payrollController');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 
 const router = express.Router();
 
 // Salary Structure routes
 router.route('/salary-structure')
-  .get(protect, getSalaryStructures)  // Get all salary structures
-  .post(protect, adminOnly, saveSalaryStructure);  // Save salary structure (create/update)
+  .get(protect, requirePermission("payroll", "view", { submodule: "salary_structure" }), getSalaryStructures)
+  .post(protect, requirePermission("payroll", "create", { submodule: "salary_structure" }), saveSalaryStructure);
 
 // Process payroll (create/update monthly payroll)
-router.post('/process', protect, adminOnly, processPayroll);
+router.post('/process', protect, requirePermission("payroll", "create", { submodule: "processing" }), processPayroll);
 
 // Update payroll status
-router.put('/processing/:id/status', protect, adminOnly, updatePayrollStatus);
+router.put('/processing/:id/status', protect, requirePermission("payroll", "update", { submodule: "processing" }), updatePayrollStatus);
 
 // Get payroll records
-router.get('/', protect, getPayrollRecords);
+router.get('/', protect, requirePermission("payroll", "view"), getPayrollRecords);
 
 // Alias for frontend: list payslips/payroll records
-router.get('/payslips', protect, getPayrollRecords);
+router.get('/payslips', protect, requirePermission("payroll", "view", { submodule: "payslips" }), getPayrollRecords);
 
 // Get employee payslips (for employees to see their own payslips)
-router.get('/employee/payslips', protect, getEmployeePayslips);
+router.get('/employee/payslips', protect, requirePermission("payroll", "view", { submodule: "payslips" }), getEmployeePayslips);
 
 // Generate payslip preview
-router.get('/:employee_id/:month',protect,payslipPreview);
+router.get('/:employee_id/:month', protect, requirePermission("payroll", "view", { submodule: "payslips" }), payslipPreview);
 
 // Update salary structure
-router.put('/structure/:id', protect, adminOnly, updateSalaryStructure);
+router.put('/structure/:id', protect, requirePermission("payroll", "update", { submodule: "salary_structure" }), updateSalaryStructure);
 
 // Delete salary structure
-router.delete('/structure/:id', protect, adminOnly, deleteSalaryStructure);
+router.delete('/structure/:id', protect, requirePermission("payroll", "delete", { submodule: "salary_structure" }), deleteSalaryStructure);
 
 
 module.exports = router;

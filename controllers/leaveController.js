@@ -1,6 +1,7 @@
 // src/controllers/leaveController.js
 const knex = require('../db/db');
 const upload = require('../middleware/leaveAttachmentUpload');
+const { hasAnyRole } = require('../middleware/authMiddleware');
 const { sendLeaveNotification } = require('../utils/sendLeaveNotification');
 const { sendLeaveStatusNotification } = require('../utils/sendLeaveStatusNotification');
 const {generateAutoNumber} = require('../utils/generateAutoNumber');
@@ -565,13 +566,13 @@ const getLeaveApplications = async (req, res) => {
       )
       .orderBy('leave_applications.created_at', 'desc');
 
-    if (req.user.role === 'employee') {
+    if (hasAnyRole(req.user, ['employee']) && !hasAnyRole(req.user, ['manager', 'hr', 'admin', 'ceo', 'superadmin'])) {
       query = query.where(
         'leave_applications.employee_id',
         req.user.id
       );
     } 
-    else if (req.user.role === 'manager') {
+    else if (hasAnyRole(req.user, ['manager'])) {
       query = query.where(builder => {
         builder
           .where('leave_applications.employee_id', req.user.id)
@@ -654,8 +655,8 @@ const updateLeaveStatus = async (req, res) => {
     // AUTHORIZATION CHECK
     // ===============================
     let isAuthorized = false;
-    if (req.user.role === 'hr') isAuthorized = true;
-    if (req.user.role === 'manager' && applicant.department_id) {
+    if (hasAnyRole(req.user, ['hr', 'admin', 'ceo', 'superadmin'])) isAuthorized = true;
+    if (!isAuthorized && hasAnyRole(req.user, ['manager']) && applicant.department_id) {
       const manager = await knex('employees')
         .where({
           id: req.user.id,
@@ -923,7 +924,7 @@ const getLeaveTypes = async (req, res) => {
 
 const getLeaveBalance = async (req, res) => {
   try {
-    const { id, company_id, role } = req.user;
+    const { id, company_id } = req.user;
     const year = new Date().getFullYear();
 
     let query = knex('leave_balances as lb')
@@ -951,10 +952,7 @@ const getLeaveBalance = async (req, res) => {
     // ROLE BASED ACCESS
     // ===============================
 
-    if (role === 'admin') {
-      // ✅ Admin → all employees (no filter)
-    } else {
-      // ✅ Employee (and others) → self only
+    if (!hasAnyRole(req.user, ['admin', 'hr', 'manager', 'finance', 'ceo', 'superadmin'])) {
       query.andWhere('lb.employee_id', id);
     }
 
@@ -1139,7 +1137,7 @@ const getRelevantUsers = async (req, res) => {
       };
 
     // Admin/Manager -> only HR list
-    } else if (['admin', 'manager'].includes(userRole)) {
+    } else if (['admin', 'manager', 'ceo'].includes(userRole)) {
       const hrUsers = await getUsersByRole('hr');
       result = { hr: hrUsers };
 
@@ -1175,3 +1173,4 @@ module.exports = {
   backfillLeaveBalancesForLeaveType,
   reconcileMissingLeaveBalances
 };
+

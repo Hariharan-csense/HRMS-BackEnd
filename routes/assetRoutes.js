@@ -6,20 +6,21 @@ const {
   updateAsset,
   deleteAsset
 } = require('../controllers/assetController');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require('../middleware/rbacMiddleware');
 
 const router = express.Router();
 
 // Get all assets
-router.get('/', protect, getAssets);
+router.get('/', protect, requirePermission("assets", "view"), getAssets);
 
 // Add asset (Admin only)
-router.post('/add', protect, adminOnly, addAsset);
+router.post('/add', protect, requirePermission("assets", "create"), addAsset);
 
 // Update asset (Admin only)
-router.put('/:id', protect, adminOnly, updateAsset);
+router.put('/:id', protect, requirePermission("assets", "update"), updateAsset);
 
 // Delete asset (Admin only)
-router.delete('/:id', protect, adminOnly, deleteAsset);
+router.delete('/:id', protect, requirePermission("assets", "delete"), deleteAsset);
 
 module.exports = router;

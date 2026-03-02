@@ -8,26 +8,35 @@ const {
   getLeaveBalance,
   getRelevantUsers
 } = require('../controllers/leaveController');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission, requireAnyPermission } = require("../middleware/rbacMiddleware");
 
 const router = express.Router();
 
 // Apply leave (employee)
-router.post('/apply', protect, applyLeave);
+router.post('/apply', protect, requirePermission("leave", "create", { submodule: "apply" }), applyLeave);
 
 // Get applications (role-based)
-router.get('/applications', protect, getLeaveApplications);
+router.get('/applications', protect, requirePermission("leave", "view"), getLeaveApplications);
 
 // Approve/reject (HR/Admin only)
-router.put('/:id/status', protect, updateLeaveStatus);
+router.put(
+  '/:id/status',
+  protect,
+  requireAnyPermission([
+    { module: "leave", submodule: "approvals", action: "approve" },
+    { module: "leave", submodule: "approvals", action: "reject" },
+  ]),
+  updateLeaveStatus
+);
 
 // Get leave types
-router.get('/types', protect, getLeaveTypes);
+router.get('/types', protect, requirePermission("leave", "view", { submodule: "config" }), getLeaveTypes);
 
 // Get my leave balance
-router.get('/balance', protect, getLeaveBalance);
+router.get('/balance', protect, requirePermission("leave", "view", { submodule: "balance" }), getLeaveBalance);
 
-router.get('/relevant-users', protect, getRelevantUsers);
+router.get('/relevant-users', protect, requirePermission("leave", "view"), getRelevantUsers);
  
 
 module.exports = router;

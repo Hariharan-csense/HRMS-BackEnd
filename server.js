@@ -20,7 +20,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:8080','http://192.168.1.2:8080',  'http://localhost:5173'],
+  origin: ['http://localhost:3000', 'http://localhost:8080','http://192.168.1.11:8080',  'http://localhost:5173'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],

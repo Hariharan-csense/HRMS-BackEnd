@@ -6,6 +6,15 @@ const handlebars = require('handlebars');
 const pdf = require('html-pdf');
 const { sendEmailWithAttachment } = require('../utils/mailer'); // SMTP module
 
+const hasAnyRole = (userLike, allowedRoles = []) => {
+  const roleSet = new Set(
+    [userLike?.role, ...(Array.isArray(userLike?.roles) ? userLike.roles : [])]
+      .map((role) => String(role || '').toLowerCase().trim())
+      .filter(Boolean)
+  );
+  return allowedRoles.map((role) => String(role || '').toLowerCase().trim()).some((role) => roleSet.has(role));
+};
+
 
 
 
@@ -936,13 +945,14 @@ const getPayrollRecords = async (req, res) => {
       .select(
         'payroll_processing.*',
         'employees.first_name',
-        'employees.last_name'
+        'employees.last_name',
+        'employees.employee_id as employee_code'
       )
       .orderBy('month', 'desc');
 
-    if (req.user.role === 'employee') {
+    if (hasAnyRole(req.user, ['employee']) && !hasAnyRole(req.user, ['manager', 'hr', 'finance', 'admin', 'ceo', 'superadmin'])) {
       query = query.where('payroll_processing.employee_id', req.user.id);
-    } else if (req.user.role === 'manager') {
+    } else if (hasAnyRole(req.user, ['manager'])) {
       query = query.where(builder => {
         builder.where('payroll_processing.employee_id', req.user.id)
           .orWhereExists(function() {
@@ -1133,7 +1143,7 @@ const payslipPreview = async (req, res) => {
   }
 
   // 🔒 Employee access control
-  if (req.user.role === 'employee' && employee_id != req.user.id) {
+  if (hasAnyRole(req.user, ['employee']) && !hasAnyRole(req.user, ['manager', 'hr', 'finance', 'admin', 'ceo', 'superadmin']) && employee_id != req.user.id) {
     return res.status(403).json({ message: 'Access denied' });
   }
 
@@ -1482,7 +1492,8 @@ const getEmployeePayslips = async (req, res) => {
       .select(
         'payroll_processing.*',
         'employees.first_name',
-        'employees.last_name'
+        'employees.last_name',
+        'employees.employee_id as employee_code'
       )
       .orderBy('payroll_processing.month', 'desc');
 
@@ -1494,6 +1505,7 @@ const getEmployeePayslips = async (req, res) => {
     const transformedRecords = records.map(record => ({
       id: record.id.toString(),
       employeeId: record.employee_id.toString(),
+      employeeCode: record.employee_code || null,
       employeeName: `${record.first_name || ''} ${record.last_name || ''}`.trim(),
       month: record.month,
       payableDays: record.payable_days || 0,

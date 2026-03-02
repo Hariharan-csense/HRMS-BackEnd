@@ -4,10 +4,11 @@ const {
   getSalesAttendanceComparison,
   getSalesEmployeeDetail
 } = require('../controllers/salesAttendanceController');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 
 // Apply auth middleware to all routes
-router.use(protect, adminOnly);
+router.use(protect, requirePermission("my_analytics", "view"));
 
 // GET /api/sales-attendance/comparison - Get sales department attendance comparison
 router.get('/comparison', getSalesAttendanceComparison);

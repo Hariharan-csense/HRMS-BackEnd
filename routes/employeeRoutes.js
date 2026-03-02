@@ -8,9 +8,10 @@ const {
   updateEmployee,
   deleteEmployee
 } = require('../controllers/employeeController');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
 const { checkUserCreationSubscription } = require('../middleware/subscriptionMiddleware');
 const employeeUpload = require('../middleware/employeeUpload');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 
 const router = express.Router();
 
@@ -47,18 +48,18 @@ const handleEmployeeUpload = (req, res, next) => {
 };
 
 // Add employee - with subscription verification
-router.post('/add', protect, adminOnly, checkUserCreationSubscription, handleEmployeeUpload, addEmployee);
+router.post('/add', protect, requirePermission("employees", "create", { submodule: "list" }), checkUserCreationSubscription, handleEmployeeUpload, addEmployee);
 
 // Get all employees - with general subscription check
-router.get('/', protect, getEmployees);
+router.get('/', protect, requirePermission("employees", "view", { submodule: "list" }), getEmployees);
 
 // Get employee by ID - with general subscription check
-router.get('/:id', protect, getEmployeeById);
+router.get('/:id', protect, requirePermission("employees", "view", { submodule: "profile" }), getEmployeeById);
 
 // Update employee - without subscription verification (updates should be allowed)
-router.put('/:id', protect, adminOnly, handleEmployeeUpload, updateEmployee);
+router.put('/:id', protect, requirePermission("employees", "update", { submodule: "profile" }), handleEmployeeUpload, updateEmployee);
 
 // Delete employee - with subscription verification
-router.delete('/:id', protect, adminOnly, deleteEmployee);
+router.delete('/:id', protect, requirePermission("employees", "delete", { submodule: "list" }), deleteEmployee);
 
 module.exports = router;

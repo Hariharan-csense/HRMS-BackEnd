@@ -6,22 +6,23 @@ const {
   updateDepartment,
   deleteDepartment
 } = require('../controllers/departmentController');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 
 const router = express.Router();
 
 
 router.get('/public', getDepartments);
 
-router.get('/', protect, getDepartments);
+router.get('/', protect, requirePermission("organization", "view", { submodule: "departments" }), getDepartments);
 
 // Add department (Admin only)
-router.post('/add', protect, adminOnly, addDepartment);
+router.post('/add', protect, requirePermission("organization", "create", { submodule: "departments" }), addDepartment);
 
 // Update department (Admin only)
-router.put('/:id', protect, adminOnly, updateDepartment);
+router.put('/:id', protect, requirePermission("organization", "update", { submodule: "departments" }), updateDepartment);
 
 // Delete department (Admin only)
-router.delete('/:id', protect, adminOnly, deleteDepartment);
+router.delete('/:id', protect, requirePermission("organization", "delete", { submodule: "departments" }), deleteDepartment);
 
 module.exports = router;

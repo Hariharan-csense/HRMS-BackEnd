@@ -1,4 +1,5 @@
 const knex = require('../db/db');
+const { hasAnyRole } = require('../middleware/authMiddleware');
 
 // Get today's client attendance for employee
 // const getTodayClientAttendance = async (req, res) => {
@@ -61,7 +62,7 @@ const getTodayClientAttendance = async (req, res) => {
     // ===============================
     // ROLE CONDITION
     // ===============================
-    if (role !== 'admin') {
+    if (!hasAnyRole(req.user, ['admin', 'ceo', 'superadmin', 'hr'])) {
       // Employee → only own attendance
       query.andWhere('client_attendance.employee_id', userId);
     }
@@ -419,3 +420,4 @@ module.exports = {
   getActiveCheckIn,
   getAllClientAttendance
 };
+

@@ -271,7 +271,7 @@ const getExpenses = async (req, res) => {
     let expenses;
 
     // 🔐 ADMIN + FINANCE → All expenses
-    if (req.user.role === 'admin' || req.user.role === 'finance') {
+    if (['admin', 'finance', 'ceo', 'superadmin'].includes(String(req.user.role || '').toLowerCase())) {
       expenses = await knex('expenses as e')
         .join('employees as emp', 'e.employee_id', 'emp.id')
         .select(
@@ -503,7 +503,7 @@ const deleteExpense = async (req, res) => {
       return res.status(404).json({ message: 'Expense not found or access denied' });
     }
 
-    const isAdminOrFinance = req.user.role === 'admin' || req.user.role === 'finance';
+    const isAdminOrFinance = ['admin', 'finance', 'ceo', 'superadmin'].includes(String(req.user.role || '').toLowerCase());
     const isOwner = Number(expense.employee_id) === Number(req.user.id);
 
     if (!isAdminOrFinance && !isOwner) {

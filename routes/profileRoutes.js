@@ -4,7 +4,8 @@ const router = express.Router();
 const profilePhotoUpload = require('../middleware/profilePhotoUpload');
 
 
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 const {
   getMyProfile,
   updateMyProfile,
@@ -21,12 +22,12 @@ router.get('/me', getMyProfile);
 
 router.put(
   '/me',
-  protect,
+  requirePermission("employees", "update", { submodule: "profile" }),
   profilePhotoUpload,   // ✅ ONLY for profile
   updateMyProfile
 );
 
 // DELETE admin account + full organization data
-router.delete('/me/account', protect, adminOnly, deleteMyAccountAndOrganization);
+router.delete('/me/account', requirePermission("employees", "delete", { submodule: "profile" }), deleteMyAccountAndOrganization);
 
 module.exports = router;

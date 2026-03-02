@@ -402,10 +402,19 @@ const getEmployees = async (req, res) => {
   }
 
   try {
+    const roleSet = new Set(
+      [req.user.role, ...(Array.isArray(req.user.roles) ? req.user.roles : [])]
+        .map((role) => String(role || "").toLowerCase().trim())
+        .filter(Boolean)
+    );
+    const isManager = roleSet.has("manager");
+    const canViewAllCompanyEmployees =
+      roleSet.has("admin") || roleSet.has("ceo") || roleSet.has("hr");
+
     let managerDepartmentId = null;
 
     // 🔐 If MANAGER → Get department_id from employees table
-    if (req.user.role === "manager") {
+    if (isManager) {
       const manager = await knex("employees")
         .select("department_id")
         .where("id", req.user.id)   // employees.id
@@ -433,16 +442,12 @@ const getEmployees = async (req, res) => {
     // 🔐 ROLE BASED ACCESS
 
     // MANAGER → Same department employees
-    if (req.user.role === "manager") {
+    if (isManager) {
       baseQuery.where("e.department_id", managerDepartmentId);
     }
 
     // NON-ADMIN & NON-MANAGER → Only self
-    if (
-      req.user.role !== "admin" &&
-      req.user.role !== "manager" &&
-      req.user.role !== "hr"
-    ) {
+    if (!canViewAllCompanyEmployees && !isManager) {
       baseQuery.where("e.id", req.user.id);
     }
 

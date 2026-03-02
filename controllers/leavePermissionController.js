@@ -1,6 +1,7 @@
 // src/controllers/leavePermissionController.js
 const knex = require('../db/db');
 const upload = require('../middleware/leaveAttachmentUpload');
+const { hasAnyRole } = require('../middleware/authMiddleware');
 const { sendLeavePermissionNotification } = require('../utils/sendLeavePermissionStatusNotification');
 const { sendLeavePermissionStatusNotification } = require('../utils/sendLeavePermissionStatusNotification');
 const { generateAutoNumber } = require('../utils/generateAutoNumber');
@@ -226,7 +227,7 @@ const applyLeavePermission = async (req, res) => {
       // ===============================
       // 4️⃣ ADMIN → ALL HR
       // ===============================
-      else if (userRole === 'admin') {
+      else if (userRole === 'admin' || userRole === 'ceo') {
         // Get ALL HR users
         const hrUsers = await knex('employees')
           .where({
@@ -320,13 +321,13 @@ const getLeavePermissionApplications = async (req, res) => {
       )
       .orderBy('leave_permissions.created_at', 'desc');
 
-    if (req.user.role === 'employee') {
+    if (hasAnyRole(req.user, ['employee']) && !hasAnyRole(req.user, ['manager', 'hr', 'admin', 'ceo', 'superadmin'])) {
       query = query.where(
         'leave_permissions.employee_id',
         req.user.id
       );
     } 
-    else if (req.user.role === 'manager') {
+    else if (hasAnyRole(req.user, ['manager'])) {
       query = query.where(builder => {
         builder
           .where('leave_permissions.employee_id', req.user.id)
@@ -407,9 +408,21 @@ const updateLeavePermissionStatus = async (req, res) => {
     // ===============================
     // AUTHORIZATION CHECK
     // ===============================
+    const roleNames = new Set(
+      [
+        req.user?.role,
+        ...(Array.isArray(req.user?.roles) ? req.user.roles : []),
+      ]
+        .map((role) => String(role || '').toLowerCase().trim())
+        .filter(Boolean)
+    );
+
     let isAuthorized = false;
-    if (req.user.role === 'hr') isAuthorized = true;
-    if (req.user.role === 'manager' && applicant.department_id) {
+    if (roleNames.has('hr') || roleNames.has('admin') || roleNames.has('ceo')) {
+      isAuthorized = true;
+    }
+
+    if (!isAuthorized && roleNames.has('manager') && applicant.department_id) {
       const manager = await knex('employees')
         .where({
           id: req.user.id,
@@ -580,7 +593,7 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
     // ===============================
     // 4️⃣ ADMIN → ALL HR
     // ===============================
-    else if (userRole === 'admin') {
+    else if (userRole === 'admin' || userRole === 'ceo') {
       const hrUsers = await knex('employees')
         .where({
           company_id: companyId,
@@ -633,3 +646,4 @@ module.exports = {
   updateLeavePermissionStatus,
   getLeavePermissionRelevantUsers
 };
+

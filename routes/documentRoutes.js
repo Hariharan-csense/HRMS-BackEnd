@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 const {
   getEmployeeDocuments,
   downloadDocument
@@ -30,9 +31,9 @@ router.get('/debug/all', async (req, res) => {
 });
 
 // GET employee documents
-router.get('/', getEmployeeDocuments);
+router.get('/', requirePermission("employees", "view", { submodule: "profile" }), getEmployeeDocuments);
 
 // DOWNLOAD document
-router.get('/:id/download', downloadDocument);
+router.get('/:id/download', requirePermission("employees", "view", { submodule: "profile" }), downloadDocument);
 
 module.exports = router;

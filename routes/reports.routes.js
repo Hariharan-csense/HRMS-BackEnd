@@ -10,18 +10,16 @@ const {
   getExpenseReport,
 } = require('../controllers/reports.controller');
 
-const { financeOnly, protect, restrictTo } = require('../middleware/authMiddleware'); // adjust path if needed
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 
 // Apply auth to all reports routes
 
 
-router.get('/attendance', protect, getAttendanceReport); // any authenticated user
-
-router.get('/payroll', protect, financeOnly, getPayrollReport); // finance or admin
-
-router.get('/expenses', protect, restrictTo('admin', 'finance'), getExpenseReport);
-
-router.get('/leaves', protect, restrictTo('admin', 'hr', 'manager'), getLeaveReport);
+router.get('/attendance', protect, requirePermission("reports", "view", { submodule: "attendance" }), getAttendanceReport);
+router.get('/payroll', protect, requirePermission("reports", "view", { submodule: "payroll" }), getPayrollReport);
+router.get('/expenses', protect, requirePermission("reports", "view", { submodule: "finance" }), getExpenseReport);
+router.get('/leaves', protect, requirePermission("reports", "view", { submodule: "leave" }), getLeaveReport);
 // admin only
 
 //router.get('/sensitive', protect, restrictTo('admin', 'hr'), handler); // flexible

@@ -1,26 +1,27 @@
 const express = require('express');
 const router = express.Router();
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
 const leaveTypeController = require('../controllers/leaveTypeController');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 //const updateLeaveTypeById = require('../controllers/leaveTypeController')
 
 router.post(
   '/leave-types',
   protect,
-  adminOnly,
+  requirePermission("leave", "create", { submodule: "config" }),
   leaveTypeController.createLeaveType
 );
 router.put(
   '/leave-types/:id',
   protect,
-  adminOnly,
+  requirePermission("leave", "update", { submodule: "config" }),
   leaveTypeController.updateLeaveTypeById
 );
 
 router.delete(
   '/leave-types/:id',
   protect,
-  adminOnly,
+  requirePermission("leave", "delete", { submodule: "config" }),
   leaveTypeController.deleteLeaveTypeById
 );
 

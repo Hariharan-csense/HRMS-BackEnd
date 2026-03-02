@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 const {
   getActivities,
   logActivity
@@ -11,9 +12,9 @@ const {
 router.use(protect);
 
 // GET user activities
-router.get('/', getActivities);
+router.get('/', requirePermission("employees", "view", { submodule: "profile" }), getActivities);
 
 // POST log new activity
-router.post('/', logActivity);
+router.post('/', requirePermission("employees", "create", { submodule: "profile" }), logActivity);
 
 module.exports = router;

@@ -8,7 +8,8 @@ const {
   deleteTicket,
   getUsersForAssignment
 } = require('../controllers/ticketController');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect } = require('../middleware/authMiddleware');
+const { requirePermission } = require("../middleware/rbacMiddleware");
 
 const router = express.Router();
 
@@ -16,21 +17,21 @@ const router = express.Router();
 router.use(protect);
 
 // POST /api/tickets - Create new ticket
-router.post('/', createTicket);
+router.post('/', requirePermission("tickets", "create"), createTicket);
 
 // GET /api/tickets - Get all tickets with filters and pagination
-router.get('/', getTickets);
+router.get('/', requirePermission("tickets", "view"), getTickets);
 
 // GET /api/tickets/users - Get users for ticket assignment
-router.get('/users', getUsersForAssignment);
+router.get('/users', requirePermission("tickets", "view"), getUsersForAssignment);
 
 // GET /api/tickets/:id - Get single ticket
-router.get('/:id', getTicket);
+router.get('/:id', requirePermission("tickets", "view"), getTicket);
 
 // PUT /api/tickets/:id - Update ticket
-router.put('/:id', updateTicket);
+router.put('/:id', requirePermission("tickets", "update"), updateTicket);
 
 // DELETE /api/tickets/:id - Delete ticket
-router.delete('/:id', deleteTicket);
+router.delete('/:id', requirePermission("tickets", "delete"), deleteTicket);
 
 module.exports = router;
