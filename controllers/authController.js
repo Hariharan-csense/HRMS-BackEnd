@@ -501,10 +501,24 @@ const refreshAccessToken = async (req, res) => {
   }
 
   try {
-    const decoded = jwt.verify(
-      refreshToken,
-      process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET
-    );
+    let decoded;
+    const refreshSecret = process.env.JWT_REFRESH_SECRET;
+    const accessSecret = process.env.JWT_SECRET;
+
+    try {
+      decoded = jwt.verify(refreshToken, refreshSecret || accessSecret);
+    } catch (error) {
+      const isInvalidSignature =
+        error?.name === 'JsonWebTokenError' &&
+        String(error?.message || '').toLowerCase().includes('invalid signature');
+
+      if (isInvalidSignature && refreshSecret && accessSecret && refreshSecret !== accessSecret) {
+        // Fallback: accept tokens signed with JWT_SECRET if env mismatched previously
+        decoded = jwt.verify(refreshToken, accessSecret);
+      } else {
+        throw error;
+      }
+    }
 
     if (decoded.tokenType && decoded.tokenType !== 'refresh') {
       return res.status(401).json({ message: 'Invalid token type' });

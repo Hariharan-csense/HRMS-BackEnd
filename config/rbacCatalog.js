@@ -57,6 +57,7 @@ const RBAC_MODULE_CATALOG = [
       { key: "balance", label: "Leave Balance" },
       { key: "approvals", label: "Leave Approvals" },
       { key: "config", label: "Leave Config" },
+      { key: "leave_types", label: "Leave Types" },
       { key: "applications", label: "Applications" },
       { key: "permission", label: "Permission" },
       { key: "configuration", label: "Configuration" },

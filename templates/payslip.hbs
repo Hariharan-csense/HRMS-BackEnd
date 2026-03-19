@@ -490,14 +490,14 @@
             <td class="amount deduction-amount">{{tds}}</td>
           </tr>
           <tr>
-            <td>Total Earnings</td>
-            <td class="amount">{{total_expenses}}</td>
+            <td>Leave Travel Allowance</td>
+            <td class="amount">{{lta}}</td>
             <td>Other Deductions</td>
             <td class="amount deduction-amount">{{other_deductions}}</td>
           </tr>
           <tr class="totals">
             <td>Gross Salary</td>
-            <td class="amount">{{monthly_net}}</td>
+            <td class="amount">{{gross}}</td>
             <td>Total Deductions</td>
             <td class="amount deduction-amount">{{monthly_deductions}}</td>
           </tr>
@@ -505,7 +505,7 @@
 
         <div class="highlight-box">
           <h3>Net Salary for {{month}}</h3>
-          <div class="highlight-amount">₹{{monthly_net}}</div>
+          <div class="highlight-amount">&#8377;{{monthly_net}}</div>
         </div>
       </div>
 
@@ -539,3 +539,4 @@
 </body>
 
 </html>
+

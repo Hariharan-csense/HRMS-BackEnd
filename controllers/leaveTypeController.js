@@ -3,7 +3,7 @@ const { backfillLeaveBalancesForLeaveType } = require('../services/leaveBalanceS
 
 exports.createLeaveType = async (req, res) => {
   try {
-    const companyId = req.user.company_id; // 🔐 from JWT
+    const companyId = req.user.company_id;
 
     const {
       name,
@@ -14,14 +14,12 @@ exports.createLeaveType = async (req, res) => {
       description
     } = req.body;
 
-    // validation
     if (!name || annual_limit === undefined) {
       return res.status(400).json({
         message: 'name and annual_limit are required'
       });
     }
 
-    // 🔢 AUTO GENERATE leave_type_id (LVT001 format)
     const lastLeaveType = await knex('leave_types')
       .where({ company_id: companyId })
       .orderBy('id', 'desc')
@@ -75,7 +73,8 @@ exports.createLeaveType = async (req, res) => {
 exports.updateLeaveTypeById = async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const id = Number(req.params.id); // 🔥 force number
+    const id = Number(req.params.id);
+    const currentYear = new Date().getFullYear();
 
     const {
       name,
@@ -87,7 +86,6 @@ exports.updateLeaveTypeById = async (req, res) => {
       status
     } = req.body;
 
-    // 🔍 Check record exists first
     const leaveType = await knex('leave_types')
       .where({ id })
       .first();
@@ -98,7 +96,6 @@ exports.updateLeaveTypeById = async (req, res) => {
       });
     }
 
-    // 🔐 Company check
     if (leaveType.company_id !== companyId) {
       return res.status(403).json({
         message: 'Unauthorized to update this leave type'
@@ -118,6 +115,45 @@ exports.updateLeaveTypeById = async (req, res) => {
         updated_at: knex.fn.now()
       });
 
+    if (annual_limit !== undefined) {
+      const hasTotalColumn = await knex.schema.hasColumn('leave_balances', 'total');
+      const balances = await knex('leave_balances')
+        .where({
+          company_id: companyId,
+          leave_type_id: id,
+          year: currentYear
+        })
+        .select('id', 'availed');
+
+      const nextTotal = Number(annual_limit) || 0;
+
+      for (const balance of balances) {
+        const availed = Number(balance.availed) || 0;
+        const updatePayload = {
+          opening_balance: nextTotal,
+          available: Math.max(nextTotal - availed, 0),
+          updated_at: knex.fn.now()
+        };
+
+        if (hasTotalColumn) {
+          updatePayload.total = nextTotal;
+        }
+
+        await knex('leave_balances')
+          .where({ id: balance.id })
+          .update(updatePayload);
+      }
+    }
+
+    try {
+      const backfillResult = await backfillLeaveBalancesForLeaveType(companyId, id);
+      console.log(
+        `Leave balance sync completed for leave type ${id} - employees: ${backfillResult.employeesProcessed}, inserted: ${backfillResult.inserted}`
+      );
+    } catch (backfillError) {
+      console.error(`Leave balance sync failed for leave type ${id}:`, backfillError);
+    }
+
     return res.status(200).json({
       message: 'Leave type updated successfully'
     });
@@ -133,9 +169,8 @@ exports.updateLeaveTypeById = async (req, res) => {
 exports.deleteLeaveTypeById = async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const id = Number(req.params.id); // ensure number
+    const id = Number(req.params.id);
 
-    // 🔍 check record exists
     const leaveType = await knex('leave_types')
       .where({ id })
       .first();
@@ -146,20 +181,26 @@ exports.deleteLeaveTypeById = async (req, res) => {
       });
     }
 
-    // 🔐 company validation
     if (leaveType.company_id !== companyId) {
       return res.status(403).json({
         message: 'Unauthorized to delete this leave type'
       });
     }
 
-    // 🧹 soft delete
-    await knex('leave_types')
-      .where({ id })
-      .update({
-        status: 'inactive',
-        updated_at: knex.fn.now()
+    const linkedApplications = await knex('leave_applications')
+      .where({ company_id: companyId, leave_type_id: id })
+      .count({ count: '*' })
+      .first();
+
+    if (Number(linkedApplications?.count || 0) > 0) {
+      return res.status(400).json({
+        message: 'This leave type is already used in leave applications and cannot be deleted'
       });
+    }
+
+    await knex('leave_types')
+      .where({ id, company_id: companyId })
+      .del();
 
     return res.status(200).json({
       message: 'Leave type deleted successfully'

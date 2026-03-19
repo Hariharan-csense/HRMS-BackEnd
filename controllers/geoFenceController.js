@@ -19,7 +19,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 // Update client with geo-fence coordinates
 const updateClientGeoFence = async (req, res) => {
   try {
-    const { clientId } = req.params;
+    const clientId = req.params.id || req.params.clientId;
     const { latitude, longitude, radius = 50 } = req.body;
     const companyId = req.user.company_id;
 

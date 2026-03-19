@@ -11,6 +11,27 @@ const {
   reconcileMissingLeaveBalances
 } = require('../services/leaveBalanceService');
 
+// approved_by in leave_applications references employees.id.
+// Resolve from auth context where req.user.id may be users.id for admin tokens.
+const resolveApproverEmployeeId = async (req, companyId) => {
+  if (!companyId) return null;
+
+  const directEmployee = await knex('employees')
+    .where({ id: Number(req.user?.id), company_id: companyId })
+    .first();
+  if (directEmployee) return Number(directEmployee.id);
+
+  if (req.user?.email) {
+    const byEmail = await knex('employees')
+      .where('company_id', companyId)
+      .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+      .first();
+    if (byEmail) return Number(byEmail.id);
+  }
+
+  return null;
+};
+
 // Auto generate IDs per company
 const generateId = async (table, prefix, companyId) => {
   const last = await knex(table)
@@ -722,11 +743,13 @@ const updateLeaveStatus = async (req, res) => {
     // ===============================
     // UPDATE LEAVE APPLICATION
     // ===============================
+    const approverEmployeeId = await resolveApproverEmployeeId(req, companyId);
+
     await knex('leave_applications')
       .where({ id })
       .update({
         status,
-        approved_by: req.user.id,
+        approved_by: approverEmployeeId,
         approved_at: knex.fn.now(),
         remarks: remarks || null
       });
@@ -926,6 +949,8 @@ const getLeaveBalance = async (req, res) => {
   try {
     const { id, company_id } = req.user;
     const year = new Date().getFullYear();
+
+    await reconcileMissingLeaveBalances({ companyId: company_id, year });
 
     let query = knex('leave_balances as lb')
       .join('leave_types as lt', 'lb.leave_type_id', 'lt.id')

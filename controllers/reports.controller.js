@@ -29,7 +29,7 @@ const resolveCompanyId = async (req) => {
 const getAttendanceReport = async (req, res) => {
   try {
     const companyId = await resolveCompanyId(req);
-    const year = getYear(req); // e.g., 2026
+    const year = getYear(req); // fallback year when dates not provided
 
     if (!companyId) {
       return res.status(400).json({
@@ -38,33 +38,96 @@ const getAttendanceReport = async (req, res) => {
       });
     }
 
+    const {
+      startDate,
+      endDate,
+      employeeId,
+      departmentId,
+      status,
+    } = req.query;
+
     const attendanceHasCompanyId = await knex.schema.hasColumn('attendance', 'company_id');
 
-    // Fetch monthly aggregates (only months with attendance data)
-    let trendQuery = knex('attendance')
-      .select(
-        knex.raw("DATE_FORMAT(check_in, '%Y-%m') as ym_key"),
-        knex.raw("DATE_FORMAT(check_in, '%M') as month_name"),
-        knex.raw("SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END) as present"),
-        knex.raw("SUM(CASE WHEN status = 'absent' THEN 1 ELSE 0 END) as absent"),
-        knex.raw("SUM(CASE WHEN status = 'half' THEN 1 ELSE 0 END) as half")
-      );
+    const applyCompanyScope = (query) => {
+      if (attendanceHasCompanyId) {
+        return query.where('a.company_id', companyId);
+      }
+      return query.where('e.company_id', companyId);
+    };
 
-    if (attendanceHasCompanyId) {
-      trendQuery = trendQuery.where('attendance.company_id', companyId);
+    // ========= Base scoped query (for reuse) =========
+    let base = knex('attendance as a')
+      .leftJoin('employees as e', 'a.employee_id', 'e.id')
+      .leftJoin('departments as d', 'e.department_id', 'd.id');
+
+    base = applyCompanyScope(base);
+
+    if (startDate) {
+      base = base.whereRaw('DATE(a.check_in) >= ?', [startDate]);
     } else {
-      trendQuery = trendQuery
-        .join('employees as aemp', 'aemp.id', 'attendance.employee_id')
-        .where('aemp.company_id', companyId);
+      // default to start of year if no range provided
+      base = base.whereRaw('YEAR(a.check_in) = ?', [year]);
     }
 
-    const trendRaw = await trendQuery
-      .whereNotNull('check_in')
-      .andWhereRaw('YEAR(check_in) = ?', [year])
-      .groupByRaw("DATE_FORMAT(check_in, '%Y-%m'), DATE_FORMAT(check_in, '%M')")
-      .orderByRaw("DATE_FORMAT(check_in, '%Y-%m')");
+    if (endDate) {
+      base = base.whereRaw('DATE(a.check_in) <= ?', [endDate]);
+    }
 
-    // Create a map for quick lookup
+    if (employeeId) {
+      // accept employee code or numeric id
+      base = base.where(function (qb) {
+        qb.where('e.employee_id', employeeId);
+        if (/^\\d+$/.test(String(employeeId))) {
+          qb.orWhere('e.id', Number(employeeId));
+        }
+      });
+    }
+
+    if (departmentId) {
+      base = base.where('e.department_id', departmentId);
+    }
+
+    if (status) {
+      base = base.where('a.status', status);
+    }
+
+    // ========= Detailed rows (for CSV/export) =========
+    const rows = await base
+      .clone()
+      .select(
+        'a.id',
+        'e.employee_id as employeeCode',
+        knex.raw("CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,'')) as employeeName"),
+        'e.mobile as phoneNumber',
+        'd.name as department',
+        'a.status',
+        knex.raw('DATE(a.check_in) as date'),
+        knex.raw("TIME_FORMAT(a.check_in, '%H:%i:%s') as checkInTime"),
+        knex.raw("TIME_FORMAT(a.check_out, '%H:%i:%s') as checkOutTime"),
+        'a.hours_worked as hoursWorked',
+        'a.overtime_hours as overtimeHours',
+        'a.device_info as deviceInfo',
+        'a.auto_flag as autoFlag',
+        'a.flag_reason as flagReason',
+        'a.check_in_location',
+        'a.check_out_location'
+      )
+      .orderBy('a.check_in', 'desc');
+
+    // ========= Monthly trend (respecting filters) =========
+    const trendRaw = await base
+      .clone()
+      .whereNotNull('a.check_in')
+      .select(
+        knex.raw("DATE_FORMAT(a.check_in, '%Y-%m') as ym_key"),
+        knex.raw("DATE_FORMAT(a.check_in, '%M') as month_name"),
+        knex.raw("SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present"),
+        knex.raw("SUM(CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END) as absent"),
+        knex.raw("SUM(CASE WHEN a.status = 'half' THEN 1 ELSE 0 END) as half")
+      )
+      .groupByRaw("DATE_FORMAT(a.check_in, '%Y-%m'), DATE_FORMAT(a.check_in, '%M')")
+      .orderByRaw("DATE_FORMAT(a.check_in, '%Y-%m')");
+
     const monthMap = {};
     trendRaw.forEach(row => {
       monthMap[row.month_name] = {
@@ -74,7 +137,6 @@ const getAttendanceReport = async (req, res) => {
       };
     });
 
-    // Full 12 months with 0s for missing months
     const monthsOrder = [
       'January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'
@@ -87,51 +149,30 @@ const getAttendanceReport = async (req, res) => {
       half: monthMap[month]?.half || 0,
     }));
 
-    // Summary stats
+    // ========= Summary (scoped to same filters) =========
     const totalEmployees = await knex('employees')
       .count('* as count')
       .where({ company_id: companyId })
       .first();
 
-    // Company-wide average attendance % (weighted by actual attendance records)
-    let avgAttendanceQuery = knex('attendance')
+    const avgAttendanceRaw = await base
+      .clone()
+      .whereNotNull('a.check_in')
       .select(
-        knex.raw("SUM(CASE WHEN status = 'present' THEN 1 WHEN status = 'half' THEN 0.5 ELSE 0 END) / COUNT(*) * 100 as avg_att")
-      );
-
-    if (attendanceHasCompanyId) {
-      avgAttendanceQuery = avgAttendanceQuery.where('attendance.company_id', companyId);
-    } else {
-      avgAttendanceQuery = avgAttendanceQuery
-        .join('employees as aemp', 'aemp.id', 'attendance.employee_id')
-        .where('aemp.company_id', companyId);
-    }
-
-    const avgAttendanceRaw = await avgAttendanceQuery
-      .whereNotNull('check_in')
-      .andWhereRaw('YEAR(check_in) = ?', [year])
+        knex.raw("SUM(CASE WHEN a.status = 'present' THEN 1 WHEN a.status = 'half' THEN 0.5 ELSE 0 END) / COUNT(*) * 100 as avg_att")
+      )
       .first();
 
-    // Today's stats (use DATE(check_in) for accurate date match)
-    let todayStatsQuery = knex('attendance')
-      .select('attendance.status')
-      .count('* as count');
-
-    if (attendanceHasCompanyId) {
-      todayStatsQuery = todayStatsQuery.where('attendance.company_id', companyId);
-    } else {
-      todayStatsQuery = todayStatsQuery
-        .join('employees as aemp', 'aemp.id', 'attendance.employee_id')
-        .where('aemp.company_id', companyId);
-    }
-
-    const todayStats = await todayStatsQuery
-      .whereNotNull('check_in')
-      .whereRaw('DATE(check_in) = CURDATE()')
-      .groupBy('attendance.status');
+    const todayStats = await base
+      .clone()
+      .whereNotNull('a.check_in')
+      .whereRaw('DATE(a.check_in) = CURDATE()')
+      .select('a.status')
+      .count('* as count')
+      .groupBy('a.status');
 
     const presentToday = todayStats.find(s => s.status === 'present')?.count || 0;
-    const onLeaveToday = todayStats.find(s => s.status === 'leave')?.count || 0; // will be 0 if no 'leave' status
+    const onLeaveToday = todayStats.find(s => s.status === 'leave')?.count || 0;
 
     const summary = {
       totalEmployees: totalEmployees?.count || 0,
@@ -140,9 +181,9 @@ const getAttendanceReport = async (req, res) => {
       onLeave: onLeaveToday,
     };
 
-    res.json({
+    return res.json({
       success: true,
-      data: { trend, summary },
+      data: { trend, summary, rows },
     });
   } catch (err) {
     console.error('Attendance report error:', err);

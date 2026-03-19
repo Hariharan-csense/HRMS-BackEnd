@@ -7,6 +7,103 @@ const scanReceipt = require('../utils/scanReceipt');
 const moment = require('moment');
 const { sendExpenseStatusNotification } = require('../utils/sendExpenseStatusMail');
 
+const normalizeExpenseCategory = (raw) => {
+  if (!raw) return null;
+  const value = String(raw).trim().toLowerCase();
+  const mapped = {
+    travel: 'Travel',
+    food: 'Food',
+    accommodation: 'Accommodation',
+    accomodation: 'Accommodation',
+    others: 'Others',
+    other: 'Others'
+  };
+  return mapped[value] || String(raw).trim();
+};
+
+const parseExpenseDateToISO = (raw) => {
+  if (!raw) return null;
+  const parsed = moment(String(raw).trim(), ['YYYY-MM-DD', 'DD/MM/YYYY', 'DD-MM-YYYY', moment.ISO_8601], true);
+  if (!parsed.isValid()) return null;
+  return parsed.format('YYYY-MM-DD');
+};
+
+const assertClientIsAllowed = async ({ companyId, employeeId, userType, clientId }) => {
+  if (!clientId) return null;
+
+  const client = await knex('clients')
+    .select('id', 'client_name', 'assigned_to', 'company_id')
+    .where({ id: clientId, company_id: companyId })
+    .first();
+
+  if (!client) return null;
+
+  if (String(userType || '').toLowerCase() === 'employee' && Number(client.assigned_to) !== Number(employeeId)) {
+    return null;
+  }
+
+  return client;
+};
+
+let ensureExpenseDraftsTablePromise = null;
+const ensureExpenseDraftsTable = async () => {
+  if (!ensureExpenseDraftsTablePromise) {
+    ensureExpenseDraftsTablePromise = (async () => {
+      const exists = await knex.schema.hasTable('expense_drafts');
+      if (exists) return true;
+
+      await knex.schema.createTable('expense_drafts', (table) => {
+        table.increments('id').primary();
+        table.integer('company_id').unsigned().notNullable().index();
+        table.integer('employee_id').unsigned().notNullable().index();
+        table.integer('client_id').unsigned().nullable().index();
+        table.text('draft_data', 'longtext').notNullable(); // JSON string
+        table.timestamps(true, true);
+        table.unique(['company_id', 'employee_id']);
+      });
+
+      return true;
+    })().catch((err) => {
+      ensureExpenseDraftsTablePromise = null;
+      throw err;
+    });
+  }
+
+  return ensureExpenseDraftsTablePromise;
+};
+
+let ensureExpensesClientIdColumnPromise = null;
+const ensureExpensesClientIdColumn = async () => {
+  if (!ensureExpensesClientIdColumnPromise) {
+    ensureExpensesClientIdColumnPromise = (async () => {
+      const hasColumn = await knex.schema.hasColumn('expenses', 'client_id');
+      if (hasColumn) return true;
+
+      try {
+        await knex.schema.alterTable('expenses', (table) => {
+          table.integer('client_id').unsigned().nullable().index();
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    })().catch((err) => {
+      ensureExpensesClientIdColumnPromise = null;
+      throw err;
+    });
+  }
+
+  return ensureExpensesClientIdColumnPromise;
+};
+
+const hasExpensesClientIdColumn = async () => {
+  try {
+    return await knex.schema.hasColumn('expenses', 'client_id');
+  } catch {
+    return false;
+  }
+};
+
 
 // const submitExpense = async (req, res) => {
 //   try {
@@ -102,8 +199,9 @@ const submitExpense = async (req, res) => {
     const companyId = req.user.company_id;
     const employeeId = req.user.id;
     const employeeName = req.user.name || '';
+    const userType = req.user.type;
 
-    let { category, amount, expense_date, description } = req.body;
+    let { category, amount, expense_date, description, client_id } = req.body;
 
     console.log('Uploaded file 👉', req.file); // DEBUG
 
@@ -209,6 +307,15 @@ const submitExpense = async (req, res) => {
     }
     expense_date = parsedDate.format('YYYY-MM-DD');
 
+    // Optional: validate assigned client (if provided)
+    const clientId = client_id ? Number(client_id) : null;
+    if (clientId) {
+      const client = await assertClientIsAllowed({ companyId, employeeId, userType, clientId });
+      // if (!client) {
+      //   return res.status(400).json({ message: 'Invalid assigned client' });
+      // }
+    }
+
     // 📁 Receipt path
     const receiptPath = req.file
       ? `/uploads/expenses/company_${companyId}/${req.file.filename}`
@@ -230,12 +337,15 @@ const submitExpense = async (req, res) => {
 
     const expense_id = `EXP${nextNumber.toString().padStart(3, '0')}`;
 
+    const canStoreClientId = await ensureExpensesClientIdColumn();
+
     // 📝 Insert expense
 const [id] = await knex('expenses').insert({
   company_id: companyId,
   expense_id,
   employee_id: employeeId,
   employee_name: employeeName,  // ✅ add this
+  ...(canStoreClientId ? { client_id: clientId || null } : {}),
   category,
   amount: parseFloat(amount),
   expense_date,
@@ -260,6 +370,135 @@ const [id] = await knex('expenses').insert({
   }
 };
 
+const submitExpensesBulk = async (req, res) => {
+  const companyId = req.user.company_id;
+  const employeeId = req.user.id;
+  const employeeName = req.user.name || '';
+  const userType = req.user.type;
+
+  if (!companyId) {
+    return res.status(400).json({ message: 'You are not assigned to any company' });
+  }
+
+  try {
+    const clientId = req.body.client_id ? Number(req.body.client_id) : null;
+    // if (!clientId || Number.isNaN(clientId)) {
+    //   return res.status(400).json({ message: 'Assigned client is required' });
+    // }
+
+    let client = null;
+    if (clientId) {
+      client = await assertClientIsAllowed({ companyId, employeeId, userType, clientId });
+      if (!client) {
+        return res.status(400).json({ message: 'Invalid assigned client' });
+      }
+    }
+
+    const canStoreClientId = await ensureExpensesClientIdColumn();
+
+    let items = req.body.expenses;
+    if (typeof items === 'string') {
+      items = JSON.parse(items);
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: 'At least one expense is required' });
+    }
+
+    if (items.length > 25) {
+      return res.status(400).json({ message: 'Too many expenses in one request (max 25)' });
+    }
+
+    const files = Array.isArray(req.files) ? req.files : [];
+    const filesByField = {};
+    for (const file of files) {
+      if (file && file.fieldname) {
+        filesByField[file.fieldname] = file;
+      }
+    }
+
+    const inserted = await knex.transaction(async (trx) => {
+      const lastExpense = await trx('expenses')
+        .where({ company_id: companyId })
+        .orderBy('id', 'desc')
+        .first();
+
+      let nextNumber = 1;
+      if (lastExpense && lastExpense.expense_id) {
+        const match = String(lastExpense.expense_id).match(/EXP(\d+)/);
+        if (match) {
+          nextNumber = parseInt(match[1]) + 1;
+        }
+      }
+
+      const created = [];
+
+      for (let index = 0; index < items.length; index++) {
+        const row = items[index] || {};
+        const category = normalizeExpenseCategory(row.category);
+        const amount = Number(row.amount);
+        const expenseDate =
+          parseExpenseDateToISO(row.expense_date || row.date) || moment().format('YYYY-MM-DD');
+        const description = row.description ? String(row.description).trim() : null;
+        const rowClientId = row.client_id ? Number(row.client_id) : null;
+
+        if (!category || !Number.isFinite(amount) || amount <= 0) {
+          const err = new Error(`Invalid expense row at index ${index}`);
+          err.statusCode = 400;
+          throw err;
+        }
+
+        if (rowClientId) {
+          const rowClient = await assertClientIsAllowed({ companyId, employeeId, userType, clientId: rowClientId });
+          if (!rowClient) {
+            const err = new Error('Invalid assigned client');
+            err.statusCode = 400;
+            throw err;
+          }
+        }
+
+        const expense_id = `EXP${nextNumber.toString().padStart(3, '0')}`;
+        nextNumber += 1;
+
+        const file = filesByField[`receipt_${index}`];
+        const receiptPath = file
+          ? `/uploads/expenses/company_${companyId}/${file.filename}`
+          : (row.receipt_path ? String(row.receipt_path) : null);
+
+        await trx('expenses').insert({
+          company_id: companyId,
+          expense_id,
+          employee_id: employeeId,
+          employee_name: employeeName,
+          ...(canStoreClientId ? { client_id: rowClientId || clientId || null } : {}),
+          category,
+          amount: parseFloat(amount),
+          expense_date: expenseDate,
+          description,
+          receipt_path: receiptPath,
+          status: 'Pending'
+        });
+
+        created.push({ expense_id });
+      }
+
+      return created;
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Expenses submitted successfully',
+      count: inserted.length,
+      expenses: inserted,
+      client: client ? { id: client.id, client_name: client.client_name } : null
+    });
+  } catch (error) {
+    const statusCode = error?.statusCode || 500;
+    console.error('Submit bulk expenses error:', error);
+    return res.status(statusCode).json({ message: statusCode === 500 ? 'Server error' : error.message });
+  }
+};
+
 
 const getExpenses = async (req, res) => {
   const companyId = req.user.company_id;
@@ -268,17 +507,26 @@ const getExpenses = async (req, res) => {
   }
 
   try {
+    const includeClient = await hasExpensesClientIdColumn();
     let expenses;
 
     // 🔐 ADMIN + FINANCE → All expenses
     if (['admin', 'finance', 'ceo', 'superadmin'].includes(String(req.user.role || '').toLowerCase())) {
-      expenses = await knex('expenses as e')
-        .join('employees as emp', 'e.employee_id', 'emp.id')
+      let query = knex('expenses as e')
+        .join('employees as emp', 'e.employee_id', 'emp.id');
+
+      if (includeClient) {
+        query = query.leftJoin('clients as c', 'e.client_id', 'c.id');
+      }
+
+      expenses = await query
         .select(
           'e.id',
           'e.expense_id',
           'e.employee_id',
           'e.company_id',
+          ...(includeClient ? ['e.client_id'] : []),
+          ...(includeClient ? [knex.raw('c.client_name as client_name')] : []),
           'e.category',
           'e.amount',
           knex.raw("DATE_FORMAT(e.expense_date, '%Y-%m-%d') as expense_date"),
@@ -296,12 +544,20 @@ const getExpenses = async (req, res) => {
     } 
     // 🔒 ALL OTHERS → Only self
     else {
-      expenses = await knex('expenses as e')
+      let query = knex('expenses as e');
+
+      if (includeClient) {
+        query = query.leftJoin('clients as c', 'e.client_id', 'c.id');
+      }
+
+      expenses = await query
         .select(
           'e.id',
           'e.expense_id',
           'e.employee_id',
           'e.company_id',
+          ...(includeClient ? ['e.client_id'] : []),
+          ...(includeClient ? [knex.raw('c.client_name as client_name')] : []),
           'e.category',
           'e.amount',
           knex.raw("DATE_FORMAT(e.expense_date, '%Y-%m-%d') as expense_date"),
@@ -348,56 +604,6 @@ const getExpenses = async (req, res) => {
 };
 
 
-// const updateExpenseStatus = async (req, res) => {
-//   const companyId = req.user.company_id;
-//   if (!companyId) {
-//     return res.status(400).json({ message: 'You are not assigned to any company' });
-//   }
-
-//   const { expense_id } = req.params; // Make sure route is /expenses/:expense_id/status
-//   const { status } = req.body; // "Approved" or "Rejected"
-
-//   if (!['Approved', 'Rejected'].includes(status)) {
-//     return res.status(400).json({ message: 'Status must be Approved or Rejected' });
-//   }
-
-//   if (!expense_id) {
-//     return res.status(400).json({ message: 'Expense ID is required' });
-//   }
-
-//   try {
-//     const expense = await knex('expenses')
-//       .where({ expense_id, company_id: companyId })
-//       .first();
-
-//     if (!expense) {
-//       return res.status(404).json({ message: 'Expense not found or access denied' });
-//     }
-
-//     await knex('expenses').where({ expense_id }).update({
-//       status,
-//       approved_by: req.user.id,
-//       approved_at: knex.fn.now()
-//     });
-
-//     const updated = await knex('expenses').where({ expense_id }).first();
-
-//     res.json({
-//       success: true,
-//       message: `Expense ${status.toLowerCase()} successfully!`,
-//       expense: {
-//         ...updated,
-//         receipt_url: updated.receipt_path ? `${updated.receipt_path}` : null
-//       }
-//     });
-
-//   } catch (error) {
-//     console.error('Update expense status error:', error);
-//     res.status(500).json({ message: 'Server error' });
-//   }
-// };
-
-
 const updateExpenseStatus = async (req, res) => {
   const companyId = req.user.company_id;
   if (!companyId) {
@@ -407,16 +613,12 @@ const updateExpenseStatus = async (req, res) => {
   const { expense_id } = req.params;
   const { status } = req.body;
 
-  if (!['Approved', 'Rejected'].includes(status)) {
-    return res.status(400).json({ message: 'Status must be Approved or Rejected' });
-  }
-
   if (!expense_id) {
     return res.status(400).json({ message: 'Expense ID is required' });
   }
 
   try {
-    console.log('🔍 Updating expense:', expense_id, 'Status:', status);
+    console.log('Updating expense:', expense_id, 'Status:', status);
 
     const expense = await knex('expenses')
       .where({ expense_id, company_id: companyId })
@@ -426,51 +628,122 @@ const updateExpenseStatus = async (req, res) => {
       return res.status(404).json({ message: 'Expense not found or access denied' });
     }
 
-    await knex('expenses')
-      .where({ expense_id })
-      .update({
-        status,
-        approved_by: req.user.id,
-        approved_at: knex.fn.now()
-      });
+    const isAdminOrFinance = ['admin', 'finance', 'ceo', 'superadmin'].includes(
+      String(req.user.role || '').toLowerCase()
+    );
+    const isOwner = Number(expense.employee_id) === Number(req.user.id);
+
+    if (status && ['Approved', 'Rejected'].includes(status)) {
+      await knex('expenses')
+        .where({ expense_id })
+        .update({
+          status,
+          approved_by: req.user.id,
+          approved_at: knex.fn.now()
+        });
+    } else {
+      if (!isAdminOrFinance && !isOwner) {
+        return res.status(403).json({ message: 'You are not allowed to edit this expense' });
+      }
+
+      if (String(expense.status || '').toLowerCase() !== 'pending' && !isAdminOrFinance) {
+        return res.status(400).json({ message: 'Only pending expenses can be edited' });
+      }
+
+      const updates = {};
+      if (req.body.category !== undefined) {
+        updates.category = normalizeExpenseCategory(req.body.category);
+      }
+      if (req.body.amount !== undefined) {
+        const nextAmount = Number(req.body.amount);
+        if (!Number.isFinite(nextAmount) || nextAmount <= 0) {
+          return res.status(400).json({ message: 'Amount must be greater than 0' });
+        }
+        updates.amount = nextAmount;
+      }
+      if (req.body.expense_date || req.body.date) {
+        const parsed = parseExpenseDateToISO(req.body.expense_date || req.body.date);
+        if (!parsed) {
+          return res.status(400).json({ message: 'Invalid expense date format' });
+        }
+        updates.expense_date = parsed;
+      }
+      if (req.body.description !== undefined) {
+        updates.description = String(req.body.description || '').trim();
+      }
+      if (req.file) {
+        updates.receipt_path = `/uploads/expenses/company_${companyId}/${req.file.filename}`;
+      }
+      if (String(req.body.remove_receipt || '').toLowerCase() === 'true') {
+        updates.receipt_path = null;
+      }
+      if (req.body.client_id !== undefined) {
+        const rowClientId = req.body.client_id ? Number(req.body.client_id) : null;
+        if (rowClientId) {
+          const client = await assertClientIsAllowed({
+            companyId,
+            employeeId: req.user.id,
+            userType: req.user.type,
+            clientId: rowClientId
+          });
+          if (!client) {
+            return res.status(400).json({ message: 'Invalid assigned client' });
+          }
+        }
+        updates.client_id = Number.isFinite(rowClientId) ? rowClientId : null;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ message: 'No fields to update' });
+      }
+
+      await knex('expenses')
+        .where({ expense_id })
+        .update({
+          ...updates,
+          updated_at: knex.fn.now()
+        });
+    }
 
     const updated = await knex('expenses')
       .where({ expense_id })
       .first();
 
-    const employee = await knex('employees')
-      .where({ id: updated.employee_id })
-      .first();
+    if (status && ['Approved', 'Rejected'].includes(status)) {
+      const employee = await knex('employees')
+        .where({ id: updated.employee_id })
+        .first();
 
-    console.log('👤 Employee record:', employee);
-    console.log('📨 Email To:', employee?.email);
+      console.log('Employee record:', employee);
+      console.log('Email To:', employee?.email);
 
-    // ✅ FIXED: use employee.email
-    if (employee && employee.email) {
-      console.log('📨 Trying to send expense status email...');
+      if (employee && employee.email) {
+        console.log('Trying to send expense status email...');
 
-      try {
-        await sendExpenseStatusNotification(
-          updated,
-          {
-            employee_email: employee.email,   // ✅ FIX
-            employee_name: `${employee.first_name} ${employee.last_name}`
-          },
-          status.toLowerCase()
-        );
+        try {
+          await sendExpenseStatusNotification(
+            updated,
+            {
+              employee_email: employee.email,
+              employee_name: `${employee.first_name} ${employee.last_name}`
+            },
+            status.toLowerCase()
+          );
 
-        console.log('📧 Mail function completed');
-      } catch (mailError) {
-        console.error('⚠️ Mail sending failed:', mailError);
+          console.log('Mail function completed');
+        } catch (mailError) {
+          console.error('Mail sending failed:', mailError);
+        }
+      } else {
+        console.warn('No employee email found. Skipping mail.');
       }
-
-    } else {
-      console.warn('⚠️ No employee email found. Skipping mail.');
     }
 
     res.json({
       success: true,
-      message: `Expense ${status.toLowerCase()} successfully!`,
+      message: status && ['Approved', 'Rejected'].includes(status)
+        ? `Expense ${status.toLowerCase()} successfully!`
+        : 'Expense updated successfully',
       expense: {
         ...updated,
         receipt_url: updated.receipt_path ? `${updated.receipt_path}` : null
@@ -478,7 +751,7 @@ const updateExpenseStatus = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('🔥 Update expense status error:', error);
+    console.error('Update expense error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -765,11 +1038,207 @@ const exportExpenses = async (req, res) => {
   }
 };
 
+const getAssignedClientsForClaims = async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const employeeId = req.user.id;
+    const userType = String(req.user.type || '').toLowerCase(); // admin / employee
+
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: 'You are not assigned to any company' });
+    }
+
+    let query = knex('clients')
+      .select('id', 'client_id', 'client_name')
+      .where('company_id', companyId)
+      .orderBy('client_name', 'asc');
+
+    if (userType === 'employee') {
+      query = query.andWhere('assigned_to', employeeId);
+    }
+
+    const clients = await query;
+
+    return res.json({ success: true, clients });
+  } catch (error) {
+    console.error('Get assigned clients error:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+const getExpenseDraft = async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const employeeId = req.user.id;
+
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: 'You are not assigned to any company' });
+    }
+
+    await ensureExpenseDraftsTable();
+
+    const row = await knex('expense_drafts')
+      .where({ company_id: companyId, employee_id: employeeId })
+      .first();
+
+    if (!row) {
+      return res.json({ success: true, draft: null });
+    }
+
+    let draft = null;
+    try {
+      draft = JSON.parse(row.draft_data);
+    } catch {
+      draft = null;
+    }
+
+    return res.json({
+      success: true,
+      draft: draft
+        ? {
+            client_id: row.client_id || null,
+            expenses: Array.isArray(draft.expenses) ? draft.expenses : [],
+            updated_at: row.updated_at
+          }
+        : null
+    });
+  } catch (error) {
+    console.error('Get expense draft error:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+const saveExpenseDraft = async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const employeeId = req.user.id;
+    const userType = req.user.type;
+
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: 'You are not assigned to any company' });
+    }
+
+    await ensureExpenseDraftsTable();
+
+    const clientIdRaw = req.body.client_id;
+    const clientId = clientIdRaw === null || clientIdRaw === undefined || String(clientIdRaw).trim() === '' ? null : Number(clientIdRaw);
+    let expenses = req.body.expenses;
+    if (typeof expenses === 'string') {
+      try {
+        expenses = JSON.parse(expenses);
+      } catch {
+        expenses = [];
+      }
+    }
+    expenses = Array.isArray(expenses) ? expenses : [];
+
+    // if (clientId !== null) {
+    //   if (Number.isNaN(clientId)) {
+    //     return res.status(400).json({ success: false, message: 'Invalid assigned client' });
+    //   }
+
+    //   const client = await assertClientIsAllowed({ companyId, employeeId, userType, clientId });
+    //   if (!client) {
+    //     return res.status(400).json({ success: false, message: 'Invalid assigned client' });
+    //   }
+    // }
+
+    if (expenses.length > 25) {
+      return res.status(400).json({ success: false, message: 'Too many expenses in one draft (max 25)' });
+    }
+
+    const files = Array.isArray(req.files) ? req.files : [];
+    const filesByField = {};
+    for (const file of files) {
+      if (file && file.fieldname) {
+        filesByField[file.fieldname] = file;
+      }
+    }
+
+    const normalized = [];
+    for (let index = 0; index < expenses.length; index++) {
+      const row = expenses[index] || {};
+      const file = filesByField[`receipt_${index}`];
+      const receiptPath = file
+        ? `/uploads/expenses/company_${companyId}/${file.filename}`
+        : row.receipt_path || row.receipt_url || '';
+      const rowClientId = row.client_id ? Number(row.client_id) : null;
+
+      if (rowClientId) {
+        const client = await assertClientIsAllowed({ companyId, employeeId, userType, clientId: rowClientId });
+        if (!client) {
+          return res.status(400).json({ success: false, message: 'Invalid assigned client' });
+        }
+      }
+
+      normalized.push({
+        category: row.category ?? '',
+        amount: row.amount ?? '',
+        expense_date: row.expense_date ?? row.date ?? '',
+        description: row.description ?? '',
+        receipt_path: receiptPath || null,
+        client_id: Number.isFinite(rowClientId) ? rowClientId : null
+      });
+    }
+
+    const draftData = JSON.stringify({ expenses: normalized });
+
+    const existing = await knex('expense_drafts')
+      .where({ company_id: companyId, employee_id: employeeId })
+      .first();
+
+    if (existing) {
+      await knex('expense_drafts')
+        .where({ company_id: companyId, employee_id: employeeId })
+        .update({ client_id: clientId, draft_data: draftData, updated_at: knex.fn.now() });
+    } else {
+      await knex('expense_drafts').insert({
+        company_id: companyId,
+        employee_id: employeeId,
+        client_id: clientId,
+        draft_data: draftData
+      });
+    }
+
+    return res.json({ success: true, message: 'Draft saved' });
+  } catch (error) {
+    console.error('Save expense draft error:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+const deleteExpenseDraft = async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const employeeId = req.user.id;
+
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: 'You are not assigned to any company' });
+    }
+
+    await ensureExpenseDraftsTable();
+
+    await knex('expense_drafts')
+      .where({ company_id: companyId, employee_id: employeeId })
+      .del();
+
+    return res.json({ success: true, message: 'Draft cleared' });
+  } catch (error) {
+    console.error('Delete expense draft error:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 module.exports = {
   submitExpense,
+  submitExpensesBulk,
   getExpenses,
   updateExpenseStatus,
   deleteExpense,
   scanReceiptOnly,
-  exportExpenses
+  exportExpenses,
+  getAssignedClientsForClaims,
+  getExpenseDraft,
+  saveExpenseDraft,
+  deleteExpenseDraft
 };

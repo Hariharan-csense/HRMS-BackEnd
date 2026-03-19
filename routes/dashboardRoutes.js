@@ -1,5 +1,5 @@
 const express = require('express');
-const { getAdminDashboardData, getEmployeeDashboardData, getManagerDashboardData, getHRDashboardData, getFinanceDashboardData } = require('../controllers/dashboardController');
+const { getAdminDashboardData, getEmployeeDashboardData, getManagerDashboardData, getHRDashboardData, getFinanceDashboardData, getEmployeeAnalyticsData } = require('../controllers/dashboardController');
 const { protect } = require('../middleware/authMiddleware');
 const { requirePermission } = require("../middleware/rbacMiddleware");
 const router = express.Router();
@@ -17,6 +17,7 @@ router.get('/admin-dashboard',protect, requirePermission("dashboard", "view"), g
  * @access  Private (Employee)
  */
 router.get('/employee-dashboard', protect, requirePermission("dashboard", "view"), getEmployeeDashboardData);
+router.get('/employee-analytics', protect, requirePermission("my_analytics", "view"), getEmployeeAnalyticsData);
 
 /**
  * @route   GET /api/admin/manager-dashboard

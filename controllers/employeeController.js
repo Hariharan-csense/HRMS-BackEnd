@@ -456,25 +456,37 @@ const getEmployees = async (req, res) => {
     const employees = await baseQuery;
 
     // 2️⃣ Attach bank details & documents
-    const result = await Promise.all(
-      employees.map(async (emp) => {
-        const bankDetails = await knex("employee_bank_details")
-          .where({ employee_id: emp.id })
-          .first();
+    const employeeIds = employees.map((e) => e.id).filter(Boolean);
 
-        const documents = await knex("employee_documents")
-          .where({ employee_id: emp.id });
+    const [bankRows, documentRows] = await Promise.all([
+      employeeIds.length
+        ? knex("employee_bank_details").whereIn("employee_id", employeeIds)
+        : Promise.resolve([]),
+      employeeIds.length
+        ? knex("employee_documents").whereIn("employee_id", employeeIds)
+        : Promise.resolve([]),
+    ]);
 
-        return {
-          ...emp,
-          department: emp.department_name,
-          designation: emp.designation_name,
-          status: emp.status,
-          bankDetails,
-          documents,
-        };
-      })
-    );
+    const bankByEmployeeId = new Map();
+    for (const row of bankRows) {
+      bankByEmployeeId.set(row.employee_id, row);
+    }
+
+    const documentsByEmployeeId = new Map();
+    for (const row of documentRows) {
+      const list = documentsByEmployeeId.get(row.employee_id) || [];
+      list.push(row);
+      documentsByEmployeeId.set(row.employee_id, list);
+    }
+
+    const result = employees.map((emp) => ({
+      ...emp,
+      department: emp.department_name,
+      designation: emp.designation_name,
+      status: emp.status,
+      bankDetails: bankByEmployeeId.get(emp.id) || null,
+      documents: documentsByEmployeeId.get(emp.id) || [],
+    }));
 
     return res.status(200).json({
       success: true,

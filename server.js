@@ -1,36 +1,106 @@
 const express = require("express");
 const path = require('path');
+const fs = require('fs');
 const cors = require('cors');
 require('dotenv').config(); 
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const configuredCorsOrigins = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = new Set([
+  "http://localhost:3000",
+  "http://localhost:8080",
+  "http://localhost:5173",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:5173",
+  "http://192.168.1.12:8080",
+  "http://192.168.1.12:3000",
+  
+  "capacitor://localhost",
+  "ionic://localhost",
+  ...configuredCorsOrigins,
+]);
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow server-to-server, Postman, native mobile, and explicit browser origins.
+    if (!origin || allowedOrigins.has(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS blocked for origin ${origin}`));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  preflightContinue: false,
+};
+
 // Middleware
 app.use((req, res, next) => {
   // Handle preflight requests
   if (req.method === 'OPTIONS') {
-    res.header('Access-Control-Allow-Origin', req.headers.origin);
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    return res.status(200).end();
+    const requestOrigin = req.headers.origin;
+    if (!requestOrigin || allowedOrigins.has(requestOrigin)) {
+      if (requestOrigin) {
+        res.header('Access-Control-Allow-Origin', requestOrigin);
+      }
+      res.header('Vary', 'Origin');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Credentials', 'true');
+      return res.status(200).end();
+    }
+
+    return res.status(403).json({ message: 'CORS origin denied' });
   }
   next();
 });
 
-app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:8080','http://192.168.1.11:8080',  'http://localhost:5173'],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  preflightContinue: false
-}));
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve uploaded files (images, documents, etc.)
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Allow deployments that prefix routes with /backend (e.g., reverse proxy)
+app.use((req, res, next) => {
+  if (req.url.startsWith("/backend/")) {
+    req.url = req.url.replace(/^\/backend/, "");
+  }
+  next();
+});
+
+// Serve uploaded files. Some older middleware writes to the workspace root
+// `uploads/` while other modules use `backend/uploads/`, so expose both.
+const rootUploadsPath = path.resolve(__dirname, '..', 'uploads');
+const backendUploadsPath = path.resolve(__dirname, 'uploads');
+app.get('/uploads/*', (req, res, next) => {
+  const relativeUploadPath = String(req.path || '')
+    .replace(/^\/uploads\/?/, '')
+    .replace(/^\/+/, '');
+
+  if (!relativeUploadPath || relativeUploadPath.includes('..')) {
+    return next();
+  }
+
+  const candidates = [
+    path.join(rootUploadsPath, relativeUploadPath),
+    path.join(backendUploadsPath, relativeUploadPath),
+  ];
+
+  const existingFile = candidates.find((filePath) => fs.existsSync(filePath) && fs.statSync(filePath).isFile());
+  if (existingFile) {
+    return res.sendFile(existingFile);
+  }
+
+  return next();
+});
+app.use('/uploads', express.static(rootUploadsPath));
+app.use('/uploads', express.static(backendUploadsPath));
 
 // Import routes
 const demoRoutes = require("./routes/demo");
@@ -77,6 +147,9 @@ const organizationRoutes = require('./routes/organizationRoutes');
 const userRoutes = require('./routes/userRoutes');
 const surveyRoutes = require('./routes/surveyRoutes');
 const pulseSurveyRoutes = require('./routes/pulseSurveyRoutes');
+const geocodeRoutes = require("./routes/geocodeRoutes");
+
+
 
 
 // Use routes
@@ -124,6 +197,7 @@ app.use("/api/organizations", organizationRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/surveys", surveyRoutes);
 app.use("/api/pulse-surveys", pulseSurveyRoutes);
+app.use("/api/geocode", geocodeRoutes);
 
 
 

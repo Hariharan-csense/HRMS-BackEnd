@@ -105,8 +105,10 @@ const saveSalaryStructure = async (req, res) => {
 
   const {
     employee_id,
+    gross,
     basic,
     hra = 0,
+    lta = 0,
     allowances = 0,
     incentives = 0,
     pf = 0,
@@ -120,14 +122,21 @@ const saveSalaryStructure = async (req, res) => {
     other_deductions = 0
   } = req.body;
 
-  if (!employee_id || !basic) {
-    return res.status(400).json({ message: 'Employee ID and Basic Salary required' });
+  if (!employee_id || !gross) {
+    return res.status(400).json({ message: 'Employee ID and Gross Salary required' });
   }
 
   try {
-    // First find employee by employee_id (code) to get the actual database ID
+    // Resolve employee using either employee code (EMP001) or numeric DB id.
+    const normalizedEmployeeRef = String(employee_id || '').trim();
     const employeeRecord = await knex('employees')
-      .where({ employee_id: employee_id, company_id: companyId })
+      .where('company_id', companyId)
+      .andWhere((qb) => {
+        qb.whereRaw('LOWER(employee_id) = ?', [normalizedEmployeeRef.toLowerCase()]);
+        if (/^\d+$/.test(normalizedEmployeeRef)) {
+          qb.orWhere('id', Number(normalizedEmployeeRef));
+        }
+      })
       .first();
 
     if (!employeeRecord) {
@@ -137,7 +146,10 @@ const saveSalaryStructure = async (req, res) => {
     // Use the actual database ID for further operations
     const actualEmployeeId = employeeRecord.id;
 
+    const grossAmount = toNumber(gross);
     const basicAmount = toNumber(basic);
+    const hraAmount = toNumber(hra);
+    const ltaAmount = toNumber(lta);
     const pfEnabled = toBoolean(pf_enabled, toNumber(pf) > 0 || toNumber(pf_percentage) > 0);
     const esiEnabled = toBoolean(esi_enabled, toNumber(esi) > 0 || toNumber(esi_percentage) > 0);
     const pfPercentage = toNumber(pf_percentage);
@@ -151,7 +163,7 @@ const saveSalaryStructure = async (req, res) => {
       ? (hasEsiPercentage ? calculateAmountFromPercentage(basicAmount, esiPercentage) : toNumber(esi))
       : 0;
 
-    const gross = basicAmount + toNumber(hra) + toNumber(allowances) + toNumber(incentives);
+    const calculatedGross = grossAmount || (basicAmount + hraAmount + ltaAmount + toNumber(allowances) + toNumber(incentives));
 
     const existing = await knex('payroll_structures')
       .where({ employee_id: actualEmployeeId, company_id: companyId })
@@ -162,11 +174,12 @@ const saveSalaryStructure = async (req, res) => {
       await knex('payroll_structures')
         .where({ employee_id: actualEmployeeId, company_id: companyId })
         .update({
+          gross: calculatedGross,
           basic: basicAmount,
-          hra: toNumber(hra),
+          hra: hraAmount,
+          lta: ltaAmount,
           allowances: toNumber(allowances),
           incentives: toNumber(incentives),
-          gross,
           pf: pfAmount,
           esi: esiAmount,
           pt: toNumber(pt),
@@ -188,11 +201,12 @@ const saveSalaryStructure = async (req, res) => {
       await knex('payroll_structures').insert({
         company_id: companyId,
         employee_id: actualEmployeeId,
+        gross: calculatedGross,
         basic: basicAmount,
-        hra: toNumber(hra),
+        hra: hraAmount,
+        lta: ltaAmount,
         allowances: toNumber(allowances),
         incentives: toNumber(incentives),
-        gross,
         pf: pfAmount,
         esi: esiAmount,
         pt: toNumber(pt),
@@ -566,13 +580,16 @@ const processPayroll = async (req, res) => {
     // ===============================
     // MONTHLY GROSS
     // ===============================
-    const monthlyGross = Number(
-      structure.gross ??
-        Number(structure.basic || 0) +
-          Number(structure.hra || 0) +
-          Number(structure.allowances || 0) +
-          Number(structure.incentives || 0)
+    const componentGross = roundTo2(
+      Number(structure.basic || 0) +
+      Number(structure.hra || 0) +
+      Number(structure.lta || 0) +
+      Number(structure.allowances || 0) +
+      Number(structure.incentives || 0)
     );
+    const monthlyGross = componentGross > 0
+      ? componentGross
+      : roundTo2(Number(structure.gross || 0));
 
     // ===============================
     // ATTENDANCE (PRESENT)
@@ -609,22 +626,6 @@ const processPayroll = async (req, res) => {
       .where({ id: employee.shift_id, company_id: companyId })
       .first();
 
-    const halfDayThresholdHours = Number(employeeShift?.half_day_threshold) > 0
-      ? Number(employeeShift.half_day_threshold)
-      : 4;
-    let fullDayThresholdHours = 8;
-    if (employeeShift?.start_time && employeeShift?.end_time) {
-      const [sh, sm] = String(employeeShift.start_time).split(':').map(Number);
-      const [eh, em] = String(employeeShift.end_time).split(':').map(Number);
-      if (Number.isFinite(sh) && Number.isFinite(sm) && Number.isFinite(eh) && Number.isFinite(em)) {
-        const start = new Date(2000, 0, 1, sh, sm, 0, 0);
-        const end = new Date(2000, 0, 1, eh, em, 0, 0);
-        if (end < start) end.setDate(end.getDate() + 1);
-        const hours = (end - start) / (1000 * 60 * 60);
-        if (hours > 0) fullDayThresholdHours = hours;
-      }
-    }
-
     for (const row of attendanceRows) {
       const dayKey = row.day instanceof Date ? row.day.toISOString().slice(0, 10) : String(row.day).slice(0, 10);
       if (!dayKey) continue;
@@ -633,23 +634,18 @@ const processPayroll = async (req, res) => {
       if (isWeekend(dayObj) || holidayDateSet.has(dayKey)) continue;
 
       const status = normalizeAttendanceStatus(row.status);
-      const hoursWorked = Number(row.hours_worked || 0);
       let credit = 0;
 
       if (status === 'absent') {
         credit = 0;
       } else if (status === 'half') {
         credit = 0.5;
-      } else if (hoursWorked > 0) {
-        if (hoursWorked >= halfDayThresholdHours && hoursWorked < fullDayThresholdHours) {
-          credit = 0.5;
-        } else if (hoursWorked >= fullDayThresholdHours) {
-          credit = 1;
-        } else {
-          credit = 0;
-        }
       } else if (status === 'present' || status === 'late') {
         credit = 1;
+      } else {
+        // Fallback for legacy rows where status may be empty.
+        const hoursWorked = Number(row.hours_worked || 0);
+        credit = hoursWorked > 0 ? 1 : 0;
       }
 
       const existingCredit = attendanceCreditByDay.get(dayKey) || 0;
@@ -839,6 +835,7 @@ const processPayroll = async (req, res) => {
 
       basic: structure.basic,
       hra: structure.hra,
+      lta: structure.lta,
       allowances: structure.allowances,
       incentives: structure.incentives,
       total_expenses: totalExpenses,
@@ -1257,6 +1254,7 @@ const payslipPreview = async (req, res) => {
       // 🔥 Salary Snapshot (from payroll_processing)
       basic: structure?.basic || 0,
       hra: structure?.hra,
+      lta: structure?.lta || 0,
       allowances: structure?.allowances,
       incentives: structure?.incentives,
       total_expenses: structure?.total_expenses,
@@ -1354,6 +1352,7 @@ const updateSalaryStructure = async (req, res) => {
   const {
     basic,
     hra = 0,
+    lta = 0,
     allowances = 0,
     incentives = 0,
     pf = 0,
@@ -1398,6 +1397,7 @@ const updateSalaryStructure = async (req, res) => {
     const gross =
       basicAmount +
       toNumber(hra) +
+      toNumber(lta) +
       toNumber(allowances) +
       toNumber(incentives);
 
@@ -1406,6 +1406,7 @@ const updateSalaryStructure = async (req, res) => {
       .update({
         basic: basicAmount,
         hra: toNumber(hra),
+        lta: toNumber(lta),
         allowances: toNumber(allowances),
         incentives: toNumber(incentives),
         gross,

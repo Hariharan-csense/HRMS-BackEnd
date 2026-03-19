@@ -12,25 +12,120 @@ const generatePdfFromHtml = (html, pdfPath) =>
     });
   });
 
+const toNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const roundTo2 = (value) => Number((Number(value) || 0).toFixed(2));
+
 const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
   // Fetch company details
-  const company = await knex('company')
+  const company = await knex('companies')
     .where({ id: companyId })
     .first();
   if (!company) throw new Error('Company not found');
 
+  const structure = await knex('payroll_structures')
+    .where({ employee_id: employee.id, company_id: companyId })
+    .first();
+
+  const department = employee?.department_id
+    ? await knex('departments')
+        .where({ id: employee.department_id, company_id: companyId })
+        .first()
+    : null;
+
+  const designation = employee?.designation_id
+    ? await knex('designations')
+        .where({ id: employee.designation_id, company_id: companyId })
+        .first()
+    : null;
+
+  const bankDetails = await knex('employee_bank_details')
+    .where({ employee_id: employee.id, company_id: companyId })
+    .first();
+
+  const componentGross = roundTo2(
+    toNumber(structure?.basic) +
+    toNumber(structure?.hra) +
+    toNumber(structure?.lta) +
+    toNumber(structure?.allowances) +
+    toNumber(structure?.incentives)
+  );
+  const monthlyGross = roundTo2(toNumber(payrollData?.gross, componentGross));
+
+  const monthlyDeductions = roundTo2(
+    toNumber(payrollData?.deductions,
+      toNumber(structure?.pf) +
+      toNumber(structure?.esi) +
+      toNumber(structure?.pt) +
+      toNumber(structure?.tds) +
+      toNumber(structure?.other_deductions)
+    )
+  );
+
+  const monthlyNet = roundTo2(
+    toNumber(
+      payrollData?.net,
+      monthlyGross - monthlyDeductions - toNumber(payrollData?.lop_amount) + toNumber(payrollData?.total_expenses)
+    )
+  );
+
+  const annualGross = roundTo2(toNumber(payrollData?.annual_gross, monthlyGross * 12));
+  const annualDeductions = roundTo2(toNumber(payrollData?.annual_deductions, monthlyDeductions * 12));
+  const annualNet = roundTo2(toNumber(payrollData?.annual_net, monthlyNet * 12));
+
+  let companyLogo = company.logo_url || company.logo || null;
+  if (companyLogo && !String(companyLogo).startsWith('http') && !String(companyLogo).startsWith('data:')) {
+    const logoPath = path.join(process.cwd(), '..', String(companyLogo).replace(/^\/+/, ''));
+    if (fs.existsSync(logoPath)) {
+      const ext = path.extname(logoPath).toLowerCase();
+      const mimeType =
+        ext === '.png' ? 'image/png' :
+        ext === '.svg' ? 'image/svg+xml' :
+        'image/jpeg';
+      companyLogo = `data:${mimeType};base64,${fs.readFileSync(logoPath).toString('base64')}`;
+    }
+  }
+
   // Load Handlebars template
- const templatePath = path.join(__dirname, '..', 'templates', 'payslip.hbs');
+  const templatePath = path.join(__dirname, '..', 'templates', 'payslip.hbs');
   const templateHtml = fs.readFileSync(templatePath, 'utf-8');
   const template = handlebars.compile(templateHtml);
 
   // Prepare HTML content
   const html = template({
     ...payrollData,
-    company_name: company.name,
-    company_logo: company.logo_url, // URL or base64 image
+    company_name: company.company_name || company.name || 'Company',
+    company_logo: companyLogo, // URL or base64 image
     company_address: company.address,
-    employee_name: `${employee.first_name} ${employee.last_name || ''}`
+    employee_name: `${employee.first_name} ${employee.last_name || ''}`.trim(),
+    department_name: department?.name || '-',
+    designation_name: designation?.name || '-',
+    esi_number: employee.esic || '',
+    uan_number: employee.uan || '',
+    bank_name: bankDetails?.bank_name || '',
+    account_no: bankDetails?.account_number || '',
+    ifsc_code: bankDetails?.ifsc_code || '',
+    basic: toNumber(structure?.basic),
+    hra: toNumber(structure?.hra),
+    lta: toNumber(structure?.lta),
+    allowances: toNumber(structure?.allowances),
+    incentives: toNumber(structure?.incentives),
+    total_expenses: toNumber(payrollData?.total_expenses),
+    pf: toNumber(structure?.pf),
+    esi: toNumber(structure?.esi),
+    pt: toNumber(structure?.pt),
+    tds: toNumber(structure?.tds),
+    other_deductions: toNumber(structure?.other_deductions),
+    gross: monthlyGross,
+    monthly_deductions: monthlyDeductions,
+    monthly_net: monthlyNet,
+    annual_gross: annualGross,
+    annual_deductions: annualDeductions,
+    annual_net: annualNet,
+    current_date: new Date().toISOString().slice(0, 10)
   });
 
   // Generate PDF using html-pdf

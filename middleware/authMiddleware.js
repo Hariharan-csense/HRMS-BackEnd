@@ -46,6 +46,7 @@
       let user = null;
       let userType = null;
       let companyId = null;
+      let mappedEmployeeId = null;
 
       // 1. Admin login (from users table)
       if (decoded.type === 'admin') {
@@ -59,12 +60,33 @@
 
         userType = 'admin';
         companyId = user.company_id; // may be null for super admin (if you have)
+
+        // Map admin users.id -> employees.id (same email, same company) when available
+        if (companyId && user.email) {
+          const employeeProfile = await knex('employees')
+            .where({ company_id: companyId })
+            .whereRaw('LOWER(email) = ?', [String(user.email).toLowerCase().trim()])
+            .first();
+          if (employeeProfile) {
+            mappedEmployeeId = Number(employeeProfile.id);
+          }
+        }
       } 
       // 2. Employee/Manager/HR login (from employees table)
       else if (decoded.type === 'employee') {
         user = await knex('employees')
           .where({ id: decoded.id })
           .first();
+
+        if (!user) {
+          // Fallback: id may be stale; resolve by token email + company
+          if (decoded.company_id && decoded.email) {
+            user = await knex('employees')
+              .where({ company_id: decoded.company_id })
+              .whereRaw('LOWER(email) = ?', [String(decoded.email).toLowerCase().trim()])
+              .first();
+          }
+        }
 
         if (!user) {
           return res.status(401).json({ message: 'Employee not found' });
@@ -76,6 +98,7 @@
 
         userType = 'employee';
         companyId = user.company_id;
+        mappedEmployeeId = Number(user.id);
       } else {
         return res.status(401).json({ message: 'Invalid user type' });
       }
@@ -90,6 +113,7 @@
       const mergedRoles = [...new Set([effectiveRole, persistedRole, ...decodedRoles].filter(Boolean))];
       req.user = {
         id: user.id,
+        employee_id: mappedEmployeeId,
         email: user.email,
         role: effectiveRole,
         roles: mergedRoles,

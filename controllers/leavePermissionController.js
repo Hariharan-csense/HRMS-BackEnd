@@ -1,10 +1,50 @@
 // src/controllers/leavePermissionController.js
 const knex = require('../db/db');
+const fs = require('fs');
 const upload = require('../middleware/leaveAttachmentUpload');
 const { hasAnyRole } = require('../middleware/authMiddleware');
-const { sendLeavePermissionNotification } = require('../utils/sendLeavePermissionStatusNotification');
-const { sendLeavePermissionStatusNotification } = require('../utils/sendLeavePermissionStatusNotification');
+const {
+  sendLeavePermissionNotification,
+  sendLeavePermissionStatusNotification
+} = require('../utils/sendLeavePermissionStatusNotification');
 const { generateAutoNumber } = require('../utils/generateAutoNumber');
+
+const normalizeText = (value) => String(value || '').toLowerCase().trim();
+
+const resolveEmployeeProfile = async (req, companyId) => {
+  // Prefer explicit mapped employee_id from auth middleware (admin->employee mapping)
+  if (req.user?.employee_id) {
+    const byMappedId = await knex('employees')
+      .where({ id: Number(req.user.employee_id), company_id: companyId })
+      .first();
+    if (byMappedId) return byMappedId;
+  }
+
+  // Standard employee token path
+  const byId = await knex('employees')
+    .where({ id: Number(req.user?.id), company_id: companyId })
+    .first();
+  if (byId) return byId;
+
+  // Fallback for admin/user token path: map by email within same company
+  if (req.user?.email) {
+    const byEmail = await knex('employees')
+      .where('company_id', companyId)
+      .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+      .first();
+    if (byEmail) return byEmail;
+  }
+
+  return null;
+};
+
+const getEmployeesByRole = async (companyId, roleName) => {
+  return knex('employees')
+    .where('company_id', companyId)
+    .whereRaw('LOWER(TRIM(role)) = ?', [normalizeText(roleName)])
+    .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ['active'])
+    .select('id', 'first_name', 'last_name', 'email', 'role', 'department_id');
+};
 
 // Apply Leave Permission (company scoped)
 const applyLeavePermission = async (req, res) => {
@@ -464,14 +504,11 @@ const updateLeavePermissionStatus = async (req, res) => {
 // Get relevant users for leave permission notifications
 const getLeavePermissionRelevantUsers = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const userRole = req.user.role;
+    const userRole = normalizeText(req.user.role);
     const companyId = req.user.company_id;
 
     // Fetch current employee
-    const employee = await knex('employees')
-      .where({ id: userId, company_id: companyId })
-      .first();
+    const employee = await resolveEmployeeProfile(req, companyId);
     
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
@@ -484,12 +521,10 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
       // Get same department managers
       if (employee.department_id) {
         const deptManagers = await knex('employees')
-          .where({
-            company_id: companyId,
-            department_id: employee.department_id,
-            role: 'manager',
-            status: 'Active'
-          })
+          .where('company_id', companyId)
+          .where('department_id', employee.department_id)
+          .whereRaw('LOWER(TRIM(role)) = ?', ['manager'])
+          .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ['active'])
           .select(
             'id',
             'first_name',
@@ -509,20 +544,7 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
       }
 
       // Get all HR users
-      const hrUsers = await knex('employees')
-        .where({
-          company_id: companyId,
-          role: 'hr',
-          status: 'Active'
-        })
-        .select(
-          'id',
-          'first_name',
-          'last_name',
-          'email',
-          'role',
-          'department_id'
-        );
+      const hrUsers = await getEmployeesByRole(companyId, 'hr');
 
       result.push(...hrUsers.map(hr => ({
         ...hr,
@@ -531,26 +553,26 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
         isHR: true,
         isSameDepartment: false
       })));
+
+      // Fallback: if no manager/hr configured, include admins so UI dropdown is not empty.
+      if (result.length === 0) {
+        const adminUsers = await getEmployeesByRole(companyId, 'admin');
+        result.push(...adminUsers.map(admin => ({
+          ...admin,
+          fullName: `${admin.first_name} ${admin.last_name || ''}`.trim(),
+          isManager: false,
+          isHR: false,
+          isAdmin: true,
+          isSameDepartment: false
+        })));
+      }
     }
 
     // ===============================
     // 2️⃣ MANAGER → ALL HR
     // ===============================
     else if (userRole === 'manager') {
-      const hrUsers = await knex('employees')
-        .where({
-          company_id: companyId,
-          role: 'hr',
-          status: 'Active'
-        })
-        .select(
-          'id',
-          'first_name',
-          'last_name',
-          'email',
-          'role',
-          'department_id'
-        );
+      const hrUsers = await getEmployeesByRole(companyId, 'hr');
 
       result.push(...hrUsers.map(hr => ({
         ...hr,
@@ -565,20 +587,7 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
     // 3️⃣ HR → ALL ADMIN
     // ===============================
     else if (userRole === 'hr') {
-      const adminUsers = await knex('employees')
-        .where({
-          company_id: companyId,
-          role: 'admin',
-          status: 'Active'
-        })
-        .select(
-          'id',
-          'first_name',
-          'last_name',
-          'email',
-          'role',
-          'department_id'
-        );
+      const adminUsers = await getEmployeesByRole(companyId, 'admin');
 
       result.push(...adminUsers.map(admin => ({
         ...admin,
@@ -594,20 +603,7 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
     // 4️⃣ ADMIN → ALL HR
     // ===============================
     else if (userRole === 'admin' || userRole === 'ceo') {
-      const hrUsers = await knex('employees')
-        .where({
-          company_id: companyId,
-          role: 'hr',
-          status: 'Active'
-        })
-        .select(
-          'id',
-          'first_name',
-          'last_name',
-          'email',
-          'role',
-          'department_id'
-        );
+      const hrUsers = await getEmployeesByRole(companyId, 'hr');
 
       result.push(...hrUsers.map(hr => ({
         ...hr,
@@ -629,9 +625,19 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
       return 0;
     });
 
+    // Deduplicate by id to avoid repeated users.
+    const unique = [];
+    const seen = new Set();
+    for (const entry of result) {
+      const key = Number(entry?.id);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      unique.push(entry);
+    }
+
     res.json({
       success: true,
-      data: result
+      data: unique
     });
 
   } catch (err) {

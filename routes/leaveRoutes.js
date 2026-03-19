@@ -31,7 +31,16 @@ router.put(
 );
 
 // Get leave types
-router.get('/types', protect, requirePermission("leave", "view", { submodule: "config" }), getLeaveTypes);
+router.get(
+  '/types',
+  protect,
+  requireAnyPermission([
+    { module: "leave", submodule: "leave_types", action: "view" },
+    { module: "leave", submodule: "config", action: "view" },
+    { module: "leave", submodule: "configuration", action: "view" },
+  ]),
+  getLeaveTypes
+);
 
 // Get my leave balance
 router.get('/balance', protect, requirePermission("leave", "view", { submodule: "balance" }), getLeaveBalance);

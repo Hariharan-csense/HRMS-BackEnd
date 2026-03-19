@@ -121,6 +121,7 @@ const createHoliday = async (req, res) => {
 
     res.status(201).json({
       success: true,
+      message: 'Holiday created successfully',
       holiday: {
         id: String(holiday.id),
         name: holiday.name,
@@ -185,6 +186,7 @@ const updateHoliday = async (req, res) => {
     // Return response with camelCase for JSON
     res.json({
       success: true,
+      message: 'Holiday updated successfully',
       holiday: {
         id: String(updatedHoliday.id),
         name: updatedHoliday.name,

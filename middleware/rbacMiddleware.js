@@ -7,6 +7,28 @@ const isSuperAdmin = (user) => {
   return hasSuperAdminRole || String(user?.role || "").toLowerCase() === "superadmin";
 };
 
+const isCeo = (user) => {
+  const roles = Array.isArray(user?.roles) ? user.roles : [];
+  const hasCeoRole = roles.some((r) => String(r || "").toLowerCase() === "ceo");
+  return hasCeoRole || String(user?.role || "").toLowerCase() === "ceo";
+};
+
+const isTopAuthority = (user) => isSuperAdmin(user) || isCeo(user);
+
+const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
+  const roleNames = getRoleNamesFromUser(user);
+  const isAdmin = roleNames.includes("admin");
+  if (!isAdmin) return false;
+
+  const normalizedModule = String(moduleKey || "").toLowerCase();
+  const normalizedSubmodule = String(submoduleKey || "").toLowerCase();
+
+  if (normalizedModule === "payroll") return true;
+  if (normalizedModule === "employees" && normalizedSubmodule === "profile") return true;
+
+  return false;
+};
+
 const getRoleNamesFromUser = (user) => {
   const roleNames = new Set();
   if (user?.role) roleNames.add(String(user.role).toLowerCase());
@@ -68,11 +90,11 @@ const resolveRbacContext = async (req) => {
   if (req.rbacContext) return req.rbacContext;
 
   const context = {
-    isSuperAdmin: isSuperAdmin(req.user),
+    isTopAuthority: isTopAuthority(req.user),
     effectiveRoles: [],
   };
 
-  if (!context.isSuperAdmin) {
+  if (!context.isTopAuthority) {
     context.effectiveRoles = await fetchEffectiveRoles(req.user);
   }
 
@@ -84,7 +106,19 @@ const requirePermission = (moduleKey, action, options = {}) => {
   return async (req, res, next) => {
     try {
       const context = await resolveRbacContext(req);
-      if (context.isSuperAdmin) return next();
+      if (context.isTopAuthority) return next();
+      if (hasDefaultAdminAccess(req.user, moduleKey, options.submodule)) return next();
+
+      // Allow all authenticated employees to respond to pulse surveys even if the role
+      // assignment is missing the explicit "respond" permission. Responding should be
+      // available to anyone invited to a survey.
+      const isPulseRespond =
+        String(moduleKey).toLowerCase() === "pulse_surveys" &&
+        String(options.submodule || "").toLowerCase() === "respond" &&
+        ["create", "update"].includes(String(action).toLowerCase());
+      if (isPulseRespond && String(req.user?.type || "").toLowerCase() === "employee") {
+        return next();
+      }
 
       const allowed = context.effectiveRoles.some((roleRecord) =>
         hasPermission({
@@ -114,7 +148,7 @@ const requireAnyPermission = (permissions = []) => {
   return async (req, res, next) => {
     try {
       const context = await resolveRbacContext(req);
-      if (context.isSuperAdmin) return next();
+      if (context.isTopAuthority) return next();
 
       const allowed = context.effectiveRoles.some((roleRecord) =>
         permissions.some((requiredPermission) =>

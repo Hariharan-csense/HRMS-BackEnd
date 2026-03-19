@@ -37,11 +37,12 @@ router.put('/plans/:id', superAdminOnly, requirePermission("subscription_plans",
 router.patch('/plans/:id', superAdminOnly, requirePermission("subscription_plans", "update"), patchPlan);
 router.delete('/plans/:id', superAdminOnly, requirePermission("subscription_plans", "delete"), deletePlan);
 
+
 // SuperAdmin-only subscription management routes
 router.get('/all', superAdminOnly, requirePermission("subscription_plans", "view"), getAllSubscriptions);
 
 // Admin/Company subscription routes (authenticated users)
-router.get('/current', requirePermission("subscription", "view"), getCompanySubscription);
+router.get('/current',  getCompanySubscription);
 router.post('/start-trial', requirePermission("subscription", "create"), startTrial);
 router.post('/upgrade', requirePermission("subscription", "update"), upgradeSubscription);
 router.post('/upgrade/create-order', requirePermission("subscription", "update"), createUpgradeOrder);

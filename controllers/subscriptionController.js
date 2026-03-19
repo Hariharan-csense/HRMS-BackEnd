@@ -9,6 +9,30 @@ const getBillingDuration = (billingCycle) => {
   return { count: 1, unit: 'month' };
 };
 
+const normalizeBillingCycle = (billingCycle) => {
+  const cycle = String(billingCycle || '').toLowerCase();
+  if (['yearly', 'annual', 'year'].includes(cycle)) return 'yearly';
+  return 'monthly';
+};
+
+const getTierPrice = (record, usersCount) => {
+  const users = Number(usersCount) || 0;
+  if (!record) return 0;
+  const priceUpto25 = Number(record.price_upto25);
+  const priceUpto50 = Number(record.price_upto50);
+  const priceAbove50 = Number(record.price_above50);
+  if (Number.isFinite(priceUpto25) && users > 0 && users <= 25) {
+    return priceUpto25;
+  }
+  if (Number.isFinite(priceUpto50) && users > 25 && users <= 50) {
+    return priceUpto50;
+  }
+  if (Number.isFinite(priceAbove50) && users > 50) {
+    return priceAbove50;
+  }
+  return 0;
+};
+
 const getEndDateForPlan = (startDate, billingCycle) => {
   const { count, unit } = getBillingDuration(billingCycle);
   return moment(startDate).add(count, unit).toDate();
@@ -23,6 +47,20 @@ const razorpay = process.env.RAZORPAY_KEY_ID &&
       key_secret: process.env.RAZORPAY_KEY_SECRET
     })
   : null;
+
+const computePricing = (plan, usersCount, billingCycle) => {
+  const normalizedCycle = normalizeBillingCycle(billingCycle || plan.billing_cycle);
+  const multiplier = normalizedCycle === 'yearly' ? 12 : 1;
+  const basePerUser = getTierPrice(plan, usersCount);
+  const perUserTotal = basePerUser;
+  const totalAmount = perUserTotal * Number(usersCount || 0) * multiplier;
+  return {
+    billing_cycle: normalizedCycle,
+    base_per_user: basePerUser,
+    per_user_total: perUserTotal,
+    total_amount: totalAmount
+  };
+};
 
 // Get all subscription plans
 const getPlans = async (req, res) => {
@@ -39,7 +77,7 @@ const getPlans = async (req, res) => {
       query = query.select('*');
     } else {
       query = query.select(
-        'id', 'name', 'description', 'price', 'max_users', 
+        'id', 'name', 'description', 'price', 'price_upto25', 'price_upto50', 'price_above50', 'max_users', 
         'trial_days', 'billing_cycle', 'is_active', 'created_at', 'updated_at'
       );
     }
@@ -69,7 +107,7 @@ const createUpgradeOrder = async (req, res) => {
       });
     }
 
-    const { plan_id } = req.body;
+    const { plan_id, users_count, billing_cycle } = req.body;
     // Determine company context: prefer req.user.company_id, allow superadmin to specify company_id in body
     let companyId = req.user && req.user.company_id ? req.user.company_id : null;
     if (!companyId && req.user && req.user.role === 'superadmin' && req.body.company_id) {
@@ -101,19 +139,10 @@ const createUpgradeOrder = async (req, res) => {
       });
     }
 
-    // Calculate amount based on billing cycle
-    let amount;
-    const { count, unit } = getBillingDuration(plan.billing_cycle);
-    
-    if (unit === 'year') {
-      // For yearly billing, calculate with discount (pay for 10 months, get 12)
-      amount = Math.round(Number(plan.price) * 10 * 100);
-    } else {
-      // For monthly billing, use monthly price
-      amount = Math.round(Number(plan.price) * 100);
-    }
-    
-    const amountPaise = amount;
+    const selectedUsers = Number(users_count || plan.max_users || 0);
+    const pricing = computePricing(plan, selectedUsers, billing_cycle);
+
+    const amountPaise = Math.round(Number(pricing.total_amount) * 100);
     if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
       return res.status(400).json({
         success: false,
@@ -139,13 +168,14 @@ const createUpgradeOrder = async (req, res) => {
         order_id: order.id,
         amount: order.amount,
         currency: order.currency,
-        plan: {
-          id: plan.id,
-          name: plan.name,
-          price: Number(plan.price),
-          billing_cycle: plan.billing_cycle,
-          display_price: unit === 'year' ? Math.round(Number(plan.price) * 10) : Number(plan.price)
-        },
+          plan: {
+            id: plan.id,
+            name: plan.name,
+            price: Number(plan.price),
+            billing_cycle: pricing.billing_cycle,
+            display_price: pricing.total_amount,
+            users_count: selectedUsers
+          },
         key_id: process.env.RAZORPAY_KEY_ID
       }
     });
@@ -186,6 +216,8 @@ const verifyUpgradePayment = async (req, res) => {
     }
     const {
       plan_id,
+      users_count,
+      billing_cycle,
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature
@@ -224,12 +256,12 @@ const verifyUpgradePayment = async (req, res) => {
       });
     }
 
-    // Calculate the actual paid amount based on billing cycle
-    const { count, unit } = getBillingDuration(plan.billing_cycle);
-    const paidAmount = unit === 'year' ? Math.round(Number(plan.price) * 10) : Number(plan.price);
+    const selectedUsers = Number(users_count || plan.max_users || 0);
+    const pricing = computePricing(plan, selectedUsers, billing_cycle);
+    const paidAmount = pricing.total_amount;
 
     const startDate = moment().toDate();
-    const endDate = getEndDateForPlan(startDate, plan.billing_cycle);
+    const endDate = getEndDateForPlan(startDate, pricing.billing_cycle);
 
     const currentSubscription = await trx('company_subscriptions')
       .where('company_id', companyId)
@@ -245,8 +277,9 @@ const verifyUpgradePayment = async (req, res) => {
           start_date: startDate,
           end_date: endDate,
           status: 'active',
-          max_users: plan.max_users,
+          max_users: selectedUsers || plan.max_users,
           storage_gb: plan.storage_gb || 1,
+          billing_cycle: pricing.billing_cycle,
           paid_amount: paidAmount,
           last_payment_date: new Date(),
           next_billing_date: endDate,
@@ -265,8 +298,9 @@ const verifyUpgradePayment = async (req, res) => {
         start_date: startDate,
         end_date: endDate,
         status: 'active',
-        max_users: plan.max_users,
+        max_users: selectedUsers || plan.max_users,
         storage_gb: plan.storage_gb || 1,
+        billing_cycle: pricing.billing_cycle,
         paid_amount: paidAmount,
         last_payment_date: new Date(),
         next_billing_date: endDate,
@@ -326,7 +360,7 @@ const getAllPlans = async (req, res) => {
       query = query.select('*');
     } else {
       query = query.select(
-        'id', 'name', 'description', 'price', 'max_users', 
+        'id', 'name', 'description', 'price', 'price_upto25', 'price_upto50', 'price_above50', 'max_users', 
         'trial_days', 'billing_cycle', 'is_active', 'created_at', 'updated_at'
       );
     }
@@ -346,6 +380,7 @@ const getAllPlans = async (req, res) => {
   }
 };
 
+
 // Create new subscription plan
 const createPlan = async (req, res) => {
   try {
@@ -355,6 +390,9 @@ const createPlan = async (req, res) => {
       name,
       description,
       price,
+      price_upto25,
+      price_upto50,
+      price_above50,
       max_users,
       storage_gb,
       trial_days,
@@ -363,11 +401,11 @@ const createPlan = async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!name || !price || !max_users || !trial_days || !billing_cycle) {
+    if (!name || price_upto25 === undefined || price_upto50 === undefined || price_above50 === undefined || !trial_days || !billing_cycle) {
       console.log('Validation failed - missing fields');
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: name, price, max_users, trial_days, billing_cycle'
+        message: 'Missing required fields: name, price_upto25, price_upto50, price_above50, trial_days, billing_cycle'
       });
     }
 
@@ -379,8 +417,11 @@ const createPlan = async (req, res) => {
     const planData = {
       name,
       description,
-      price,
-      max_users,
+      price: price !== undefined ? price : price_upto25,
+      price_upto25,
+      price_upto50,
+      price_above50,
+      max_users: max_users !== undefined ? max_users : 0,
       trial_days,
       billing_cycle,
       is_active
@@ -430,6 +471,9 @@ const updatePlan = async (req, res) => {
       name,
       description,
       price,
+      price_upto25,
+      price_upto50,
+      price_above50,
       max_users,
       storage_gb,
       trial_days,
@@ -448,12 +492,23 @@ const updatePlan = async (req, res) => {
 
     // Check if storage_gb column exists
     const hasStorageColumn = await checkStorageColumnExists();
-    
+
+    const resolvedPrice =
+      price !== undefined
+        ? price
+        : price_upto25 !== undefined
+          ? price_upto25
+          : existingPlan.price;
+    const resolvedMaxUsers = max_users !== undefined ? max_users : existingPlan.max_users;
+
     const updateData = {
       name,
       description,
-      price,
-      max_users,
+      price: resolvedPrice,
+      price_upto25,
+      price_upto50,
+      price_above50,
+      max_users: resolvedMaxUsers,
       trial_days,
       billing_cycle,
       is_active,
@@ -650,7 +705,7 @@ const getCompanySubscription = async (req, res) => {
 // Start free trial
 const startTrial = async (req, res) => {
   try {
-    const { plan_id } = req.body;
+    const { plan_id, users_count, billing_cycle } = req.body;
     const companyId = req.user.company_id;
 
     // Check if company already has an active trial or subscription
@@ -678,9 +733,12 @@ const startTrial = async (req, res) => {
       });
     }
 
+    const selectedUsers = Number(users_count || plan.max_users || 0);
+    const pricing = computePricing(plan, selectedUsers, billing_cycle);
+
     const startDate = moment().toDate();
     const trialEndDate = moment(startDate).add(plan.trial_days, 'days').toDate();
-    const endDate = getEndDateForPlan(trialEndDate, plan.billing_cycle);
+    const endDate = getEndDateForPlan(trialEndDate, pricing.billing_cycle);
 
     // Create trial subscription
     const [subscriptionId] = await db('company_subscriptions').insert({
@@ -690,8 +748,9 @@ const startTrial = async (req, res) => {
       end_date: endDate,
       trial_end_date: trialEndDate,
       status: 'trial',
-      max_users: plan.max_users,
+      max_users: selectedUsers || plan.max_users,
       storage_gb: plan.storage_gb || 1,
+      billing_cycle: pricing.billing_cycle,
       next_billing_date: trialEndDate
     });
 
@@ -716,7 +775,7 @@ const startTrial = async (req, res) => {
 // Upgrade/Change subscription plan
 const upgradeSubscription = async (req, res) => {
   try {
-    const { plan_id, payment_method, payment_details } = req.body;
+    const { plan_id, payment_method, payment_details, users_count, billing_cycle } = req.body;
     const companyId = req.user.company_id;
 
     // Get plan details
@@ -737,12 +796,12 @@ const upgradeSubscription = async (req, res) => {
       .orderBy('created_at', 'desc')
       .first();
 
-    // Calculate the actual paid amount based on billing cycle
-    const { count, unit } = getBillingDuration(plan.billing_cycle);
-    const paidAmount = unit === 'year' ? Math.round(Number(plan.price) * 10) : Number(plan.price);
+    const selectedUsers = Number(users_count || plan.max_users || 0);
+    const pricing = computePricing(plan, selectedUsers, billing_cycle);
+    const paidAmount = pricing.total_amount;
 
     const startDate = moment().toDate();
-    const endDate = getEndDateForPlan(startDate, plan.billing_cycle);
+    const endDate = getEndDateForPlan(startDate, pricing.billing_cycle);
 
     let subscriptionId;
     
@@ -755,8 +814,9 @@ const upgradeSubscription = async (req, res) => {
           start_date: startDate,
           end_date: endDate,
           status: 'active',
-          max_users: plan.max_users,
+          max_users: selectedUsers || plan.max_users,
           storage_gb: plan.storage_gb || 1,
+          billing_cycle: pricing.billing_cycle,
           paid_amount: paidAmount,
           last_payment_date: new Date(),
           next_billing_date: endDate,
@@ -771,8 +831,9 @@ const upgradeSubscription = async (req, res) => {
         start_date: startDate,
         end_date: endDate,
         status: 'active',
-        max_users: plan.max_users,
+        max_users: selectedUsers || plan.max_users,
         storage_gb: plan.storage_gb || 1,
+        billing_cycle: pricing.billing_cycle,
         paid_amount: paidAmount,
         last_payment_date: new Date(),
         next_billing_date: endDate
@@ -858,7 +919,7 @@ const checkSubscriptionStatus = async (req, res, next) => {
       .count('* as count')
       .first();
 
-    if (parseInt(currentUsers.count) > subscription.max_users) {
+    if (Number(subscription.max_users || 0) > 0 && parseInt(currentUsers.count) > subscription.max_users) {
       return res.status(403).json({
         success: false,
         message: `User limit exceeded. Your plan allows ${subscription.max_users} users, but you have ${currentUsers.count}. Please upgrade your plan.`,

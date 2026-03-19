@@ -2,6 +2,33 @@ const knex = require('../db/db');
 const fs = require('fs');
 const path = require('path');
 
+const resolveEmployeeIdFromAuth = async (req) => {
+  const companyId = Number(req.user?.company_id);
+  if (!companyId) return null;
+
+  if (req.user?.employee_id) {
+    const direct = await knex('employees')
+      .where({ id: Number(req.user.employee_id), company_id: companyId })
+      .first();
+    if (direct) return Number(direct.id);
+  }
+
+  const fallbackById = await knex('employees')
+    .where({ id: Number(req.user?.id), company_id: companyId })
+    .first();
+  if (fallbackById) return Number(fallbackById.id);
+
+  if (req.user?.email) {
+    const byEmail = await knex('employees')
+      .where({ company_id: companyId })
+      .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+      .first();
+    if (byEmail) return Number(byEmail.id);
+  }
+
+  return null;
+};
+
 /**
  * GET Logged-in Employee Profile (with Department & Designation Names)
  */
@@ -57,7 +84,7 @@ const path = require('path');
  */
 const getMyProfile = async (req, res) => {
   try {
-    const employeeId = req.user.id;
+    const employeeId = await resolveEmployeeIdFromAuth(req);
     const companyId = req.user.company_id;
 
     console.log('PROFILE DEBUG - User Info:', {
@@ -129,7 +156,7 @@ const getMyProfile = async (req, res) => {
  */
 const updateMyProfile = async (req, res) => {
   try {
-    const employeeId = req.user.id;
+    const employeeId = await resolveEmployeeIdFromAuth(req);
     const companyId = req.user.company_id;
 
     console.log('PROFILE UPDATE DEBUG - User Info:', {

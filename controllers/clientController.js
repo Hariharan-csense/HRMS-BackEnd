@@ -272,7 +272,7 @@ const getEmployeesForAssignment = async (req, res) => {
         'email'
       )
       .where('company_id', companyId)
-      .where('status', 'active')
+      .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ['active'])
       .orderBy('first_name');
 
     res.json({

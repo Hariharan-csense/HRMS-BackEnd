@@ -21,12 +21,13 @@ router.get('/', requirePermission("dashboard", "view"), getNotifications);
 router.post('/', requirePermission("dashboard", "create"), createNotification);
 
 // PUT /api/notifications/:notificationId/read - Mark notification as read
-router.put('/:notificationId/read', requirePermission("dashboard", "update"), markNotificationAsRead);
+// Personal notification actions should be available to anyone who can view the dashboard.
+router.put('/:notificationId/read', requirePermission("dashboard", "view"), markNotificationAsRead);
 
 // PUT /api/notifications/read-all - Mark all notifications as read
-router.put('/read-all', requirePermission("dashboard", "update"), markAllNotificationsAsRead);
+router.put('/read-all', requirePermission("dashboard", "view"), markAllNotificationsAsRead);
 
 // DELETE /api/notifications/:notificationId - Delete notification
-router.delete('/:notificationId', requirePermission("dashboard", "delete"), deleteNotification);
+router.delete('/:notificationId', requirePermission("dashboard", "view"), deleteNotification);
 
 module.exports = router;

@@ -1,8 +1,7 @@
 // routes/documentRoutes.js
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
-const { requirePermission } = require("../middleware/rbacMiddleware");
+const { protect, adminOnly } = require('../middleware/authMiddleware');
 const {
   getEmployeeDocuments,
   downloadDocument
@@ -12,7 +11,7 @@ const {
 router.use(protect);
 
 // DEBUG: Get all documents (temporary)
-router.get('/debug/all', async (req, res) => {
+router.get('/debug/all', adminOnly, async (req, res) => {
   try {
     const knex = require('../db/db');
     const allDocuments = await knex('employee_documents').select('*');
@@ -31,9 +30,9 @@ router.get('/debug/all', async (req, res) => {
 });
 
 // GET employee documents
-router.get('/', requirePermission("employees", "view", { submodule: "profile" }), getEmployeeDocuments);
+router.get('/', getEmployeeDocuments);
 
 // DOWNLOAD document
-router.get('/:id/download', requirePermission("employees", "view", { submodule: "profile" }), downloadDocument);
+router.get('/:id/download', downloadDocument);
 
 module.exports = router;

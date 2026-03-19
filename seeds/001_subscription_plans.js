@@ -2,46 +2,117 @@ exports.seed = async function(knex) {
   // Deletes ALL existing entries
   await knex('subscription_plans').del();
   
-  // Insert default subscription plans
+  // Insert default subscription plans (three packages)
   await knex('subscription_plans').insert([
     {
       id: 1,
-      name: 'Basic',
-      description: 'Perfect for small teams getting started with HR management\n\nIncludes:\n- Organization Setup\n- Employee Management\n- Attendance Management\n- Leave Management\n- Reports',
-      price: 1499.00,
-      max_users: 10,
+      name: 'Package 1',
+      description: 'Organization Setup\nEmployee Management\nAttendance Management (Office Based)\nLeave Management\nRole & Module Access Debug\nReports',
+      price: 400.0,
+      price_upto25: 400.0,
+      price_upto50: 350.0,
+      price_above50: 300.0,
+      max_users: 0,
       storage_gb: 2,
       trial_days: 7,
-      billing_cycle: 'yearly',
+      billing_cycle: 'monthly',
       is_active: true,
       created_at: new Date(),
       updated_at: new Date()
     },
     {
       id: 2,
-      name: 'Professional',
-      description: 'Ideal for growing businesses with advanced HR needs\n\nIncludes:\n- Organization Setup\n- Employee Management\n- Attendance Management\n- Leave Management\n- Reports\n- Payroll\n- Expenses\n- Assets\n- Live Tracking\n- Role & Module Access',
-      price: 2999.00,
-      max_users: 25,
+      name: 'Package 2',
+      description: 'All In Package 1\nClient Attendance + Live Tracking\nExpenses\nTicket',
+      price: 600.0,
+      price_upto25: 600.0,
+      price_upto50: 550.0,
+      price_above50: 500.0,
+      max_users: 0,
       storage_gb: 5,
       trial_days: 7,
-      billing_cycle: 'yearly',
+      billing_cycle: 'monthly',
       is_active: true,
       created_at: new Date(),
       updated_at: new Date()
     },
     {
       id: 3,
-      name: 'Enterprise',
-      description: 'Complete HR solution for large organizations\n\nIncludes:\n- Organization Setup\n- Employee Management\n- Attendance Management\n- Leave Management\n- Reports\n- Payroll\n- Expenses\n- Assets\n- Live Tracking\n- Role & Module Access\n- RMS (Recruitment & Onboarding)\n- Exit & Offboarding\n- Pulse (Employee Happiness Survey)\n- KPI Reports\n- Client Attendance\n- Client Attendance Admin\n- Ticket Management',
-      price: 5999.00,
-      max_users: 100,
+      name: 'Package 3',
+      description: 'All in Package 1 & 2\nRMS',
+      price: 700.0,
+      price_upto25: 700.0,
+      price_upto50: 650.0,
+      price_above50: 600.0,
+      max_users: 0,
       storage_gb: 10,
-      trial_days: 14,
-      billing_cycle: 'yearly',
+      trial_days: 7,
+      billing_cycle: 'monthly',
       is_active: true,
       created_at: new Date(),
       updated_at: new Date()
     }
   ]);
+
+  const hasAddonsTable = await knex.schema.hasTable('subscription_addons');
+  if (hasAddonsTable) {
+    await knex('subscription_addons').del();
+    await knex('subscription_addons').insert([
+      {
+        id: 1,
+        name: 'Client Attendance + Live Tracking',
+        description: 'Client attendance and live tracking module',
+        price_upto25: 100.0,
+        price_upto50: 100.0,
+        price_above50: 100.0,
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date()
+      },
+      {
+        id: 2,
+        name: 'Expenses',
+        description: 'Expense claims and approvals',
+        price_upto25: 100.0,
+        price_upto50: 100.0,
+        price_above50: 100.0,
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date()
+      },
+      {
+        id: 3,
+        name: 'RMS',
+        description: 'Recruitment management system',
+        price_upto25: 100.0,
+        price_upto50: 100.0,
+        price_above50: 100.0,
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date()
+      },
+      {
+        id: 4,
+        name: 'Ticket',
+        description: 'Ticket management',
+        price_upto25: 100.0,
+        price_upto50: 100.0,
+        price_above50: 100.0,
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date()
+      },
+      {
+        id: 5,
+        name: 'Exit Offboarding',
+        description: 'Exit and offboarding management',
+        price_upto25: 100.0,
+        price_upto50: 100.0,
+        price_above50: 100.0,
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date()
+      }
+    ]);
+  }
 };

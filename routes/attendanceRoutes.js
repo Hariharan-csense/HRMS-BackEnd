@@ -13,7 +13,7 @@ const {
 } = require('../controllers/attendanceController');
 const { protect } = require('../middleware/authMiddleware');
 const uploadAttendanceImage = require('../middleware/attendanceUpload');
-const { requirePermission } = require('../middleware/rbacMiddleware');
+const { requirePermission, requireAnyPermission } = require('../middleware/rbacMiddleware');
 
 // Check current attendance status
 router.get('/status', protect, requirePermission("attendance", "view"), getAttendanceStatus);
@@ -27,7 +27,16 @@ router.get('/logs', protect, requirePermission("attendance", "view", { submodule
 
 // Attendance overrides
 router.post('/overrides', protect, requirePermission("attendance", "create", { submodule: "override" }), createOverride);
-router.put('/overrides/:overrideId/process', protect, requirePermission("attendance", "update", { submodule: "override" }), processOverride);
+router.put(
+  '/overrides/:overrideId/process',
+  protect,
+  requireAnyPermission([
+    { module: "attendance", submodule: "override", action: "approve" },
+    { module: "attendance", submodule: "override", action: "reject" },
+    { module: "attendance", submodule: "override", action: "update" },
+  ]),
+  processOverride
+);
 
 // Reports
 router.get('/summary/employee/:employeeId', protect, requirePermission("attendance", "view"), getEmployeeSummary);

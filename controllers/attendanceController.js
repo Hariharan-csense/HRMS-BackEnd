@@ -670,68 +670,81 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
     const userId = req.user.id;
 
     try {
-      // Check permission
-      if (!hasAnyRole(req.user, ['hr', 'admin', 'ceo', 'superadmin'])) {
-        return res.status(403).json({ message: 'Not authorized to create overrides' });
-      }
-
       if (!reason || !String(reason).trim()) {
         return res.status(400).json({ message: 'Reason is required' });
       }
 
-      if (!attendanceId && !employeeId) {
-        return res.status(400).json({ message: 'Attendance Record ID or Employee ID is required' });
+      if (!employeeId || !String(employeeId).trim()) {
+        return res.status(400).json({ message: 'Employee ID is required' });
+      }
+
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+        return res.status(400).json({ message: 'Valid date is required (YYYY-MM-DD)' });
       }
 
       let attendance = null;
+      const normalizedEmployeeId = String(employeeId).trim();
+      const employeeQuery = knex('employees')
+        .where({ company_id: companyId })
+        .andWhere((qb) => {
+          qb.whereRaw('LOWER(employee_id) = LOWER(?)', [normalizedEmployeeId]);
+          if (!Number.isNaN(Number(normalizedEmployeeId))) {
+            qb.orWhere('id', Number(normalizedEmployeeId));
+          }
+        })
+        .first();
+
+      const employee = await employeeQuery;
+
+      if (!employee) {
+        return res.status(404).json({ message: 'Employee not found in this company' });
+      }
 
       // Backward compatible path: use attendanceId when available
       if (attendanceId) {
         attendance = await knex('attendance')
-          .where({ id: attendanceId, company_id: companyId })
+          .where({ id: attendanceId, company_id: companyId, employee_id: employee.id })
           .first();
       }
 
-      // New path: resolve attendance by employee code/id (+ optional date)
-      if (!attendance && employeeId) {
-        const normalizedEmployeeId = String(employeeId).trim();
-        const employeeQuery = knex('employees')
-          .where({ company_id: companyId })
-          .andWhere((qb) => {
-            qb.whereRaw('LOWER(employee_id) = LOWER(?)', [normalizedEmployeeId]);
-            if (!Number.isNaN(Number(normalizedEmployeeId))) {
-              qb.orWhere('id', Number(normalizedEmployeeId));
-            }
-          })
-          .first();
-
-        const employee = await employeeQuery;
-
-        if (!employee) {
-          return res.status(404).json({ message: 'Employee not found in this company' });
-        }
-
-        const attendanceQuery = knex('attendance')
+      // Resolve attendance by employee + selected date
+      if (!attendance) {
+        attendance = await knex('attendance')
           .where({
             company_id: companyId,
             employee_id: employee.id
-          });
-
-        if (date) {
-          attendanceQuery.whereRaw('DATE(check_in) = ?', [date]);
-        } else {
-          attendanceQuery.orderBy('check_in', 'desc');
-        }
-
-        attendance = await attendanceQuery.first();
+          })
+          .whereRaw('DATE(check_in) = ?', [date])
+          .orderBy('check_in', 'desc')
+          .first();
       }
 
+      // If no row exists for selected date, create a placeholder attendance row for that date.
       if (!attendance) {
-        return res.status(404).json({ message: 'Attendance record not found for given input' });
+        const seedStatus = (originalStatus || 'absent').toLowerCase();
+        const insertedAttendance = await knex('attendance').insert({
+          company_id: companyId,
+          employee_id: employee.id,
+          check_in: `${date} 00:00:00`,
+          check_out: null,
+          hours_worked: 0,
+          overtime_hours: 0,
+          status: seedStatus,
+          device_info: 'Override',
+          auto_flag: 0
+        });
+
+        const insertedAttendanceRaw = Array.isArray(insertedAttendance) ? insertedAttendance[0] : insertedAttendance;
+        const insertedAttendanceId = typeof insertedAttendanceRaw === 'object'
+          ? insertedAttendanceRaw.id
+          : insertedAttendanceRaw;
+        attendance = await knex('attendance')
+          .where({ id: insertedAttendanceId, company_id: companyId })
+          .first();
       }
 
-      const [override] = await knex('attendance_overrides')
-        .insert({
+      const isAutoApproved = hasAnyRole(req.user, ['admin', 'ceo', 'superadmin']);
+      const insertedOverride = await knex('attendance_overrides').insert({
           company_id: companyId,
           attendance_id: attendance.id,
           employee_id: attendance.employee_id,
@@ -739,13 +752,20 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
           overridden_status: overriddenStatus || attendance.status,
           reason,
           requested_by: userId,
-          approved_by: hasAnyRole(req.user, ['admin', 'ceo', 'superadmin']) ? userId : null,
-          status: hasAnyRole(req.user, ['admin', 'ceo', 'superadmin']) ? 'approved' : 'pending'
-        })
-        .returning('*');
+          approved_by: isAutoApproved ? userId : null,
+          status: isAutoApproved ? 'approved' : 'pending'
+        });
+
+      const insertedOverrideRaw = Array.isArray(insertedOverride) ? insertedOverride[0] : insertedOverride;
+      const insertedOverrideId = typeof insertedOverrideRaw === 'object'
+        ? insertedOverrideRaw.id
+        : insertedOverrideRaw;
+      const override = await knex('attendance_overrides')
+        .where({ id: insertedOverrideId, company_id: companyId })
+        .first();
 
       // If admin approved immediately
-      if (override.status === 'approved') {
+      if (override && override.status === 'approved') {
         await knex('attendance')
           .where('id', attendance.id)
           .update({ status: overriddenStatus || attendance.status });
@@ -774,12 +794,18 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
     }
 
     const { overrideId } = req.params;
-    const { status, comment } = req.body;
+    const { status } = req.body;
+    const comment = req.body.comment ?? req.body.remarks ?? null;
     const userId = req.user.id;
 
     try {
-      if (!hasAnyRole(req.user, ['hr', 'admin', 'ceo', 'superadmin'])) {
+      // Business rule: only admin/ceo/superadmin can approve or reject overrides.
+      if (!hasAnyRole(req.user, ['admin', 'ceo', 'superadmin'])) {
         return res.status(403).json({ message: 'Not authorized to process overrides' });
+      }
+
+      if (!['approved', 'rejected'].includes(String(status || '').toLowerCase())) {
+        return res.status(400).json({ message: 'Invalid status. Expected approved or rejected' });
       }
 
       const override = await knex('attendance_overrides')
@@ -790,15 +816,22 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
         return res.status(404).json({ message: 'Override not found or access denied' });
       }
 
-      const [updatedOverride] = await knex('attendance_overrides')
+      if (String(override.status || '').toLowerCase() !== 'pending') {
+        return res.status(400).json({ message: 'Only pending overrides can be processed' });
+      }
+
+      await knex('attendance_overrides')
         .where('id', overrideId)
         .update({
           status,
           approved_by: userId,
           reviewed_at: new Date(),
           comment
-        })
-        .returning('*');
+        });
+
+      const updatedOverride = await knex('attendance_overrides')
+        .where({ id: overrideId, company_id: companyId })
+        .first();
 
       if (status === 'approved') {
         await knex('attendance')
@@ -887,18 +920,21 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
     }
 
     try {
-      // Check permission
-      if (!hasAnyRole(req.user, ['hr', 'admin', 'ceo', 'superadmin'])) {
-        return res.status(403).json({ message: 'Not authorized to view overrides' });
-      }
+      const canViewAllOverrides = hasAnyRole(req.user, ['manager', 'hr', 'admin', 'ceo', 'superadmin']);
+      const viewerEmployeeId = canViewAllOverrides ? null : await resolveAttendanceEmployeeId(req);
 
       // Step 1: Get overrides
       let query = knex('attendance_overrides')
         .where({ company_id: companyId })
         .orderBy('created_at', 'desc');
 
-      if (employeeId) {
-        query = query.andWhere({ employee_id: employeeId });
+      if (canViewAllOverrides) {
+        if (employeeId) {
+          query = query.andWhere({ employee_id: employeeId });
+        }
+      } else {
+        // Employee-level users can see only their own override requests.
+        query = query.andWhere({ employee_id: viewerEmployeeId });
       }
 
       const overrides = await query.select(
@@ -930,10 +966,66 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
         employeeMap[emp.id] = emp.employee_id;
       });
 
-      // Step 3: Attach employee_code to each override
+      // Step 3: Resolve override date from attendance record
+      const attendanceIds = overrides.map(o => o.attendance_id).filter(Boolean);
+      const attendanceRecords = attendanceIds.length
+        ? await knex('attendance')
+            .where({ company_id: companyId })
+            .whereIn('id', attendanceIds)
+            .select('id', 'check_in')
+        : [];
+
+      const attendanceDateMap = {};
+      attendanceRecords.forEach((record) => {
+        attendanceDateMap[record.id] = record.check_in
+          ? new Date(record.check_in).toISOString().split('T')[0]
+          : null;
+      });
+
+      // Step 4: Resolve requester/approver names (employees first, users fallback)
+      const actorIds = [
+        ...new Set(
+          overrides
+            .flatMap((o) => [o.requested_by, o.approved_by])
+            .filter((id) => id !== null && id !== undefined)
+        )
+      ];
+
+      const actorEmployeeRows = actorIds.length
+        ? await knex('employees')
+            .where({ company_id: companyId })
+            .whereIn('id', actorIds)
+            .select('id', 'first_name', 'last_name')
+        : [];
+
+      const actorUserRows = actorIds.length
+        ? await knex('users')
+            .whereIn('id', actorIds)
+            .select('id', 'name')
+        : [];
+
+      const actorEmployeeNameMap = {};
+      actorEmployeeRows.forEach((row) => {
+        actorEmployeeNameMap[row.id] = `${row.first_name || ''} ${row.last_name || ''}`.trim();
+      });
+
+      const actorUserNameMap = {};
+      actorUserRows.forEach((row) => {
+        actorUserNameMap[row.id] = row.name || null;
+      });
+
+      const resolveActorName = (actorId) => {
+        if (!actorId) return null;
+        return actorEmployeeNameMap[actorId] || actorUserNameMap[actorId] || null;
+      };
+
+      // Step 5: Attach employee code + override date + actor names
       const overridesWithCode = overrides.map(o => ({
         ...o,
-        employee_id: employeeMap[o.employee_id] || null
+        employee_id: employeeMap[o.employee_id] || null,
+        override_date: attendanceDateMap[o.attendance_id] || null,
+        requested_by_name: resolveActorName(o.requested_by),
+        approved_by_name: resolveActorName(o.approved_by)
       }));
 
       res.status(200).json({ success: true, overrides: overridesWithCode });

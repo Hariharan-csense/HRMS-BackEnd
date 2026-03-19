@@ -16,6 +16,48 @@ const getRelativeTime = (dateString) => {
   return 'Older';
 };
 
+const resolveEmployeeIdFromUser = async (req) => {
+  const companyId = Number(req.user?.company_id);
+  if (!companyId) return null;
+
+  const direct = await knex('employees')
+    .where({ id: Number(req.user?.id), company_id: companyId })
+    .first();
+  if (direct) return Number(direct.id);
+
+  if (req.user?.email) {
+    const byEmail = await knex('employees')
+      .where('company_id', companyId)
+      .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+      .first();
+    if (byEmail) return Number(byEmail.id);
+  }
+
+  return null;
+};
+
+const monthsForPeriod = (period = '6months') => {
+  const map = {
+    '1month': 1,
+    '3months': 3,
+    '6months': 6,
+    '1year': 12
+  };
+  const count = map[period] || 6;
+  const now = new Date();
+  const list = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    list.push({
+      year: d.getFullYear(),
+      month: d.getMonth() + 1,
+      key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+      short: d.toLocaleString('en-US', { month: 'short' })
+    });
+  }
+  return list;
+};
+
 const getAdminDashboardData = async (req, res) => {
   try {
     const companyId = req.user.company_id;
@@ -451,6 +493,9 @@ const getEmployeeDashboardData = async (req, res) => {
   })
   .whereIn('status', ['present', 'late'])
   .whereRaw('DATE(check_in) = ?', [today])
+  .orderByRaw('CASE WHEN check_out IS NULL THEN 1 ELSE 0 END')
+  .orderBy('check_out', 'desc')
+  .orderBy('check_in', 'desc')
   .first();
 
 
@@ -460,6 +505,7 @@ const getEmployeeDashboardData = async (req, res) => {
         company_id: companyId, 
         employee_id: employeeId 
       })
+      .andWhere('year', currentYear)
       .sum('available as total_available')
       .first();
 
@@ -470,7 +516,10 @@ const getEmployeeDashboardData = async (req, res) => {
         employee_id: employeeId 
       })
       .whereRaw('DATE(check_in) = ?', [today])
+      .whereNotNull('check_out')
       .select('check_in', 'check_out')
+      .orderBy('check_out', 'desc')
+      .orderBy('check_in', 'desc')
       .first();
 
     let hoursWorked = 0;
@@ -511,14 +560,20 @@ const getEmployeeDashboardData = async (req, res) => {
     const dashboardData = {
       todayStatus: {
         status: todayAttendance ? 'Present' : 'Not Marked',
-        checkInTime: todayAttendance ? new Date(todayAttendance.check_in).toLocaleTimeString('en-US', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        }) : null,
-        description: todayAttendance ? `Checked in at ${new Date(todayAttendance.check_in).toLocaleTimeString('en-US', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        })}` : 'Attendance not marked'
+        checkInTime: todayAttendance
+          ? new Date(todayAttendance.check_out || todayAttendance.check_in).toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit'
+            })
+          : null,
+        description: todayAttendance
+          ? `${todayAttendance.check_out ? 'Last checked out' : 'Checked in'} at ${new Date(
+              todayAttendance.check_out || todayAttendance.check_in
+            ).toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit'
+            })}`
+          : 'Attendance not marked'
       },
       leaveBalance: {
         totalDays: Number(leaveBalance?.total_available || 0),
@@ -1120,10 +1175,152 @@ const getFinanceDashboardData = async (req, res) => {
   }
 };
 
+const getEmployeeAnalyticsData = async (req, res) => {
+  try {
+    const companyId = Number(req.user?.company_id);
+    if (!companyId) {
+      return res.status(400).json({ message: 'You are not assigned to any company' });
+    }
+
+    const employeeId = await resolveEmployeeIdFromUser(req);
+    if (!employeeId) {
+      return res.status(404).json({ message: 'Employee profile not found for this account' });
+    }
+
+    const period = String(req.query?.period || '6months');
+    const monthBuckets = monthsForPeriod(period);
+    const firstMonth = monthBuckets[0];
+    const lastMonth = monthBuckets[monthBuckets.length - 1];
+    const rangeStart = new Date(firstMonth.year, firstMonth.month - 1, 1, 0, 0, 0, 0);
+    const rangeEnd = new Date(lastMonth.year, lastMonth.month, 0, 23, 59, 59, 999);
+
+    const attendanceRows = await knex('attendance')
+      .where({
+        company_id: companyId,
+        employee_id: employeeId
+      })
+      .whereBetween('check_in', [rangeStart.toISOString(), rangeEnd.toISOString()])
+      .select('check_in', 'status', 'hours_worked');
+
+    const attendanceByMonth = {};
+    const monthlyHours = {};
+    monthBuckets.forEach((m) => {
+      attendanceByMonth[m.key] = { present: 0, absent: 0, late: 0, halfDay: 0 };
+      monthlyHours[m.key] = 0;
+    });
+
+    for (const row of attendanceRows) {
+      const dt = new Date(row.check_in);
+      if (Number.isNaN(dt.getTime())) continue;
+      const monthKey = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+      if (!attendanceByMonth[monthKey]) continue;
+      const s = String(row.status || '').toLowerCase().trim();
+
+      if (s === 'present') attendanceByMonth[monthKey].present += 1;
+      else if (s === 'late') attendanceByMonth[monthKey].late += 1;
+      else if (s === 'half_day' || s === 'half-day' || s === 'half') attendanceByMonth[monthKey].halfDay += 1;
+      else if (s === 'absent') attendanceByMonth[monthKey].absent += 1;
+
+      monthlyHours[monthKey] += Number(row.hours_worked || 0);
+    }
+
+    const monthlyAttendanceData = monthBuckets.map((m) => ({
+      month: m.short,
+      ...attendanceByMonth[m.key]
+    }));
+
+    const performanceData = monthBuckets.map((m) => {
+      const bucket = attendanceByMonth[m.key];
+      const total = bucket.present + bucket.late + bucket.halfDay + bucket.absent;
+      const score = total > 0
+        ? Math.round(((bucket.present + bucket.late + (bucket.halfDay * 0.5)) / total) * 100)
+        : 0;
+      return { month: m.short, score, target: 90 };
+    });
+
+    const currentMonthKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+    const currentMonth = attendanceByMonth[currentMonthKey] || { present: 0, absent: 0, late: 0, halfDay: 0 };
+    const currentMonthTotal = currentMonth.present + currentMonth.absent + currentMonth.late + currentMonth.halfDay;
+    const attendanceRate = currentMonthTotal > 0
+      ? Number((((currentMonth.present + currentMonth.late + (currentMonth.halfDay * 0.5)) / currentMonthTotal) * 100).toFixed(1))
+      : 0;
+
+    const leaveBalanceRows = await knex('leave_balances as lb')
+      .leftJoin('leave_types as lt', 'lb.leave_type_id', 'lt.id')
+      .where({
+        'lb.company_id': companyId,
+        'lb.employee_id': employeeId,
+        'lb.year': new Date().getFullYear()
+      })
+      .select('lt.name as leave_type_name', 'lb.available', 'lb.availed');
+
+    const leaveData = [];
+    let totalLeaveAvailable = 0;
+    let totalLeaveAvailed = 0;
+    for (const row of leaveBalanceRows) {
+      const availed = Number(row.availed || 0);
+      const available = Number(row.available || 0);
+      totalLeaveAvailed += availed;
+      totalLeaveAvailable += available;
+      leaveData.push({
+        name: row.leave_type_name || 'Leave',
+        value: available
+      });
+    }
+    leaveData.push({ name: 'Used', value: totalLeaveAvailed });
+
+    const goals = [
+      {
+        title: 'Achieve 95% attendance',
+        progress: Math.min(100, Math.max(0, attendanceRate)),
+        current: `${attendanceRate}%`,
+        target: '95%'
+      },
+      {
+        title: 'Minimize late arrivals',
+        progress: currentMonthTotal > 0 ? Math.max(0, 100 - Math.round((currentMonth.late / currentMonthTotal) * 100)) : 100,
+        current: `${currentMonth.late}`,
+        target: '0'
+      },
+      {
+        title: 'Maintain working hours',
+        progress: Math.min(100, Math.round(((Number(monthlyHours[currentMonthKey] || 0)) / 160) * 100)),
+        current: `${Number(monthlyHours[currentMonthKey] || 0).toFixed(1)}h`,
+        target: '160h'
+      }
+    ];
+
+    const analytics = {
+      summary: {
+        attendanceRate,
+        performanceScore: performanceData.length ? performanceData[performanceData.length - 1].score : 0,
+        workingHoursMonth: Number(monthlyHours[currentMonthKey] || 0).toFixed(1),
+        leaveAvailable: totalLeaveAvailable,
+        presentDays: currentMonth.present,
+        lateDays: currentMonth.late,
+        halfDays: currentMonth.halfDay,
+        absentDays: currentMonth.absent
+      },
+      charts: {
+        monthlyAttendanceData,
+        performanceData,
+        leaveData
+      },
+      goals
+    };
+
+    return res.status(200).json(analytics);
+  } catch (error) {
+    console.error('Employee analytics data error:', error);
+    return res.status(500).json({ message: 'Failed to fetch employee analytics data', error: error.message });
+  }
+};
+
 module.exports = {
   getAdminDashboardData,
   getEmployeeDashboardData,
   getManagerDashboardData,
   getHRDashboardData,
-  getFinanceDashboardData
+  getFinanceDashboardData,
+  getEmployeeAnalyticsData
 };
