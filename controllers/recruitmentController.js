@@ -1,5 +1,67 @@
 const knex = require('../db/db');
 
+const buildCandidateInsertPayload = (candidateData, companyId, userId) => {
+  const {
+    name,
+    client_name,
+    email,
+    phone,
+    position,
+    job_location,
+    age,
+    gender,
+    native_place,
+    highest_qualification,
+    department,
+    experience,
+    relevant_experience,
+    current_company,
+    current_designation,
+    current_location,
+    ctc,
+    ectc,
+    expected_salary,
+    notice_period,
+    skills,
+    resume_url,
+    source,
+    notes,
+    applied_date,
+    status
+  } = candidateData;
+
+  return {
+    company_id: companyId,
+    name,
+    client_name,
+    email,
+    phone,
+    position,
+    job_location,
+    age: age || null,
+    gender,
+    native_place,
+    highest_qualification,
+    department: department || client_name || 'General',
+    experience,
+    relevant_experience,
+    current_company,
+    current_designation,
+    current_location,
+    ctc,
+    ectc,
+    expected_salary,
+    notice_period,
+    skills: skills ? JSON.stringify(skills) : null,
+    resume_url,
+    source,
+    notes,
+    applied_date: applied_date || new Date(),
+    status: status || 'applied',
+    created_by: userId
+  };
+};
+
 // Get all candidates for a company
 const getCandidates = async (req, res) => {
   try {
@@ -18,7 +80,9 @@ const getCandidates = async (req, res) => {
     if (search) {
       query = query.where(function() {
         this.where('name', 'ilike', `%${search}%`)
+            .orWhere('client_name', 'ilike', `%${search}%`)
             .orWhere('email', 'ilike', `%${search}%`)
+            .orWhere('phone', 'ilike', `%${search}%`)
             .orWhere('position', 'ilike', `%${search}%`);
       });
     }
@@ -83,21 +147,7 @@ const getCandidateById = async (req, res) => {
 const createCandidate = async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const {
-      name,
-      email,
-      phone,
-      position,
-      department,
-      experience,
-      current_company,
-      expected_salary,
-      notice_period,
-      skills,
-      resume_url,
-      source,
-      notes
-    } = req.body;
+    const { email } = req.body;
 
     // Check if candidate with email already exists
     const existingCandidate = await knex('recruitment_candidates')
@@ -114,24 +164,9 @@ const createCandidate = async (req, res) => {
       });
     }
 
-    const insertResult = await knex('recruitment_candidates').insert({
-      company_id: companyId,
-      name,
-      email,
-      phone,
-      position,
-      department,
-      experience,
-      current_company,
-      expected_salary,
-      notice_period,
-      skills: skills ? JSON.stringify(skills) : null,
-      resume_url,
-      source,
-      notes,
-      applied_date: new Date(),
-      created_by: req.user.id
-    });
+    const insertResult = await knex('recruitment_candidates').insert(
+      buildCandidateInsertPayload(req.body, companyId, req.user.id)
+    );
 
     // Get the inserted record (returning() doesn't work well with MySQL)
     const newCandidate = await knex('recruitment_candidates')
@@ -152,12 +187,160 @@ const createCandidate = async (req, res) => {
   }
 };
 
+// Bulk import candidates
+const bulkCreateCandidates = async (req, res) => {
+  try {
+    const companyId = req.user.company_id;
+    const userId = req.user.id;
+    const candidates = Array.isArray(req.body?.candidates) ? req.body.candidates : [];
+
+    if (!candidates.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Candidates array is required'
+      });
+    }
+
+    const emails = candidates
+      .map((candidate) => String(candidate?.email || '').trim().toLowerCase())
+      .filter(Boolean);
+
+    const existingEmails = emails.length
+      ? await knex('recruitment_candidates')
+          .where('company_id', companyId)
+          .whereIn('email', emails)
+          .pluck('email')
+      : [];
+
+    const existingEmailSet = new Set(existingEmails.map((email) => String(email).toLowerCase()));
+    const seenEmails = new Set();
+    const rowsToInsert = [];
+    const failures = [];
+
+    for (const [index, candidate] of candidates.entries()) {
+      const rowNumber = Number(candidate?.rowNumber) || index + 2;
+      const normalizedEmail = String(candidate?.email || '').trim().toLowerCase();
+
+      if (!normalizedEmail || !candidate?.phone) {
+        failures.push(`Row ${rowNumber}: missing email or phone`);
+        continue;
+      }
+
+      if (existingEmailSet.has(normalizedEmail) || seenEmails.has(normalizedEmail)) {
+        failures.push(`Row ${rowNumber}: candidate with this email already exists`);
+        continue;
+      }
+
+      seenEmails.add(normalizedEmail);
+      rowsToInsert.push(buildCandidateInsertPayload(
+        { ...candidate, email: normalizedEmail },
+        companyId,
+        userId
+      ));
+    }
+
+    if (rowsToInsert.length) {
+      await knex('recruitment_candidates').insert(rowsToInsert);
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        inserted: rowsToInsert.length,
+        failed: failures.length,
+        failures
+      },
+      message: 'Candidates imported successfully'
+    });
+  } catch (error) {
+    console.error('Error importing candidates:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to import candidates'
+    });
+  }
+};
+
 // Update candidate
 const updateCandidate = async (req, res) => {
   try {
     const { id } = req.params;
     const companyId = req.user.company_id;
-    const updateData = { ...req.body, updated_by: req.user.id };
+    const {
+      name,
+      client_name,
+      email,
+      phone,
+      position,
+      job_location,
+      age,
+      gender,
+      native_place,
+      highest_qualification,
+      department,
+      experience,
+      relevant_experience,
+      current_company,
+      current_designation,
+      current_location,
+      ctc,
+      ectc,
+      expected_salary,
+      notice_period,
+      skills,
+      resume_url,
+      source,
+      notes,
+      applied_date,
+      status
+    } = req.body;
+
+    if (email) {
+      const existingCandidate = await knex('recruitment_candidates')
+        .where({
+          email,
+          company_id: companyId
+        })
+        .whereNot('id', id)
+        .first();
+
+      if (existingCandidate) {
+        return res.status(400).json({
+          success: false,
+          message: 'Candidate with this email already exists'
+        });
+      }
+    }
+
+    const updateData = {
+      name,
+      client_name,
+      email,
+      phone,
+      position,
+      job_location,
+      age: age || null,
+      gender,
+      native_place,
+      highest_qualification,
+      department: department || client_name || 'General',
+      experience,
+      relevant_experience,
+      current_company,
+      current_designation,
+      current_location,
+      ctc,
+      ectc,
+      expected_salary,
+      notice_period,
+      skills,
+      resume_url,
+      source,
+      notes,
+      applied_date,
+      status,
+      updated_by: req.user.id
+    };
 
     // Handle skills array
     if (updateData.skills) {
@@ -393,6 +576,7 @@ module.exports = {
   getCandidates,
   getCandidateById,
   createCandidate,
+  bulkCreateCandidates,
   updateCandidate,
   updateCandidateStatus,
   deleteCandidate,

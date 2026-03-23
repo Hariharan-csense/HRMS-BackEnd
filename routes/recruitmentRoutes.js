@@ -4,6 +4,7 @@ const {
   getCandidates,
   getCandidateById,
   createCandidate,
+  bulkCreateCandidates,
   updateCandidate,
   updateCandidateStatus,
   deleteCandidate,
@@ -21,6 +22,7 @@ router.use(protect);
 router.get('/candidates', requirePermission("hr_management", "view", { submodule: "recruitment" }), getCandidates);
 router.get('/candidates/stats', requirePermission("hr_management", "view", { submodule: "recruitment" }), getRecruitmentStats);
 router.get('/candidates/:id', requirePermission("hr_management", "view", { submodule: "recruitment" }), getCandidateById);
+router.post('/candidates/bulk', requirePermission("hr_management", "create", { submodule: "recruitment" }), bulkCreateCandidates);
 router.post('/candidates', requirePermission("hr_management", "create", { submodule: "recruitment" }), createCandidate);
 router.put('/candidates/:id', requirePermission("hr_management", "update", { submodule: "recruitment" }), updateCandidate);
 router.patch('/candidates/:id/status', requirePermission("hr_management", "update", { submodule: "recruitment" }), updateCandidateStatus);

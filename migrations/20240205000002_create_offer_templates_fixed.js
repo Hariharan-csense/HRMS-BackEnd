@@ -16,11 +16,6 @@ exports.up = function(knex) {
       table.integer('updated_by').unsigned();
       table.timestamps(true, true);
 
-      // Foreign keys
-      table.foreign('company_id').references('company_id').inTable('companies').onDelete('CASCADE');
-      table.foreign('created_by').references('id').inTable('users').onDelete('SET NULL');
-      table.foreign('updated_by').references('id').inTable('users').onDelete('SET NULL');
-
       // Indexes
       table.index(['company_id', 'is_active']);
       table.index(['company_id', 'is_default']);

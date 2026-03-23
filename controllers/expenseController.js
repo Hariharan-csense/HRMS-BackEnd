@@ -50,17 +50,32 @@ const ensureExpenseDraftsTable = async () => {
   if (!ensureExpenseDraftsTablePromise) {
     ensureExpenseDraftsTablePromise = (async () => {
       const exists = await knex.schema.hasTable('expense_drafts');
-      if (exists) return true;
+      if (!exists) {
+        await knex.schema.createTable('expense_drafts', (table) => {
+          table.increments('id').primary();
+          table.integer('company_id').unsigned().notNullable().index();
+          table.integer('employee_id').unsigned().notNullable().index();
+          table.integer('client_id').unsigned().nullable().index();
+          table.text('draft_data', 'longtext').notNullable(); // JSON string
+          table.timestamps(true, true);
+        });
+      }
 
-      await knex.schema.createTable('expense_drafts', (table) => {
-        table.increments('id').primary();
-        table.integer('company_id').unsigned().notNullable().index();
-        table.integer('employee_id').unsigned().notNullable().index();
-        table.integer('client_id').unsigned().nullable().index();
-        table.text('draft_data', 'longtext').notNullable(); // JSON string
-        table.timestamps(true, true);
-        table.unique(['company_id', 'employee_id']);
-      });
+      // Older deployments created a unique constraint on company_id + employee_id,
+      // which forces a single draft per employee. Drop it so multiple drafts can coexist.
+      try {
+        await knex.raw('ALTER TABLE expense_drafts DROP INDEX expense_drafts_company_id_employee_id_unique');
+      } catch (error) {
+        const message = String(error?.message || '').toLowerCase();
+        if (
+          !message.includes('check that column/key exists') &&
+          !message.includes('can\'t drop') &&
+          !message.includes('does not exist') &&
+          !message.includes('no such index')
+        ) {
+          throw error;
+        }
+      }
 
       return true;
     })().catch((err) => {
@@ -1077,30 +1092,39 @@ const getExpenseDraft = async (req, res) => {
 
     await ensureExpenseDraftsTable();
 
-    const row = await knex('expense_drafts')
+    const rows = await knex('expense_drafts')
       .where({ company_id: companyId, employee_id: employeeId })
-      .first();
+      .orderBy('updated_at', 'desc')
+      .orderBy('id', 'desc');
 
-    if (!row) {
-      return res.json({ success: true, draft: null });
+    if (!rows.length) {
+      return res.json({ success: true, drafts: [] });
     }
 
-    let draft = null;
-    try {
-      draft = JSON.parse(row.draft_data);
-    } catch {
-      draft = null;
-    }
+    const drafts = rows
+      .map((row) => {
+        let draft = null;
+        try {
+          draft = JSON.parse(row.draft_data);
+        } catch {
+          draft = null;
+        }
+
+        if (!draft) return null;
+
+        return {
+          id: row.id,
+          client_id: row.client_id || null,
+          expenses: Array.isArray(draft.expenses) ? draft.expenses : [],
+          created_at: row.created_at,
+          updated_at: row.updated_at
+        };
+      })
+      .filter(Boolean);
 
     return res.json({
       success: true,
-      draft: draft
-        ? {
-            client_id: row.client_id || null,
-            expenses: Array.isArray(draft.expenses) ? draft.expenses : [],
-            updated_at: row.updated_at
-          }
-        : null
+      drafts
     });
   } catch (error) {
     console.error('Get expense draft error:', error);
@@ -1122,6 +1146,8 @@ const saveExpenseDraft = async (req, res) => {
 
     const clientIdRaw = req.body.client_id;
     const clientId = clientIdRaw === null || clientIdRaw === undefined || String(clientIdRaw).trim() === '' ? null : Number(clientIdRaw);
+    const draftIdRaw = req.body.draft_id;
+    const draftId = draftIdRaw === null || draftIdRaw === undefined || String(draftIdRaw).trim() === '' ? null : Number(draftIdRaw);
     let expenses = req.body.expenses;
     if (typeof expenses === 'string') {
       try {
@@ -1183,24 +1209,31 @@ const saveExpenseDraft = async (req, res) => {
 
     const draftData = JSON.stringify({ expenses: normalized });
 
-    const existing = await knex('expense_drafts')
-      .where({ company_id: companyId, employee_id: employeeId })
-      .first();
+    if (Number.isFinite(draftId)) {
+      const existing = await knex('expense_drafts')
+        .where({ id: draftId, company_id: companyId, employee_id: employeeId })
+        .first();
 
-    if (existing) {
+      if (!existing) {
+        return res.status(404).json({ success: false, message: 'Draft not found' });
+      }
+
       await knex('expense_drafts')
-        .where({ company_id: companyId, employee_id: employeeId })
+        .where({ id: draftId, company_id: companyId, employee_id: employeeId })
         .update({ client_id: clientId, draft_data: draftData, updated_at: knex.fn.now() });
+
+      return res.json({ success: true, message: 'Draft saved', draft_id: draftId });
     } else {
-      await knex('expense_drafts').insert({
+      const insertResult = await knex('expense_drafts').insert({
         company_id: companyId,
         employee_id: employeeId,
         client_id: clientId,
         draft_data: draftData
       });
-    }
 
-    return res.json({ success: true, message: 'Draft saved' });
+      const insertedDraftId = Array.isArray(insertResult) ? insertResult[0] : insertResult;
+      return res.json({ success: true, message: 'Draft saved', draft_id: insertedDraftId || null });
+    }
   } catch (error) {
     console.error('Save expense draft error:', error);
     return res.status(500).json({ success: false, message: 'Server error' });
@@ -1218,9 +1251,15 @@ const deleteExpenseDraft = async (req, res) => {
 
     await ensureExpenseDraftsTable();
 
-    await knex('expense_drafts')
-      .where({ company_id: companyId, employee_id: employeeId })
-      .del();
+    const draftIdRaw = req.params.draft_id || req.query.draft_id || req.body?.draft_id;
+    const draftId = draftIdRaw === null || draftIdRaw === undefined || String(draftIdRaw).trim() === '' ? null : Number(draftIdRaw);
+
+    const query = knex('expense_drafts').where({ company_id: companyId, employee_id: employeeId });
+    if (Number.isFinite(draftId)) {
+      query.andWhere({ id: draftId });
+    }
+
+    await query.del();
 
     return res.json({ success: true, message: 'Draft cleared' });
   } catch (error) {

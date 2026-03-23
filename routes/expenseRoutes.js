@@ -33,10 +33,11 @@ router.post('/scan-receipt', protect, requirePermission("expenses", "create", { 
 // Get assigned clients for expense claims (employees get only their assigned clients)
 router.get('/assigned-clients', protect, requirePermission("expenses", "create", { submodule: "claims" }), getAssignedClientsForClaims);
 
-// Draft (per employee) for expense claims
+// Drafts for expense claims
 router.get('/draft', protect, requirePermission("expenses", "create", { submodule: "claims" }), getExpenseDraft);
 router.post('/draft', protect, requirePermission("expenses", "create", { submodule: "claims" }), uploadReceipts, saveExpenseDraft);
 router.delete('/draft', protect, requirePermission("expenses", "create", { submodule: "claims" }), deleteExpenseDraft);
+router.delete('/draft/:draft_id', protect, requirePermission("expenses", "create", { submodule: "claims" }), deleteExpenseDraft);
 
 // Get expenses - token required
 router.get('/', protect, requirePermission("expenses", "view"), getExpenses);

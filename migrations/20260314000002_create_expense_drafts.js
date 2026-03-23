@@ -9,8 +9,6 @@ exports.up = async function up(knex) {
     table.integer('client_id').unsigned().nullable().index();
     table.text('draft_data', 'longtext').notNullable(); // JSON string
     table.timestamps(true, true);
-
-    table.unique(['company_id', 'employee_id']);
   });
 };
 
@@ -19,4 +17,3 @@ exports.down = async function down(knex) {
   if (!exists) return;
   await knex.schema.dropTable('expense_drafts');
 };
-
