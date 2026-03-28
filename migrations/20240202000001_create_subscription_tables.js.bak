@@ -1,0 +1,60 @@
+exports.up = function(knex) {
+  return knex.schema
+    // Subscription plans table
+    .createTable('subscription_plans', function(table) {
+      table.increments('id').primary();
+      table.string('name').notNullable(); // Basic, Pro, Enterprise
+      table.text('description');
+      table.decimal('price', 10, 2).notNullable(); // 12000.00
+      table.integer('max_users').notNullable(); // 10 users
+      table.integer('trial_days').defaultTo(7); // 7 days free trial
+      table.string('billing_cycle').notNullable(); // monthly, yearly
+      table.boolean('is_active').defaultTo(true);
+      table.timestamps(true, true);
+    })
+    
+    // Company subscriptions table
+    .createTable('company_subscriptions', function(table) {
+      table.increments('id').primary();
+      table.integer('company_id').unsigned().notNullable();
+      table.integer('plan_id').unsigned().notNullable();
+      table.date('start_date').notNullable();
+      table.date('end_date').notNullable();
+      table.date('trial_end_date');
+      table.enum('status', ['trial', 'active', 'expired', 'cancelled']).defaultTo('trial');
+      table.integer('max_users').notNullable();
+      table.decimal('paid_amount', 10, 2);
+      table.date('last_payment_date');
+      table.date('next_billing_date');
+      table.text('payment_details');
+      table.timestamps(true, true);
+      
+      table.foreign('company_id').references('id').inTable('companies').onDelete('CASCADE');
+      table.foreign('plan_id').references('id').inTable('subscription_plans').onDelete('CASCADE');
+    })
+    
+    // Payment history table
+    .createTable('subscription_payments', function(table) {
+      table.increments('id').primary();
+      table.integer('company_id').unsigned().notNullable();
+      table.integer('subscription_id').unsigned().notNullable();
+      table.decimal('amount', 10, 2).notNullable();
+      table.enum('payment_method', ['card', 'upi', 'bank_transfer', 'cheque']).notNullable();
+      table.string('transaction_id').unique();
+      table.string('payment_reference');
+      table.enum('status', ['pending', 'completed', 'failed', 'refunded']).defaultTo('pending');
+      table.text('notes');
+      table.date('payment_date').notNullable();
+      table.timestamps(true, true);
+      
+      table.foreign('company_id').references('id').inTable('companies').onDelete('CASCADE');
+      table.foreign('subscription_id').references('id').inTable('company_subscriptions').onDelete('CASCADE');
+    });
+};
+
+exports.down = function(knex) {
+  return knex.schema
+    .dropTableIfExists('subscription_payments')
+    .dropTableIfExists('company_subscriptions')
+    .dropTableIfExists('subscription_plans');
+};

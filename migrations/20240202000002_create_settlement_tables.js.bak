@@ -1,0 +1,100 @@
+/**
+ * @param { import("knex").Knex } knex
+ * @returns { Promise<void> }
+ */
+exports.up = function(knex) {
+  return knex.schema
+    // Main settlements table
+    .createTable('settlements', function(table) {
+      table.uuid('id').primary().defaultTo(knex.raw('(UUID())'));
+      table.uuid('employee_id').notNullable();
+      table.uuid('company_id').notNullable();
+      table.date('resignation_date').notNullable();
+      table.date('last_working_day').notNullable();
+      table.date('settlement_date').nullable();
+      
+      table.enum('status', ['pending', 'processing', 'completed', 'rejected'])
+        .defaultTo('pending').notNullable();
+      
+      // Financial amounts
+      table.decimal('total_earnings', 12, 2).defaultTo(0);
+      table.decimal('total_deductions', 12, 2).defaultTo(0);
+      table.decimal('net_amount', 12, 2).defaultTo(0);
+      
+      // Payment details
+      table.string('payment_mode', 50).nullable(); // 'bank_transfer', 'cash', 'cheque', etc.
+      table.string('payment_reference', 100).nullable();
+      
+      // Additional information
+      table.text('remarks').nullable();
+      
+      // Timestamps
+      table.timestamps(true, true);
+      
+      // Indexes
+      table.index(['employee_id']);
+      table.index(['company_id']);
+      table.index(['status']);
+      table.index(['created_at']);
+    })
+    
+    // Settlement components table (earnings and deductions breakdown)
+    .createTable('settlement_components', function(table) {
+      table.uuid('id').primary().defaultTo(knex.raw('(UUID())'));
+      table.uuid('settlement_id').notNullable();
+      table.string('name', 100).notNullable(); // 'Final Month Salary', 'Leave Encashment', etc.
+      table.enum('type', ['earning', 'deduction']).notNullable();
+      table.decimal('amount', 12, 2).notNullable();
+      table.boolean('is_taxable').defaultTo(false);
+      table.text('description').nullable();
+      table.timestamps(true, true);
+      
+      // Indexes
+      table.index(['settlement_id']);
+      table.index(['type']);
+    })
+    
+    // Settlement documents table
+    .createTable('settlement_documents', function(table) {
+      table.uuid('id').primary().defaultTo(knex.raw('(UUID())'));
+      table.uuid('settlement_id').notNullable();
+      table.string('document_name', 200).notNullable();
+      table.string('document_type', 50).notNullable(); // 'resignation_letter', 'experience_letter', etc.
+      table.string('file_path', 500).notNullable();
+      table.string('file_size', 50).nullable();
+      table.string('mime_type', 100).nullable();
+      table.text('description').nullable();
+      table.timestamps(true, true);
+      
+      // Indexes
+      table.index(['settlement_id']);
+      table.index(['document_type']);
+    })
+    
+    // Settlement approval workflow table
+    .createTable('settlement_approvals', function(table) {
+      table.uuid('id').primary().defaultTo(knex.raw('(UUID())'));
+      table.uuid('settlement_id').notNullable();
+      table.uuid('approver_id').notNullable(); // User who approved/rejected
+      table.enum('action', ['calculated', 'approved', 'rejected']).notNullable();
+      table.text('comments').nullable();
+      table.timestamp('action_date').defaultTo(knex.fn.now());
+      
+      // Indexes
+      table.index(['settlement_id']);
+      table.index(['approver_id']);
+      table.index(['action_date']);
+    });
+};
+
+/**
+ * @param { import("knex").Knex } knex
+ * @returns { Promise<void> }
+ */
+exports.down = function(knex) {
+  return knex.schema
+    .dropTableIfExists('settlement_approvals')
+    .dropTableIfExists('settlement_documents')
+    .dropTableIfExists('settlement_components')
+    .dropTableIfExists('settlements');
+};

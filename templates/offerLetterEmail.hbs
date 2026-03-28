@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offer Letter - {{position}}</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        .container {
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            border-bottom: 3px solid #007bff;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #007bff;
+            margin: 0;
+            font-size: 28px;
+        }
+        .greeting {
+            font-size: 18px;
+            margin-bottom: 20px;
+        }
+        .offer-details {
+            background-color: #f8f9fa;
+            padding: 25px;
+            border-radius: 8px;
+            margin: 25px 0;
+            border-left: 4px solid #28a745;
+        }
+        .offer-details h3 {
+            color: #28a745;
+            margin-top: 0;
+            font-size: 20px;
+        }
+        .details-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .detail-item {
+            margin-bottom: 10px;
+        }
+        .detail-label {
+            font-weight: bold;
+            color: #555;
+            display: block;
+            margin-bottom: 5px;
+        }
+        .detail-value {
+            color: #333;
+            font-size: 16px;
+        }
+        .offer-content {
+            background-color: #fafafa;
+            padding: 25px;
+            border-radius: 8px;
+            margin: 25px 0;
+            border: 1px solid #e9ecef;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            text-align: center;
+        }
+        .footer p {
+            margin: 5px 0;
+            color: #666;
+            font-size: 14px;
+        }
+        .cta-button {
+            display: inline-block;
+            background-color: #007bff;
+            color: white;
+            padding: 12px 25px;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 20px 0;
+            font-weight: bold;
+        }
+        @media (max-width: 600px) {
+            .details-grid {
+                grid-template-columns: 1fr;
+            }
+            body {
+                padding: 10px;
+            }
+            .container {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Offer Letter</h1>
+            <h2>{{position}}</h2>
+        </div>
+
+        <div class="greeting">
+            Dear <strong>{{candidateName}}</strong>,
+        </div>
+
+        <p>We are delighted to extend an offer of employment for the position of <strong>{{position}}</strong> at {{companyName}}. Your skills and experience align perfectly with what we are looking for, and we believe you will make a valuable addition to our team.</p>
+
+        <div class="offer-details">
+            <h3>Position Details</h3>
+            <div class="details-grid">
+                <div class="detail-item">
+                    <span class="detail-label">Designation:</span>
+                    <span class="detail-value">{{position}}</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">Department:</span>
+                    <span class="detail-value">{{department}}</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">Location:</span>
+                    <span class="detail-value">{{location}}</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">Employment Type:</span>
+                    <span class="detail-value">{{employmentType}}</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">Date of Joining:</span>
+                    <span class="detail-value">{{startDate}}</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">Salary:</span>
+                    <span class="detail-value">{{salary}}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="offer-content">
+            <h3>Complete Offer Letter</h3>
+            {{offerContent}}
+        </div>
+
+        <p>We believe that your skills and experience will contribute significantly to our team, and we look forward to the positive impact you will make to the organization.</p>
+
+        <p>If you have any questions or require further clarification, feel free to contact our HR Team.</p>
+
+        <p>Once again, congratulations on your appointment to this vital role at {{companyName}}.</p>
+
+        <div class="footer">
+            <p>Best regards,</p>
+            <p><strong>HR Team</strong></p>
+            <p>{{companyName}}</p>
+            <p>&copy; {{currentYear}} {{companyName}}. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

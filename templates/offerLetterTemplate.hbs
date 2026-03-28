@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offer Letter - {{companyName}}</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #fff;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 20px;
+        }
+        .logo-placeholder {
+            width: 120px;
+            height: 60px;
+            border: 2px dashed #ccc;
+            margin: 0 auto 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #999;
+            font-size: 12px;
+        }
+        .company-address {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        .letter-content {
+            margin-bottom: 40px;
+        }
+        .greeting {
+            margin-bottom: 20px;
+        }
+        .offer-details {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .detail-label {
+            font-weight: bold;
+            color: #555;
+        }
+        .detail-value {
+            color: #333;
+        }
+        .closing {
+            margin-top: 40px;
+        }
+        .signature-section {
+            margin-top: 60px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .signature-box {
+            width: 45%;
+            text-align: center;
+        }
+        .signature-line {
+            border-bottom: 1px solid #333;
+            margin-bottom: 10px;
+            height: 50px;
+        }
+        .signature-label {
+            font-size: 14px;
+            color: #666;
+        }
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            font-size: 12px;
+            color: #999;
+            text-align: center;
+        }
+        .highlight {
+            background-color: #fff3cd;
+            padding: 15px;
+            border-left: 4px solid #ffc107;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo-placeholder">
+            Logo
+        </div>
+        <h1>{{companyName}}</h1>
+        <div class="company-address">
+            {{companyAddress}}<br>
+            {{companyCity}}, {{companyState}} {{companyZip}}<br>
+            {{companyPhone}} | {{companyEmail}}
+        </div>
+    </div>
+
+    <div class="letter-content">
+        <div class="greeting">
+            <p>Dear {{candidateName}},</p>
+        </div>
+
+        <p>We are pleased to offer you the position of <strong>{{position}}</strong> at {{companyName}}. After careful consideration of your application and interviews, we believe your skills and experience will be valuable to our team.</p>
+
+        <div class="highlight">
+            <p>This offer is contingent upon your acceptance of the terms and conditions outlined below, along with the successful completion of any required background checks and pre-employment screenings.</p>
+        </div>
+
+        <div class="offer-details">
+            <h3>Employment Details:</h3>
+            <div class="detail-row">
+                <span class="detail-label">Position:</span>
+                <span class="detail-value">{{position}}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Department:</span>
+                <span class="detail-value">{{department}}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Employment Type:</span>
+                <span class="detail-value">{{employmentType}}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Start Date:</span>
+                <span class="detail-value">{{startDate}}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Location:</span>
+                <span class="detail-value">{{location}}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Salary/Compensation:</span>
+                <span class="detail-value">{{salary}}</span>
+            </div>
+            {{#if probationPeriod}}
+            <div class="detail-row">
+                <span class="detail-label">Probation Period:</span>
+                <span class="detail-value">{{probationPeriod}}</span>
+            </div>
+            {{/if}}
+            {{#if reportingTo}}
+            <div class="detail-row">
+                <span class="detail-label">Reporting To:</span>
+                <span class="detail-value">{{reportingTo}}</span>
+            </div>
+            {{/if}}
+        </div>
+
+        {{#if customTerms}}
+        <div class="custom-terms">
+            <h3>Additional Terms:</h3>
+            <p>{{customTerms}}</p>
+        </div>
+        {{/if}}
+
+        <div class="responsibilities">
+            <h3>Key Responsibilities:</h3>
+            <p>As {{position}}, you will be responsible for:</p>
+            <ul>
+                <li>Contributing to our team's success through your expertise and dedication</li>
+                <li>Collaborating with colleagues to achieve departmental and organizational goals</li>
+                <li>Maintaining high standards of performance and professional conduct</li>
+                <li>Continuously developing your skills and knowledge relevant to your role</li>
+            </ul>
+        </div>
+
+        <div class="next-steps">
+            <h3>Next Steps:</h3>
+            <p>Please review this offer carefully and let us know your decision within <strong>{{responseTime}}</strong> days of receiving this letter. To accept this offer, please sign and return a copy of this letter by email to {{companyEmail}}.</p>
+        </div>
+
+        <div class="contact-info">
+            <p>If you have any questions or need clarification regarding any aspect of this offer, please don't hesitate to contact us:</p>
+            <p>Email: {{companyEmail}}<br>
+            Phone: {{companyPhone}}</p>
+        </div>
+    </div>
+
+    <div class="closing">
+        <p>We are excited about the possibility of you joining our team and look forward to your positive response.</p>
+        <p>Sincerely,<br>
+        The HR Team<br>
+        {{companyName}}</p>
+    </div>
+
+    <div class="signature-section">
+        <div class="signature-box">
+            <div class="signature-line"></div>
+            <div class="signature-label">HR Team</div>
+            <div class="signature-label">{{companyName}}</div>
+            <div class="signature-label">Date: {{currentDate}}</div>
+        </div>
+        <div class="signature-box">
+            <div class="signature-line"></div>
+            <div class="signature-label">Candidate Signature</div>
+            <div class="signature-label">{{candidateName}}</div>
+            <div class="signature-label">Date: _________________</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>This offer letter is confidential and intended solely for the named recipient. If you are not the intended recipient, please notify us immediately and destroy this document.</p>
+        <p>© {{currentYear}} {{companyName}}. All rights reserved.</p>
+    </div>
+</body>
+</html>
