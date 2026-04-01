@@ -1,10 +1,5 @@
 exports.up = function (knex) {
   return knex.schema
-    .table('subscription_plans', function (table) {
-      table.decimal('price_upto25', 10, 2).nullable();
-      table.decimal('price_upto50', 10, 2).nullable();
-      table.decimal('price_above50', 10, 2).nullable();
-    })
     .table('company_subscriptions', function (table) {
       table.string('billing_cycle').nullable();
     })
@@ -47,10 +42,5 @@ exports.down = function (knex) {
     .dropTableIfExists('subscription_addons')
     .table('company_subscriptions', function (table) {
       table.dropColumn('billing_cycle');
-    })
-    .table('subscription_plans', function (table) {
-      table.dropColumn('price_upto25');
-      table.dropColumn('price_upto50');
-      table.dropColumn('price_above50');
     });
 };

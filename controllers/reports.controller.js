@@ -2,8 +2,17 @@
 
 const knex = require('../db/db'); // ← Fixed path (CommonJS require)
 
-// Helper to get current year if not provided
-const getYear = (req) => Number(req.query.year) || new Date().getFullYear();
+// Helper to get a safe report year from query input
+const getYear = (req) => {
+  const parsedYear = Number.parseInt(String(req.query.year || ''), 10);
+  const currentYear = new Date().getFullYear();
+
+  if (!Number.isInteger(parsedYear) || parsedYear < 2000 || parsedYear > currentYear + 5) {
+    return currentYear;
+  }
+
+  return parsedYear;
+};
 
 const resolveCompanyId = async (req) => {
   let companyId = req.user?.company_id;
@@ -274,7 +283,7 @@ const getPayrollReport = async (req, res) => {
         knex.raw('SUM(gross) as amount')
       )
       .where({ company_id: companyId })
-      .andWhere(knex.raw(`month LIKE '${year}-%'`))
+      .andWhere('month', 'like', `${year}-%`)
       .groupBy('month')  // Group by the raw month value
       .orderBy('month');  // Order by the raw month value
 

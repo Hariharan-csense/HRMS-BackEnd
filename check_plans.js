@@ -2,10 +2,10 @@ const db = require('./db/db');
 
 (async () => {
   try {
-    const plans = await db('subscription_plans').select('*');
+    const plans = await db('subscription_plans').select('id', 'name', 'price', 'yearly_price');
     console.log('Current plans in database:');
     plans.forEach(plan => {
-      console.log(`ID: ${plan.id}, Name: ${plan.name}, Price: ${plan.price}, Billing Cycle: ${plan.billing_cycle}`);
+      console.log(`ID: ${plan.id}, Name: ${plan.name}, Monthly Price: ${plan.price}, Yearly Price: ${plan.yearly_price}`);
     });
     process.exit(0);
   } catch (error) {

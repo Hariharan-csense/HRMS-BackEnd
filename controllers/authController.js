@@ -315,59 +315,35 @@ const registerUser = async (req, res) => {
       }
 
       /* ---------------- AUTO START FREE TRIAL ---------------- */
-      if (role === 'admin' && companyPkId) {
+        if (role === 'admin' && companyPkId) {
+  
+          const defaultPlan = await trx('subscription_plans')
+            .where('is_active', true)
+            .orderBy('created_at', 'asc')
+            .first();
 
-        let defaultPlan = await trx('subscription_plans')
-          .where('is_active', true)
-          .orderBy('price', 'asc')
-          .first();
+          if (defaultPlan) {
+            const startDate = moment().toDate();
+            const trialEndDate = moment()
+              .add(defaultPlan.trial_days, 'days')
+              .toDate();
 
-        if (!defaultPlan) {
-          const [newPlanId] = await trx('subscription_plans').insert({
-            name: 'Basic Plan',
-            description: 'Default plan with basic features',
-            price: 999,
-            max_users: 10,
-            trial_days: 14,
-            billing_cycle: 'monthly',
-            is_active: true,
-            created_at: trx.fn.now(),
-            updated_at: trx.fn.now()
-          });
-
-          defaultPlan = {
-            id: newPlanId,
-            trial_days: 7,
-            max_users: 10
-          };
+            await trx('company_subscriptions').insert({
+              company_id: companyPkId,
+              plan_id: defaultPlan.id,
+              start_date: startDate,
+              end_date: trialEndDate,
+              trial_end_date: trialEndDate,
+              status: 'trial',
+              max_users: defaultPlan.max_users,
+              next_billing_date: trialEndDate,
+              created_at: trx.fn.now(),
+              updated_at: trx.fn.now()
+            });
+          } else {
+            console.warn('Skipping automatic trial creation because no subscription plan exists yet.');
+          }
         }
-
-        const startDate = moment().toDate();
-        const trialEndDate = moment()
-          .add(defaultPlan.trial_days, 'days')
-          .toDate();
-
-        const billingUnit = ['yearly', 'annual', 'year'].includes(String(defaultPlan.billing_cycle || '').toLowerCase())
-          ? 'year'
-          : 'month';
-
-        const endDate = moment(trialEndDate)
-          .add(1, billingUnit)
-          .toDate();
-
-        await trx('company_subscriptions').insert({
-          company_id: companyPkId,
-          plan_id: defaultPlan.id,
-          start_date: startDate,
-          end_date: endDate,
-          trial_end_date: trialEndDate,
-          status: 'trial',
-          max_users: defaultPlan.max_users,
-          next_billing_date: trialEndDate,
-          created_at: trx.fn.now(),
-          updated_at: trx.fn.now()
-        });
-      }
 
     });
 

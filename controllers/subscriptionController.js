@@ -15,22 +15,34 @@ const normalizeBillingCycle = (billingCycle) => {
   return 'monthly';
 };
 
-const getTierPrice = (record, usersCount) => {
-  const users = Number(usersCount) || 0;
+const roundMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
+
+const getPlanSchemaInfo = async () => {
+  try {
+    return await db('subscription_plans').columnInfo();
+  } catch (error) {
+    console.log('Could not inspect subscription_plans schema:', error.message);
+    return {};
+  }
+};
+
+const getPlanMonthlyPriceField = (columns = {}) => (columns.monthly_price ? 'monthly_price' : 'price');
+const getPlanYearlyPriceField = (columns = {}) => (columns.yearly_price ? 'yearly_price' : null);
+const getPlanStorageField = (columns = {}) => (columns.storage_gb ? 'storage_gb' : null);
+const getPlanMaxUsersField = (columns = {}) => (columns.max_users ? 'max_users' : null);
+
+const resolveSelectedUsers = (usersCount) => {
+  const parsed = Number(usersCount || 1);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+};
+
+const getTierPrice = (record, usersCount, billingCycle = 'monthly') => {
   if (!record) return 0;
-  const priceUpto25 = Number(record.price_upto25);
-  const priceUpto50 = Number(record.price_upto50);
-  const priceAbove50 = Number(record.price_above50);
-  if (Number.isFinite(priceUpto25) && users > 0 && users <= 25) {
-    return priceUpto25;
-  }
-  if (Number.isFinite(priceUpto50) && users > 25 && users <= 50) {
-    return priceUpto50;
-  }
-  if (Number.isFinite(priceAbove50) && users > 50) {
-    return priceAbove50;
-  }
-  return 0;
+  const normalizedCycle = normalizeBillingCycle(billingCycle);
+  const resolvedPrice = normalizedCycle === 'yearly'
+    ? (record.yearly_price ?? record.yearlyPrice)
+    : (record.monthly_price ?? record.price);
+  return Number(resolvedPrice || 0);
 };
 
 const getEndDateForPlan = (startDate, billingCycle) => {
@@ -49,15 +61,15 @@ const razorpay = process.env.RAZORPAY_KEY_ID &&
   : null;
 
 const computePricing = (plan, usersCount, billingCycle) => {
-  const normalizedCycle = normalizeBillingCycle(billingCycle || plan.billing_cycle);
-  const multiplier = normalizedCycle === 'yearly' ? 12 : 1;
-  const basePerUser = getTierPrice(plan, usersCount);
-  const perUserTotal = basePerUser;
-  const totalAmount = perUserTotal * Number(usersCount || 0) * multiplier;
+  const normalizedCycle = normalizeBillingCycle(billingCycle);
+  const basePerUser = getTierPrice(plan, usersCount, normalizedCycle);
+  const totalAmount = roundMoney(basePerUser * Number(usersCount || 0) * (normalizedCycle === 'yearly' ? 12 : 1));
+
   return {
     billing_cycle: normalizedCycle,
     base_per_user: basePerUser,
-    per_user_total: perUserTotal,
+    per_user_monthly: basePerUser,
+    per_user_total: basePerUser,
     total_amount: totalAmount
   };
 };
@@ -65,22 +77,28 @@ const computePricing = (plan, usersCount, billingCycle) => {
 // Get all subscription plans
 const getPlans = async (req, res) => {
   try {
-    // Check if storage_gb column exists
-    const hasStorageColumn = await checkStorageColumnExists();
-    
+    const planColumns = await getPlanSchemaInfo();
+    const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
+    const yearlyPriceField = getPlanYearlyPriceField(planColumns);
+    const storageField = getPlanStorageField(planColumns);
+    const maxUsersField = getPlanMaxUsersField(planColumns);
+
     let query = db('subscription_plans')
       .where('is_active', true)
-      .orderBy('price', 'asc');
-    
-    // Only select storage_gb if column exists
-    if (hasStorageColumn) {
-      query = query.select('*');
-    } else {
-      query = query.select(
-        'id', 'name', 'description', 'price', 'price_upto25', 'price_upto50', 'price_above50', 'max_users', 
-        'trial_days', 'billing_cycle', 'is_active', 'created_at', 'updated_at'
+      .orderBy(monthlyPriceField, 'asc')
+      .select(
+        'id',
+        'name',
+        'description',
+        `${monthlyPriceField} as price`,
+        yearlyPriceField ? `${yearlyPriceField} as yearly_price` : db.raw('NULL as yearly_price'),
+        maxUsersField ? `${maxUsersField} as max_users` : db.raw('0 as max_users'),
+        storageField ? `${storageField} as storage_gb` : db.raw('NULL as storage_gb'),
+        'trial_days',
+        'is_active',
+        'created_at',
+        'updated_at'
       );
-    }
     
     const plans = await query;
     
@@ -139,7 +157,7 @@ const createUpgradeOrder = async (req, res) => {
       });
     }
 
-    const selectedUsers = Number(users_count || plan.max_users || 0);
+    const selectedUsers = resolveSelectedUsers(users_count);
     const pricing = computePricing(plan, selectedUsers, billing_cycle);
 
     const amountPaise = Math.round(Number(pricing.total_amount) * 100);
@@ -171,7 +189,7 @@ const createUpgradeOrder = async (req, res) => {
           plan: {
             id: plan.id,
             name: plan.name,
-            price: Number(plan.price),
+            price: Number(plan.monthly_price ?? plan.price ?? 0),
             billing_cycle: pricing.billing_cycle,
             display_price: pricing.total_amount,
             users_count: selectedUsers
@@ -256,7 +274,7 @@ const verifyUpgradePayment = async (req, res) => {
       });
     }
 
-    const selectedUsers = Number(users_count || plan.max_users || 0);
+    const selectedUsers = resolveSelectedUsers(users_count);
     const pricing = computePricing(plan, selectedUsers, billing_cycle);
     const paidAmount = pricing.total_amount;
 
@@ -277,7 +295,7 @@ const verifyUpgradePayment = async (req, res) => {
           start_date: startDate,
           end_date: endDate,
           status: 'active',
-          max_users: selectedUsers || plan.max_users,
+          max_users: selectedUsers,
           storage_gb: plan.storage_gb || 1,
           billing_cycle: pricing.billing_cycle,
           paid_amount: paidAmount,
@@ -298,7 +316,7 @@ const verifyUpgradePayment = async (req, res) => {
         start_date: startDate,
         end_date: endDate,
         status: 'active',
-        max_users: selectedUsers || plan.max_users,
+        max_users: selectedUsers,
         storage_gb: plan.storage_gb || 1,
         billing_cycle: pricing.billing_cycle,
         paid_amount: paidAmount,
@@ -350,20 +368,27 @@ const verifyUpgradePayment = async (req, res) => {
 // Get all plans (including inactive) - for admin
 const getAllPlans = async (req, res) => {
   try {
-    // Check if storage_gb column exists
-    const hasStorageColumn = await checkStorageColumnExists();
-    
-    let query = db('subscription_plans').orderBy('price', 'asc');
-    
-    // Only select storage_gb if column exists
-    if (hasStorageColumn) {
-      query = query.select('*');
-    } else {
-      query = query.select(
-        'id', 'name', 'description', 'price', 'price_upto25', 'price_upto50', 'price_above50', 'max_users', 
-        'trial_days', 'billing_cycle', 'is_active', 'created_at', 'updated_at'
+    const planColumns = await getPlanSchemaInfo();
+    const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
+    const yearlyPriceField = getPlanYearlyPriceField(planColumns);
+    const storageField = getPlanStorageField(planColumns);
+    const maxUsersField = getPlanMaxUsersField(planColumns);
+
+    let query = db('subscription_plans')
+      .orderBy(monthlyPriceField, 'asc')
+      .select(
+        'id',
+        'name',
+        'description',
+        `${monthlyPriceField} as price`,
+        yearlyPriceField ? `${yearlyPriceField} as yearly_price` : db.raw('NULL as yearly_price'),
+        maxUsersField ? `${maxUsersField} as max_users` : db.raw('0 as max_users'),
+        storageField ? `${storageField} as storage_gb` : db.raw('NULL as storage_gb'),
+        'trial_days',
+        'is_active',
+        'created_at',
+        'updated_at'
       );
-    }
     
     const plans = await query;
     
@@ -390,42 +415,46 @@ const createPlan = async (req, res) => {
       name,
       description,
       price,
-      price_upto25,
-      price_upto50,
-      price_above50,
-      max_users,
+      yearly_price,
       storage_gb,
       trial_days,
-      billing_cycle,
       is_active = true
     } = req.body;
 
     // Validate required fields
-    if (!name || price_upto25 === undefined || price_upto50 === undefined || price_above50 === undefined || !trial_days || !billing_cycle) {
+    if (
+      !name ||
+      price === undefined ||
+      yearly_price === undefined ||
+      !trial_days
+    ) {
       console.log('Validation failed - missing fields');
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: name, price_upto25, price_upto50, price_above50, trial_days, billing_cycle'
+        message: 'Missing required fields: name, price, yearly_price, trial_days'
       });
     }
 
     // Check if storage_gb column exists before trying to insert it
     const hasStorageColumn = await checkStorageColumnExists();
     
-    console.log('Creating plan with data:', { name, description, price, max_users, storage_gb, trial_days, billing_cycle, is_active });
+    const planColumns = await getPlanSchemaInfo();
+    const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
+    const yearlyPriceField = getPlanYearlyPriceField(planColumns);
+
+    console.log('Creating plan with data:', { name, description, price, yearly_price, storage_gb, trial_days, is_active });
 
     const planData = {
       name,
       description,
-      price: price !== undefined ? price : price_upto25,
-      price_upto25,
-      price_upto50,
-      price_above50,
-      max_users: max_users !== undefined ? max_users : 0,
       trial_days,
-      billing_cycle,
       is_active
     };
+
+    planData[monthlyPriceField] = price;
+    if (yearlyPriceField) {
+      planData[yearlyPriceField] = yearly_price;
+    }
 
     // Only add storage_gb if the column exists
     if (hasStorageColumn && storage_gb !== undefined) {
@@ -467,17 +496,14 @@ const checkStorageColumnExists = async () => {
 const updatePlan = async (req, res) => {
   try {
     const { id } = req.params;
+    console.log('Update plan request received:', req.body);
     const {
       name,
       description,
       price,
-      price_upto25,
-      price_upto50,
-      price_above50,
-      max_users,
+      yearly_price,
       storage_gb,
       trial_days,
-      billing_cycle,
       is_active
     } = req.body;
 
@@ -490,30 +516,28 @@ const updatePlan = async (req, res) => {
       });
     }
 
-    // Check if storage_gb column exists
+    const planColumns = await getPlanSchemaInfo();
+    const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
+    const yearlyPriceField = getPlanYearlyPriceField(planColumns);
     const hasStorageColumn = await checkStorageColumnExists();
 
     const resolvedPrice =
       price !== undefined
         ? price
-        : price_upto25 !== undefined
-          ? price_upto25
-          : existingPlan.price;
-    const resolvedMaxUsers = max_users !== undefined ? max_users : existingPlan.max_users;
+        : (existingPlan[monthlyPriceField] ?? existingPlan.price);
 
     const updateData = {
       name,
       description,
-      price: resolvedPrice,
-      price_upto25,
-      price_upto50,
-      price_above50,
-      max_users: resolvedMaxUsers,
       trial_days,
-      billing_cycle,
       is_active,
       updated_at: new Date()
     };
+
+    updateData[monthlyPriceField] = resolvedPrice;
+    if (yearlyPriceField && yearly_price !== undefined) {
+      updateData[yearlyPriceField] = yearly_price;
+    }
 
     // Only add storage_gb if the column exists and value is provided
     if (hasStorageColumn && storage_gb !== undefined) {
@@ -588,16 +612,24 @@ const deletePlan = async (req, res) => {
       });
     }
 
-    // Check if plan is being used by any active subscriptions
-    const activeSubscriptions = await db('company_subscriptions')
+    // If the plan is still in use, deactivate it instead of hard-deleting it.
+    const activeSubscription = await db('company_subscriptions')
       .where('plan_id', id)
       .whereIn('status', ['trial', 'active'])
       .first();
 
-    if (activeSubscriptions) {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot delete plan that is being used by active subscriptions'
+    if (activeSubscription) {
+      await db('subscription_plans')
+        .where('id', id)
+        .update({
+          is_active: false,
+          updated_at: new Date()
+        });
+
+      return res.json({
+        success: true,
+        message: 'Plan is being used by active subscriptions, so it was deactivated instead of deleted.',
+        deactivated: true
       });
     }
 
@@ -623,8 +655,8 @@ const getAllSubscriptions = async (req, res) => {
       .select(
         'company_subscriptions.*',
         'subscription_plans.name as plan_name',
-        'subscription_plans.price as plan_price',
-        'subscription_plans.max_users as plan_max_users',
+        'subscription_plans.monthly_price as plan_price',
+        db.raw('0 as plan_max_users'),
         'companies.company_name'
       )
       .join('subscription_plans', 'company_subscriptions.plan_id', 'subscription_plans.id')
@@ -648,15 +680,21 @@ const getAllSubscriptions = async (req, res) => {
 const getCompanySubscription = async (req, res) => {
   try {
     const companyId = req.user.company_id;
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company context not found for current user'
+      });
+    }
     
     const subscription = await db('company_subscriptions')
       .select(
         'company_subscriptions.*',
         'subscription_plans.name as plan_name',
         'subscription_plans.description as plan_description',
-        'subscription_plans.price as plan_price',
-        'subscription_plans.max_users as plan_max_users',
-        'subscription_plans.billing_cycle as plan_billing_cycle',
+        'subscription_plans.monthly_price as plan_price',
+        db.raw('0 as plan_max_users'),
         'subscription_plans.storage_gb as plan_storage_gb'
       )
       .join('subscription_plans', 'company_subscriptions.plan_id', 'subscription_plans.id')
@@ -672,14 +710,22 @@ const getCompanySubscription = async (req, res) => {
       });
     }
 
-    // Calculate days remaining
     const today = moment();
-    const endDate = moment(subscription.end_date);
-    const daysRemaining = endDate.diff(today, 'days');
-    
-    // Check if trial is active (trial is active only if today is before trial_end_date)
-    const isTrialActive = subscription.status === 'trial' && 
-                         moment().startOf('day').isBefore(moment(subscription.trial_end_date).startOf('day'));
+    const isTrialSubscription = subscription.status === 'trial' && !!subscription.trial_end_date;
+    const trialEndMoment = subscription.trial_end_date ? moment(subscription.trial_end_date) : null;
+    const regularEndMoment = subscription.end_date ? moment(subscription.end_date) : null;
+
+    const isTrialActive =
+      isTrialSubscription &&
+      trialEndMoment &&
+      moment().startOf('day').isBefore(trialEndMoment.clone().startOf('day'));
+
+    const effectiveEndMoment =
+      isTrialSubscription && trialEndMoment
+        ? trialEndMoment
+        : regularEndMoment;
+
+    const daysRemaining = effectiveEndMoment ? effectiveEndMoment.diff(today, 'days') : 0;
 
     res.json({
       success: true,
@@ -687,8 +733,7 @@ const getCompanySubscription = async (req, res) => {
         ...subscription,
         days_remaining: Math.max(0, daysRemaining),
         is_trial_active: isTrialActive,
-        trial_days_remaining: isTrialActive ? 
-          moment(subscription.trial_end_date).diff(today, 'days') : Math.max(0, moment(subscription.trial_end_date).diff(today, 'days')),
+        trial_days_remaining: trialEndMoment ? Math.max(0, trialEndMoment.diff(today, 'days')) : 0,
         storage_usage_percentage: subscription.storage_gb > 0 ? 
           Math.round((subscription.used_storage_mb || 0) / (subscription.storage_gb * 1024) * 100) : 0
       }
@@ -733,12 +778,12 @@ const startTrial = async (req, res) => {
       });
     }
 
-    const selectedUsers = Number(users_count || plan.max_users || 0);
+    const selectedUsers = resolveSelectedUsers(users_count);
     const pricing = computePricing(plan, selectedUsers, billing_cycle);
 
     const startDate = moment().toDate();
     const trialEndDate = moment(startDate).add(plan.trial_days, 'days').toDate();
-    const endDate = getEndDateForPlan(trialEndDate, pricing.billing_cycle);
+    const endDate = trialEndDate;
 
     // Create trial subscription
     const [subscriptionId] = await db('company_subscriptions').insert({
@@ -748,7 +793,7 @@ const startTrial = async (req, res) => {
       end_date: endDate,
       trial_end_date: trialEndDate,
       status: 'trial',
-      max_users: selectedUsers || plan.max_users,
+      max_users: selectedUsers,
       storage_gb: plan.storage_gb || 1,
       billing_cycle: pricing.billing_cycle,
       next_billing_date: trialEndDate
@@ -796,7 +841,7 @@ const upgradeSubscription = async (req, res) => {
       .orderBy('created_at', 'desc')
       .first();
 
-    const selectedUsers = Number(users_count || plan.max_users || 0);
+    const selectedUsers = resolveSelectedUsers(users_count);
     const pricing = computePricing(plan, selectedUsers, billing_cycle);
     const paidAmount = pricing.total_amount;
 
@@ -814,7 +859,7 @@ const upgradeSubscription = async (req, res) => {
           start_date: startDate,
           end_date: endDate,
           status: 'active',
-          max_users: selectedUsers || plan.max_users,
+          max_users: selectedUsers,
           storage_gb: plan.storage_gb || 1,
           billing_cycle: pricing.billing_cycle,
           paid_amount: paidAmount,
@@ -831,7 +876,7 @@ const upgradeSubscription = async (req, res) => {
         start_date: startDate,
         end_date: endDate,
         status: 'active',
-        max_users: selectedUsers || plan.max_users,
+        max_users: selectedUsers,
         storage_gb: plan.storage_gb || 1,
         billing_cycle: pricing.billing_cycle,
         paid_amount: paidAmount,
@@ -898,10 +943,15 @@ const checkSubscriptionStatus = async (req, res, next) => {
   try {
     const companyId = req.user.company_id;
     
-    const subscription = await db('company_subscriptions')
+      const subscription = await db('company_subscriptions')
       .where('company_id', companyId)
-      .whereIn('status', ['trial', 'active'])
-      .where('end_date', '>=', db.fn.now())
+      .where(function () {
+        this.where(function () {
+          this.where('status', 'trial').andWhere('trial_end_date', '>=', db.fn.now());
+        }).orWhere(function () {
+          this.where('status', 'active').andWhere('end_date', '>=', db.fn.now());
+        });
+      })
       .first();
 
     if (!subscription) {

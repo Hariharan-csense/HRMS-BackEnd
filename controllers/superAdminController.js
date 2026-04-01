@@ -367,17 +367,17 @@ const getOrganizationStats = async (req, res) => {
         c.created_at as company_created_at,
         cs.id as subscription_id,
         cs.status as subscription_status,
+        cs.billing_cycle as subscription_billing_cycle,
         cs.start_date,
         cs.end_date,
         cs.trial_end_date,
         sp.name as plan_name,
         sp.price as plan_price,
         sp.max_users as plan_max_users,
-        sp.billing_cycle,
         COALESCE(emp_counts.user_count, 0) as user_count
       FROM companies c
       LEFT JOIN (
-        SELECT DISTINCT company_id, plan_id, status, start_date, end_date, trial_end_date, id,
+        SELECT DISTINCT company_id, plan_id, status, billing_cycle, start_date, end_date, trial_end_date, id,
                ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY created_at DESC) as rn
         FROM company_subscriptions 
         WHERE status IN ('trial', 'active')
@@ -419,7 +419,7 @@ const getOrganizationStats = async (req, res) => {
             planName: org.plan_name,
             price: org.plan_price,
             maxUsers: org.plan_max_users,
-            billingCycle: org.billing_cycle,
+            billingCycle: org.subscription_billing_cycle || 'monthly',
             organizationCount: 0,
             trialCount: 0,
             activeCount: 0,
@@ -454,7 +454,7 @@ const getOrganizationStats = async (req, res) => {
       .filter(org => org.subscription_status === 'active' && org.plan_price)
       .reduce((sum, org) => {
         const price = parseFloat(org.plan_price);
-        const cycle = org.billing_cycle;
+        const cycle = org.subscription_billing_cycle;
         if (cycle === 'monthly') return sum + price;
         if (cycle === 'yearly') return sum + (price / 12); // Convert yearly to monthly for comparison
         return sum + price;
@@ -477,7 +477,7 @@ const getOrganizationStats = async (req, res) => {
         subscriptionStatus: org.subscription_status || 'none',
         planName: org.plan_name || 'No Plan',
         planPrice: org.plan_price || 0,
-        billingCycle: org.billing_cycle || 'N/A',
+        billingCycle: org.subscription_billing_cycle || 'N/A',
         startDate: org.start_date,
         endDate: org.end_date,
         trialEndDate: org.trial_end_date,
