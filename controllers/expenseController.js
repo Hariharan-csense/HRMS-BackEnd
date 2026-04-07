@@ -28,6 +28,22 @@ const parseExpenseDateToISO = (raw) => {
   return parsed.format('YYYY-MM-DD');
 };
 
+const getAssignedClientCountForEmployee = async ({ companyId, employeeId }) => {
+  const countRow = await knex('clients')
+    .where({
+      company_id: companyId,
+      assigned_to: employeeId
+    })
+    .count({ count: '*' })
+    .first();
+
+  return Number(
+    countRow?.count ??
+    countRow?.['count(*)'] ??
+    0
+  );
+};
+
 const assertClientIsAllowed = async ({ companyId, employeeId, userType, clientId }) => {
   if (!clientId) return null;
 
@@ -38,8 +54,14 @@ const assertClientIsAllowed = async ({ companyId, employeeId, userType, clientId
 
   if (!client) return null;
 
-  if (String(userType || '').toLowerCase() === 'employee' && Number(client.assigned_to) !== Number(employeeId)) {
-    return null;
+  if (String(userType || '').toLowerCase() === 'employee') {
+    const assignedClientCount = await getAssignedClientCountForEmployee({ companyId, employeeId });
+
+    // Employees with assigned clients are restricted to those clients.
+    // Employees with no assignment can submit against any client in their company.
+    if (assignedClientCount > 0 && Number(client.assigned_to) !== Number(employeeId)) {
+      return null;
+    }
   }
 
   return client;
@@ -1069,7 +1091,13 @@ const getAssignedClientsForClaims = async (req, res) => {
       .orderBy('client_name', 'asc');
 
     if (userType === 'employee') {
-      query = query.andWhere('assigned_to', employeeId);
+      const assignedClientCount = await getAssignedClientCountForEmployee({ companyId, employeeId });
+
+      // Employees with at least one assigned client should only see those clients.
+      // Employees with no assignment should fall back to the full company client list.
+      if (assignedClientCount > 0) {
+        query = query.andWhere('assigned_to', employeeId);
+      }
     }
 
     const clients = await query;

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>{{title}}</title>
+</head>
+<body style="margin:0;padding:24px;background:#f4f7fb;font-family:Segoe UI,Arial,sans-serif;color:#1f2937;">
+  <div style="max-width:680px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 10px 30px rgba(15,23,42,0.08);">
+    <div style="padding:28px 32px;background:linear-gradient(135deg,#0f766e 0%,#14b8a6 100%);color:#ffffff;">
+      <div style="font-size:13px;letter-spacing:0.08em;text-transform:uppercase;opacity:0.9;">HRMS</div>
+      <h1 style="margin:10px 0 0;font-size:28px;line-height:1.2;">{{title}}</h1>
+    </div>
+    <div style="padding:32px;">
+      <p style="margin:0 0 10px;font-size:16px;line-height:1.7;font-weight:600;">{{greeting}}</p>
+      <p style="margin:0 0 16px;font-size:16px;line-height:1.7;">{{intro}}</p>
+      <div style="margin:24px 0;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;">
+        {{#each rows}}
+        <div style="display:flex;justify-content:space-between;gap:16px;padding:14px 18px;background:#ffffff;">
+          <span style="color:#64748b;font-size:14px;">{{this.label}}</span>
+          <span style="color:#0f172a;font-size:14px;font-weight:600;text-align:right;">{{this.value}}</span>
+        </div>
+        {{/each}}
+      </div>
+      <p style="margin:0;font-size:15px;line-height:1.7;color:#475569;">{{outro}}</p>
+    </div>
+  </div>
+</body>
+</html>

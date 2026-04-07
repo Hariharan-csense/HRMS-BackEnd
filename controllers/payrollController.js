@@ -96,6 +96,11 @@ const generatePdfFromHtml = (html, pdfPath) => {
   });
 };
 
+const getNextNumericId = async (tableName) => {
+  const result = await knex(tableName).max('id as maxId').first();
+  return Number(result?.maxId || 0) + 1;
+};
+
 // Save or Update Salary Structure (company scoped)
 const saveSalaryStructure = async (req, res) => {
   const companyId = req.user.company_id;
@@ -198,7 +203,10 @@ const saveSalaryStructure = async (req, res) => {
       });
     } else {
       // CREATE
+      const nextId = await getNextNumericId('payroll_structures');
+
       await knex('payroll_structures').insert({
+        id: nextId,
         company_id: companyId,
         employee_id: actualEmployeeId,
         gross: calculatedGross,
@@ -1473,6 +1481,37 @@ const deleteSalaryStructure = async (req, res) => {
   }
 };
 
+const deletePayslip = async (req, res) => {
+  const companyId = req.user.company_id;
+  const { id } = req.params;
+
+  if (!companyId) {
+    return res.status(400).json({ message: 'You are not assigned to any company' });
+  }
+
+  try {
+    const payslip = await knex('payroll_processing')
+      .where({ id, company_id: companyId })
+      .first();
+
+    if (!payslip) {
+      return res.status(404).json({ message: 'Payslip not found or access denied' });
+    }
+
+    await knex('payroll_processing')
+      .where({ id, company_id: companyId })
+      .del();
+
+    res.json({
+      success: true,
+      message: 'Payslip deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete payslip error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 
 // Get Employee Payslips (for employees to see their own payslips only)
 const getEmployeePayslips = async (req, res) => {
@@ -1542,4 +1581,5 @@ module.exports = {
   getEmployeePayslips,
   updateSalaryStructure,
   deleteSalaryStructure,
+  deletePayslip,
 };

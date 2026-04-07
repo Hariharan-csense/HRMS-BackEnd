@@ -314,37 +314,6 @@ const registerUser = async (req, res) => {
         }
       }
 
-      /* ---------------- AUTO START FREE TRIAL ---------------- */
-        if (role === 'admin' && companyPkId) {
-  
-          const defaultPlan = await trx('subscription_plans')
-            .where('is_active', true)
-            .orderBy('created_at', 'asc')
-            .first();
-
-          if (defaultPlan) {
-            const startDate = moment().toDate();
-            const trialEndDate = moment()
-              .add(defaultPlan.trial_days, 'days')
-              .toDate();
-
-            await trx('company_subscriptions').insert({
-              company_id: companyPkId,
-              plan_id: defaultPlan.id,
-              start_date: startDate,
-              end_date: trialEndDate,
-              trial_end_date: trialEndDate,
-              status: 'trial',
-              max_users: defaultPlan.max_users,
-              next_billing_date: trialEndDate,
-              created_at: trx.fn.now(),
-              updated_at: trx.fn.now()
-            });
-          } else {
-            console.warn('Skipping automatic trial creation because no subscription plan exists yet.');
-          }
-        }
-
     });
 
     /* ---------------- SEND REGISTRATION MAIL (OUTSIDE TRANSACTION) ---------------- */
@@ -371,7 +340,7 @@ const registerUser = async (req, res) => {
       success: true,
       message: 'Registered successfully!',
       note: role === 'admin'
-        ? `Company "${createdCompanyName}" created and trial started`
+        ? `Company "${createdCompanyName}" created successfully`
         : null,
       user: {
         id: createdUser.id,

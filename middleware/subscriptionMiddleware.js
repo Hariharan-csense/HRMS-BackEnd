@@ -1,5 +1,20 @@
 const db = require('../db/db');
 
+const getActiveSubscriptionQuery = (companyId) =>
+  db('company_subscriptions')
+    .select('company_subscriptions.*')
+    .where('company_subscriptions.company_id', companyId)
+    .where(function () {
+      this.where(function () {
+        this.where('company_subscriptions.status', 'trial')
+          .andWhere('company_subscriptions.trial_end_date', '>=', db.fn.now());
+      }).orWhere(function () {
+        this.where('company_subscriptions.status', 'active')
+          .andWhere('company_subscriptions.end_date', '>=', db.fn.now());
+      });
+    })
+    .orderBy('company_subscriptions.created_at', 'desc');
+
 // Middleware to check subscription status for user creation
 const checkUserCreationSubscription = async (req, res, next) => {
   try {
@@ -12,17 +27,7 @@ const checkUserCreationSubscription = async (req, res, next) => {
     }
 
     // Get company's current subscription
-    const subscription = await db('company_subscriptions')
-      .select(
-        'company_subscriptions.*',
-        'subscription_plans.max_users as plan_max_users',
-        'subscription_plans.trial_days as plan_trial_days'
-      )
-      .join('subscription_plans', 'company_subscriptions.plan_id', 'subscription_plans.id')
-      .where('company_subscriptions.company_id', companyId)
-      .whereIn('company_subscriptions.status', ['trial', 'active'])
-      .where('company_subscriptions.end_date', '>=', db.fn.now())
-      .orderBy('company_subscriptions.created_at', 'desc')
+    const subscription = await getActiveSubscriptionQuery(companyId)
       .first();
 
     if (!subscription) {
@@ -52,10 +57,10 @@ const checkUserCreationSubscription = async (req, res, next) => {
       .count('* as count')
       .first();
 
-    const currentUsers = parseInt(currentEmployeeCount.count);
-    const maxUsers = subscription.max_users || subscription.plan_max_users;
+    const currentUsers = parseInt(currentEmployeeCount.count, 10) || 0;
+    const maxUsers = Number(subscription.max_users || 0);
 
-    if (currentUsers >= maxUsers) {
+    if (maxUsers > 0 && currentUsers >= maxUsers) {
       return res.status(403).json({
         message: `User limit exceeded. Your plan allows ${maxUsers} users, but you already have ${currentUsers}. Please upgrade your plan to add more employees.`,
         user_limit_exceeded: true,
@@ -83,10 +88,7 @@ const checkSubscriptionStatus = async (req, res, next) => {
   try {
     const companyId = req.user.company_id;
     
-    const subscription = await db('company_subscriptions')
-      .where('company_id', companyId)
-      .whereIn('status', ['trial', 'active'])
-      .where('end_date', '>=', db.fn.now())
+    const subscription = await getActiveSubscriptionQuery(companyId)
       .first();
 
     if (!subscription) {

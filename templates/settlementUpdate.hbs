@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>{{title}}</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      background: linear-gradient(180deg, #eef6f7 0%, #f8fafc 100%);
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: #1f2937;
+    }
+
+    .mail-shell {
+      max-width: 680px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 22px;
+      overflow: hidden;
+      box-shadow: 0 18px 45px rgba(15, 23, 42, 0.1);
+      border: 1px solid #dbe4ea;
+    }
+
+    .mail-hero {
+      padding: 30px 34px;
+      background: linear-gradient(135deg, #0f766e 0%, #14b8a6 55%, #5eead4 100%);
+      color: #ffffff;
+      position: relative;
+    }
+
+    .mail-hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -60px -70px auto;
+      width: 180px;
+      height: 180px;
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 50%;
+    }
+
+    .brand {
+      font-size: 13px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      opacity: 0.9;
+      margin-bottom: 10px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.2;
+      position: relative;
+      z-index: 1;
+    }
+
+    .content {
+      padding: 32px;
+    }
+
+    .greeting {
+      margin: 0 0 10px;
+      font-size: 16px;
+      line-height: 1.7;
+      font-weight: 700;
+      color: #0f172a;
+    }
+
+    .intro {
+      margin: 0 0 18px;
+      font-size: 16px;
+      line-height: 1.7;
+      color: #334155;
+    }
+
+    .summary-card {
+      margin: 24px 0;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 18px;
+      border-bottom: 1px solid #eef2f7;
+    }
+
+    .summary-row:nth-child(even) {
+      background: #f8fafc;
+    }
+
+    .summary-row:last-child {
+      border-bottom: none;
+    }
+
+    .label {
+      color: #64748b;
+      font-size: 14px;
+    }
+
+    .value {
+      color: #0f172a;
+      font-size: 14px;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .footer-text {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.7;
+      color: #475569;
+    }
+
+    @media only screen and (max-width: 720px) {
+      body {
+        padding: 12px;
+      }
+
+      .mail-hero,
+      .content {
+        padding: 22px;
+      }
+
+      .summary-row {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .value {
+        text-align: left;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="mail-shell">
+    <div class="mail-hero">
+      <div class="brand">HRMS</div>
+      <h1 class="title">{{title}}</h1>
+    </div>
+    <div class="content">
+      <p class="greeting">{{greeting}}</p>
+      <p class="intro">{{intro}}</p>
+      <div class="summary-card">
+        {{#each rows}}
+        <div class="summary-row">
+          <span class="label">{{this.label}}</span>
+          <span class="value">{{this.value}}</span>
+        </div>
+        {{/each}}
+      </div>
+      <p class="footer-text">Please contact HR for any queries.</p>
+    </div>
+  </div>
+</body>
+</html>

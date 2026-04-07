@@ -651,12 +651,15 @@ const deletePlan = async (req, res) => {
 // Get all subscriptions (for superadmin)
 const getAllSubscriptions = async (req, res) => {
   try {
+    const planColumns = await getPlanSchemaInfo();
+    const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
+
     const subscriptions = await db('company_subscriptions')
       .select(
         'company_subscriptions.*',
         'subscription_plans.name as plan_name',
-        'subscription_plans.monthly_price as plan_price',
-        db.raw('0 as plan_max_users'),
+        `${monthlyPriceField} as plan_price`,
+        'company_subscriptions.max_users as plan_max_users',
         'companies.company_name'
       )
       .join('subscription_plans', 'company_subscriptions.plan_id', 'subscription_plans.id')
@@ -680,6 +683,9 @@ const getAllSubscriptions = async (req, res) => {
 const getCompanySubscription = async (req, res) => {
   try {
     const companyId = req.user.company_id;
+    const planColumns = await getPlanSchemaInfo();
+    const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
+    const storageField = getPlanStorageField(planColumns);
 
     if (!companyId) {
       return res.status(400).json({
@@ -693,9 +699,9 @@ const getCompanySubscription = async (req, res) => {
         'company_subscriptions.*',
         'subscription_plans.name as plan_name',
         'subscription_plans.description as plan_description',
-        'subscription_plans.monthly_price as plan_price',
-        db.raw('0 as plan_max_users'),
-        'subscription_plans.storage_gb as plan_storage_gb'
+        `${monthlyPriceField} as plan_price`,
+        'company_subscriptions.max_users as plan_max_users',
+        storageField ? `subscription_plans.${storageField} as plan_storage_gb` : db.raw('NULL as plan_storage_gb')
       )
       .join('subscription_plans', 'company_subscriptions.plan_id', 'subscription_plans.id')
       .where('company_subscriptions.company_id', companyId)
@@ -943,7 +949,7 @@ const checkSubscriptionStatus = async (req, res, next) => {
   try {
     const companyId = req.user.company_id;
     
-      const subscription = await db('company_subscriptions')
+    const subscription = await db('company_subscriptions')
       .where('company_id', companyId)
       .where(function () {
         this.where(function () {
@@ -963,16 +969,18 @@ const checkSubscriptionStatus = async (req, res, next) => {
     }
 
     // Check user limit
-    const currentUsers = await db('employee')
+    const currentUsers = await db('employees')
       .where('company_id', companyId)
-      .where('is_active', 1)
       .count('* as count')
       .first();
 
-    if (Number(subscription.max_users || 0) > 0 && parseInt(currentUsers.count) > subscription.max_users) {
+    const currentUserCount = parseInt(currentUsers.count, 10) || 0;
+    const maxUsers = Number(subscription.max_users || 0);
+
+    if (maxUsers > 0 && currentUserCount > maxUsers) {
       return res.status(403).json({
         success: false,
-        message: `User limit exceeded. Your plan allows ${subscription.max_users} users, but you have ${currentUsers.count}. Please upgrade your plan.`,
+        message: `User limit exceeded. Your plan allows ${maxUsers} users, but you have ${currentUserCount}. Please upgrade your plan.`,
         user_limit_exceeded: true
       });
     }

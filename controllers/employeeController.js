@@ -9,6 +9,176 @@ const {
   calculateLeaveForConfirmedEmployee,
 } = require("../controllers/leaveController");
 const { isEmployeeFullTime } = require("../services/leaveBalanceService");
+
+const EMPLOYEE_DUPLICATE_FIELD_CONFIG = [
+  {
+    key: "employee_id",
+    label: "Employee ID",
+    normalize: (value) => String(value).trim().toUpperCase(),
+  },
+  {
+    key: "email",
+    label: "Email",
+    normalize: (value) => String(value).trim().toLowerCase(),
+  },
+  {
+    key: "mobile",
+    label: "Phone number",
+    normalize: (value) => String(value).trim(),
+  },
+  {
+    key: "office_phone",
+    label: "Office phone number",
+    normalize: (value) => String(value).trim(),
+  },
+  {
+    key: "office_email",
+    label: "Office email",
+    normalize: (value) => String(value).trim().toLowerCase(),
+  },
+  {
+    key: "emergency_contact_phone",
+    label: "Emergency contact number",
+    normalize: (value) => String(value).trim(),
+  },
+  {
+    key: "aadhaar",
+    label: "Aadhaar number",
+    normalize: (value) => String(value).trim().toUpperCase(),
+  },
+  {
+    key: "pan",
+    label: "PAN number",
+    normalize: (value) => String(value).trim().toUpperCase(),
+  },
+];
+
+let employeeColumnsCache = null;
+
+const buildDuplicateMessage = (label) => `${label} already exists`;
+
+const getEmployeeColumns = async () => {
+  if (!employeeColumnsCache) {
+    employeeColumnsCache = await knex("employees").columnInfo();
+  }
+
+  return employeeColumnsCache;
+};
+
+const normalizeValueForComparison = (config, value) => {
+  if (value === undefined || value === null) return null;
+  const normalized = config.normalize(value);
+  return normalized ? normalized : null;
+};
+
+const findEmployeeDuplicateMessage = async ({
+  companyId,
+  excludeEmployeeId = null,
+  values,
+}) => {
+  const employeeColumns = await getEmployeeColumns();
+
+  for (const config of EMPLOYEE_DUPLICATE_FIELD_CONFIG) {
+    if (!Object.prototype.hasOwnProperty.call(employeeColumns, config.key)) {
+      continue;
+    }
+
+    const normalizedValue = normalizeValueForComparison(config, values[config.key]);
+    if (!normalizedValue) continue;
+
+    const existingEmployee = await knex("employees")
+      .where("company_id", companyId)
+      .modify((queryBuilder) => {
+        if (excludeEmployeeId) {
+          queryBuilder.whereNot("id", excludeEmployeeId);
+        }
+      })
+      .whereRaw(`LOWER(TRIM(COALESCE(${config.key}, ''))) = ?`, [
+        normalizedValue.toLowerCase(),
+      ])
+      .first();
+
+    if (existingEmployee) {
+      return buildDuplicateMessage(config.label);
+    }
+  }
+
+  return null;
+};
+
+const findBankDuplicateMessage = async ({
+  companyId,
+  excludeEmployeeId = null,
+  accountNumber,
+}) => {
+  const normalizedAccountNumber = accountNumber
+    ? String(accountNumber).trim()
+    : null;
+
+  if (!normalizedAccountNumber) return null;
+
+  const existingBank = await knex("employee_bank_details as ebd")
+    .innerJoin("employees as e", "ebd.employee_id", "e.id")
+    .where("e.company_id", companyId)
+    .modify((queryBuilder) => {
+      if (excludeEmployeeId) {
+        queryBuilder.whereNot("ebd.employee_id", excludeEmployeeId);
+      }
+    })
+    .whereRaw("LOWER(TRIM(COALESCE(ebd.account_number, ''))) = ?", [
+      normalizedAccountNumber.toLowerCase(),
+    ])
+    .first();
+
+  if (existingBank) {
+    return buildDuplicateMessage("Bank account number");
+  }
+
+  return null;
+};
+
+const getEmployeeDuplicateErrorMessage = (error) => {
+  const rawMessage = String(error?.sqlMessage || error?.message || "").toLowerCase();
+
+  if (
+    error?.code !== "ER_DUP_ENTRY" &&
+    !rawMessage.includes("duplicate entry") &&
+    !rawMessage.includes("duplicate")
+  ) {
+    return null;
+  }
+
+  if (rawMessage.includes("employee_id")) {
+    return buildDuplicateMessage("Employee ID");
+  }
+  if (rawMessage.includes("office_email")) {
+    return buildDuplicateMessage("Office email");
+  }
+  if (rawMessage.includes("email")) {
+    return buildDuplicateMessage("Email");
+  }
+  if (rawMessage.includes("office_phone")) {
+    return buildDuplicateMessage("Office phone number");
+  }
+  if (rawMessage.includes("mobile")) {
+    return buildDuplicateMessage("Phone number");
+  }
+  if (rawMessage.includes("emergency_contact_phone")) {
+    return buildDuplicateMessage("Emergency contact number");
+  }
+  if (rawMessage.includes("aadhaar")) {
+    return buildDuplicateMessage("Aadhaar number");
+  }
+  if (rawMessage.includes("pan")) {
+    return buildDuplicateMessage("PAN number");
+  }
+  if (rawMessage.includes("account_number")) {
+    return buildDuplicateMessage("Bank account number");
+  }
+
+  return "Duplicate entry already exists";
+};
+
 const cleanupFiles = (files) => {
   if (files) {
     Object.values(files)
@@ -225,32 +395,33 @@ const addEmployee = async (req, res) => {
     // CREATE EMPLOYEE
     // ======================
     else {
-      const emailExists = await knex("employees")
-        .whereRaw("LOWER(email) = ? AND company_id = ?", [
-          email.toLowerCase(),
-          companyId,
-        ])
-        .first();
+      const employeeDuplicateMessage = await findEmployeeDuplicateMessage({
+        companyId,
+        values: {
+          employee_id,
+          email,
+          mobile,
+          office_phone,
+          office_email,
+          emergency_contact_phone,
+          aadhaar,
+          pan,
+        },
+      });
 
-      if (emailExists) {
+      if (employeeDuplicateMessage) {
         cleanupFiles(req.files);
-        return res
-          .status(400)
-          .json({ message: "Email already exists in your company" });
+        return res.status(400).json({ message: employeeDuplicateMessage });
       }
 
-      const empIdExists = await knex("employees")
-        .whereRaw("LOWER(employee_id) = ? AND company_id = ?", [
-          employee_id.toLowerCase(),
-          companyId,
-        ])
-        .first();
+      const bankDuplicateMessage = await findBankDuplicateMessage({
+        companyId,
+        accountNumber: account_number,
+      });
 
-      if (empIdExists) {
+      if (bankDuplicateMessage) {
         cleanupFiles(req.files);
-        return res
-          .status(400)
-          .json({ message: "Employee ID already exists in your company" });
+        return res.status(400).json({ message: bankDuplicateMessage });
       }
 
       // Generate temporary password
@@ -420,6 +591,10 @@ const addEmployee = async (req, res) => {
   } catch (error) {
     cleanupFiles(req.files);
     console.error("Employee operation error:", error);
+    const duplicateMessage = getEmployeeDuplicateErrorMessage(error);
+    if (duplicateMessage) {
+      return res.status(400).json({ message: duplicateMessage });
+    }
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -802,6 +977,8 @@ const updateEmployee = async (req, res) => {
     marital_status,
     email,
     mobile,
+    office_phone,
+    office_email,
     emergency_contact_name,
     emergency_contact_phone,
     doj,
@@ -849,24 +1026,15 @@ const updateEmployee = async (req, res) => {
     if (marital_status !== undefined)
       updateData.marital_status = marital_status || null;
     if (email !== undefined) {
-      // Email duplicate check if changing email
-      const emailExists = await knex("employees")
-        .whereRaw("LOWER(email) = ? AND company_id = ?", [
-          email.toLowerCase(),
-          companyId,
-        ])
-        .whereNot({ id })
-        .first();
-
-      if (emailExists) {
-        cleanupFiles(req.files);
-        return res
-          .status(400)
-          .json({ message: "Email already exists in your company" });
-      }
       updateData.email = email.trim().toLowerCase();
     }
     if (mobile !== undefined) updateData.mobile = mobile || null;
+    if (office_phone !== undefined) updateData.office_phone = office_phone || null;
+    if (office_email !== undefined) {
+      updateData.office_email = office_email
+        ? office_email.trim().toLowerCase()
+        : null;
+    }
     if (emergency_contact_name !== undefined)
       updateData.emergency_contact_name = emergency_contact_name || null;
     if (emergency_contact_phone !== undefined)
@@ -919,6 +1087,40 @@ const updateEmployee = async (req, res) => {
         }
       }
       updateData.role = normalizedRole;
+    }
+
+    const employeeDuplicateMessage = await findEmployeeDuplicateMessage({
+      companyId,
+      excludeEmployeeId: id,
+      values: {
+        employee_id:
+          updateData.employee_id !== undefined
+            ? updateData.employee_id
+            : employee.employee_id,
+        email: updateData.email !== undefined ? updateData.email : employee.email,
+        mobile:
+          updateData.mobile !== undefined ? updateData.mobile : employee.mobile,
+        office_phone:
+          updateData.office_phone !== undefined
+            ? updateData.office_phone
+            : employee.office_phone,
+        office_email:
+          updateData.office_email !== undefined
+            ? updateData.office_email
+            : employee.office_email,
+        emergency_contact_phone:
+          updateData.emergency_contact_phone !== undefined
+            ? updateData.emergency_contact_phone
+            : employee.emergency_contact_phone,
+        aadhaar:
+          updateData.aadhaar !== undefined ? updateData.aadhaar : employee.aadhaar,
+        pan: updateData.pan !== undefined ? updateData.pan : employee.pan,
+      },
+    });
+
+    if (employeeDuplicateMessage) {
+      cleanupFiles(req.files);
+      return res.status(400).json({ message: employeeDuplicateMessage });
     }
 
     // Check if there's anything to update
@@ -986,6 +1188,17 @@ const updateEmployee = async (req, res) => {
 
     // Handle bank details (optional update)
     if (hasBankUpdates) {
+      const bankDuplicateMessage = await findBankDuplicateMessage({
+        companyId,
+        excludeEmployeeId: id,
+        accountNumber: account_number,
+      });
+
+      if (bankDuplicateMessage) {
+        cleanupFiles(req.files);
+        return res.status(400).json({ message: bankDuplicateMessage });
+      }
+
       const bankData = {
         company_id: companyId,
         employee_id: id,
@@ -1068,6 +1281,10 @@ const updateEmployee = async (req, res) => {
   } catch (error) {
     cleanupFiles(req.files);
     console.error("Update employee error:", error);
+    const duplicateMessage = getEmployeeDuplicateErrorMessage(error);
+    if (duplicateMessage) {
+      return res.status(400).json({ message: duplicateMessage });
+    }
     res.status(500).json({ message: "Server error" });
   }
 };
