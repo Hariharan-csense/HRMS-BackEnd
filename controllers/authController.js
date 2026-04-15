@@ -61,6 +61,53 @@ const clearAuthCookies = (res) => {
   res.clearCookie('refreshTokenDebug', { ...clearOptions, httpOnly: false });
 };
 
+const getEffectiveRolesForUser = async (user, userType, companyId) => {
+  if (userType === 'admin') {
+    let userRoles = [user.role || 'admin'];
+
+    if (user.roles) {
+      try {
+        if (typeof user.roles === 'string') {
+          userRoles = JSON.parse(user.roles);
+        } else if (Array.isArray(user.roles)) {
+          userRoles = user.roles;
+        }
+      } catch (e) {
+        console.error('Error parsing user roles:', e);
+        userRoles = [user.role || 'admin'];
+      }
+    }
+
+    if (user.role && !userRoles.includes(user.role)) {
+      userRoles = [user.role, ...userRoles];
+    }
+
+    return userRoles.length ? userRoles : [user.role || 'admin'];
+  }
+
+  const assignedRoles = await knex('role_assignments')
+    .join('roles', 'role_assignments.role_id', 'roles.id')
+    .where({
+      'role_assignments.employee_id': user.id,
+      'role_assignments.company_id': companyId,
+      'role_assignments.status': 'Active'
+    })
+    .select('roles.name')
+    .orderBy('role_assignments.assigned_date', 'desc');
+
+  const roleSet = new Set();
+  assignedRoles.forEach((entry) => {
+    const roleName = String(entry?.name || '').trim();
+    if (roleName) roleSet.add(roleName);
+  });
+
+  if (user.role) {
+    roleSet.add(user.role);
+  }
+
+  return roleSet.size ? [...roleSet] : [user.role || 'employee'];
+};
+
 
 const registerUser = async (req, res) => {
 
@@ -416,11 +463,14 @@ const login = async (req, res) => {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
+    const userRoles = await getEffectiveRolesForUser(user, userType, companyId);
+
     // 🔥 TOKEN WITH DEPARTMENT & DESIGNATION
     const tokenUser = {
       id: user.id,
       email: user.email,
       role: user.role || 'employee',
+      roles: userRoles,
       type: userType,
       company_id: companyId,
 
@@ -436,33 +486,6 @@ const login = async (req, res) => {
     const fullName = user.first_name
       ? `${user.first_name} ${user.last_name || ''}`.trim()
       : user.name || 'User';
-
-    // Build roles array without downgrading superadmin to admin.
-    let userRoles = [user.role || 'employee'];
-    if (userType === 'admin') {
-      if (user.roles) {
-        try {
-          if (typeof user.roles === 'string') {
-            userRoles = JSON.parse(user.roles);
-          } else if (Array.isArray(user.roles)) {
-            userRoles = user.roles;
-          }
-        } catch (e) {
-          console.error('Error parsing user roles:', e);
-          userRoles = [user.role || 'admin'];
-        }
-      }
-
-      // Ensure DB role always exists in roles array (critical for superadmin).
-      if (user.role && !userRoles.includes(user.role)) {
-        userRoles = [user.role, ...userRoles];
-      }
-
-      // Fallback for legacy rows with no explicit role.
-      if (!userRoles.length) {
-        userRoles = [user.role || 'admin'];
-      }
-    }
 
     res.json({
       success: true,
@@ -548,10 +571,13 @@ const refreshAccessToken = async (req, res) => {
       return res.status(401).json({ message: 'Invalid user type' });
     }
 
+    const userRoles = await getEffectiveRolesForUser(user, userType, companyId);
+
     const tokenUser = {
       id: user.id,
       email: user.email,
       role: user.role || 'employee',
+      roles: userRoles,
       type: userType,
       company_id: companyId,
       department_id: user.department_id || null,

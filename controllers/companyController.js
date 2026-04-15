@@ -4,6 +4,49 @@ const fs = require('fs');
 const knex = require('../db/db');
 const {generateAutoNumber}   = require('../utils/generateAutoNumber');
 
+const uploadRoot = path.resolve(__dirname, '..', '..', 'uploads', 'company-logos');
+
+const toPublicLogoPath = (filename) => (filename ? `/uploads/company-logos/${filename}` : null);
+
+const toAbsoluteLogoPath = (logoPath) => {
+  if (!logoPath) return null;
+  return path.resolve(__dirname, '..', '..', String(logoPath).replace(/^\/+/, ''));
+};
+
+const removeLogoFileIfExists = (logoPath) => {
+  const absolutePath = toAbsoluteLogoPath(logoPath);
+  if (absolutePath && fs.existsSync(absolutePath)) {
+    fs.unlinkSync(absolutePath);
+  }
+};
+
+const moveUploadedLogoToCanonicalPath = (file, companyId) => {
+  if (!file || !companyId) return null;
+
+  const ext = path.extname(file.originalname || file.filename || '').toLowerCase() || path.extname(file.filename || '').toLowerCase();
+  const finalFilename = `company_${companyId}-logo${ext}`;
+  const finalAbsolutePath = path.join(uploadRoot, finalFilename);
+
+  if (!fs.existsSync(uploadRoot)) {
+    fs.mkdirSync(uploadRoot, { recursive: true });
+  }
+
+  if (file.path !== finalAbsolutePath) {
+    fs.renameSync(file.path, finalAbsolutePath);
+  }
+
+  return toPublicLogoPath(finalFilename);
+};
+
+const sanitizeCompany = (company) => {
+  if (!company) return company;
+  const { essl_api_key, ...safeCompany } = company;
+  return {
+    ...safeCompany,
+    essl_api_key_configured: Boolean(essl_api_key),
+  };
+};
+
 const createCompany = async (req, res) => {
   const companyId = req.user.company_id;
 
@@ -23,13 +66,12 @@ const createCompany = async (req, res) => {
     industry,
     timezone = 'Asia/Kolkata',
     payroll_cycle = 'Monthly',
-    address
+    address,
+    essl_api_key,
+    essl_enabled
   } = req.body;
 
   let logoPath = null;
-  if (req.file) {
-    logoPath = `/uploads/company-logos/${req.file.filename}`;
-  }
 
   if (!company_name?.trim() || !legal_name?.trim() || !gstin_pan?.trim()) {
     if (req.file) fs.unlinkSync(req.file.path);
@@ -50,6 +92,8 @@ const createCompany = async (req, res) => {
       timezone,
       payroll_cycle,
       address: address?.trim() || null,
+      essl_api_key: essl_api_key?.trim() || null,
+      essl_enabled: String(essl_enabled).toLowerCase() === 'true' || essl_enabled === true,
       logo: logoPath,
       created_by: req.user.id
     });
@@ -59,13 +103,21 @@ const createCompany = async (req, res) => {
       company_id: newCompanyId
     });
 
+    if (req.file) {
+      logoPath = moveUploadedLogoToCanonicalPath(req.file, newCompanyId);
+      await knex('companies').where({ id: newCompanyId }).update({
+        logo: logoPath,
+        updated_at: knex.fn.now()
+      });
+    }
+
     const newCompany = await knex('companies').where({ id: newCompanyId }).first();
 
     res.status(201).json({
       success: true,
       message: 'Company created successfully! You are now assigned to this company.',
       company: {
-        ...newCompany,
+        ...sanitizeCompany(newCompany),
         logo_url: logoPath ? `${logoPath}` : null
       }
     });
@@ -98,7 +150,7 @@ const getCompany = async (req, res) => {
     res.json({
       success: true,
       company: {
-        ...company,
+        ...sanitizeCompany(company),
         logo_url: company.logo ? `${company.logo}` : null
       }
     });
@@ -123,13 +175,12 @@ const updateCompany = async (req, res) => {
     industry,
     timezone,
     payrollCycle,
-    address
+    address,
+    esslApiKey,
+    esslEnabled
   } = req.body;
 
   let logoPath = null;
-  if (req.file) {
-    logoPath = `/uploads/company-logos/${req.file.filename}`;
-  }
 
   try {
     const company = await knex('companies').where({ id: companyId }).first();
@@ -138,9 +189,12 @@ const updateCompany = async (req, res) => {
       return res.status(404).json({ message: 'Company not found' });
     }
 
-    if (req.file && company.logo) {
-      const oldLogoPath = path.join(__dirname, '..', '..', company.logo);
-      if (fs.existsSync(oldLogoPath)) fs.unlinkSync(oldLogoPath);
+    if (req.file) {
+      logoPath = moveUploadedLogoToCanonicalPath(req.file, companyId);
+    }
+
+    if (req.file && company.logo && company.logo !== logoPath) {
+      removeLogoFileIfExists(company.logo);
     }
 
     await knex('companies').where({ id: companyId }).update({
@@ -151,6 +205,10 @@ const updateCompany = async (req, res) => {
       timezone: timezone || company.timezone,
       payroll_cycle: payrollCycle || company.payroll_cycle,
       address: address?.trim() || company.address,
+      essl_api_key: esslApiKey !== undefined ? (esslApiKey?.trim() || null) : company.essl_api_key,
+      essl_enabled: esslEnabled !== undefined
+        ? String(esslEnabled).toLowerCase() === 'true' || esslEnabled === true
+        : company.essl_enabled,
       logo: logoPath || company.logo,
       updated_at: knex.fn.now()
     });
@@ -161,7 +219,7 @@ const updateCompany = async (req, res) => {
       success: true,
       message: 'Company updated successfully!',
       company: {
-        ...updated,
+        ...sanitizeCompany(updated),
         logo_url: updated.logo || null
       }
     });
@@ -191,10 +249,7 @@ const deleteCompany = async (req, res) => {
 
     // Delete logo
     if (company.logo) {
-      const logoPath = path.join(__dirname, '..', '..', company.logo);
-      if (fs.existsSync(logoPath)) {
-        fs.unlinkSync(logoPath);
-      }
+      removeLogoFileIfExists(company.logo);
     }
 
     // Optional: Delete all company data (cascade delete via foreign keys)

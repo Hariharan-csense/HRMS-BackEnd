@@ -16,7 +16,7 @@ const generateAccessToken = (user) => {
   return jwt.sign(
     buildJwtPayload(user, 'access'),
     process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '30m' }
+    { expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '10m' }
   );
 };
 

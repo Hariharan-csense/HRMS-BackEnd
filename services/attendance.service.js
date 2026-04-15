@@ -4,6 +4,13 @@ const { verifyFace, saveImage } = require('../utils/face.util');
 const { getEmployeeShift } = require('../utils/shift.util');
 const path = require('path');
 
+const resolveStoredImageUrl = (imageData, companyId) => {
+  if (!imageData) return null;
+  if (typeof imageData !== 'string') return null;
+  if (imageData.startsWith('/uploads/')) return imageData;
+  return `/uploads/attendance/company_${companyId}/${path.basename(imageData)}`;
+};
+
 async function doCheckIn({
   employeeId,
   companyId,
@@ -11,7 +18,8 @@ async function doCheckIn({
   location = null,
   deviceInfo = 'Web',
   shiftId = null,
-  shiftType = 'regular'
+  shiftType = 'regular',
+  punchTime = null
 }) {
   const employee = await knex('employees')
     .where({ id: employeeId, company_id: companyId })
@@ -25,7 +33,12 @@ async function doCheckIn({
     if (!faceMatch) throw new Error('Face verification failed');
   }
 
-  const today = new Date();
+  const effectivePunchTime = punchTime ? new Date(punchTime) : new Date();
+  if (Number.isNaN(effectivePunchTime.getTime())) {
+    throw new Error('Invalid punch time');
+  }
+
+  const today = new Date(effectivePunchTime);
   today.setHours(0, 0, 0, 0);
 
   const existing = await knex('attendance')
@@ -45,7 +58,7 @@ async function doCheckIn({
   if (!finalShiftId) {
     employeeShift = await getEmployeeShift(employeeId, companyId);
     finalShiftId = employeeShift?.shift_id || null;
-    finalShiftType = determineShiftType(new Date(), employeeShift);
+    finalShiftType = determineShiftType(effectivePunchTime, employeeShift);
   }
   
   if (!employeeShift) {
@@ -64,7 +77,7 @@ async function doCheckIn({
     finalShiftType = shiftTypeMap[finalShiftType.toLowerCase()] || 1;
   }
 
-  const checkInTime = new Date();
+  const checkInTime = effectivePunchTime;
   let attendanceStatus = 'present';
   if (employeeShift?.start_time) {
     const [startHour, startMin] = employeeShift.start_time
@@ -113,7 +126,7 @@ async function doCheckIn({
       employee_id: employeeId,
       check_in: checkInTime,
       check_in_location: location ? JSON.stringify(location) : null,
-      check_in_image_url: imageData ? `/uploads/attendance/company_${companyId}/${path.basename(imageData)}` : null,
+      check_in_image_url: resolveStoredImageUrl(imageData, companyId),
       device_info: deviceInfo,
       status: attendanceStatus,
       shift_type: finalShiftType,
@@ -132,15 +145,23 @@ async function doCheckOut({
   companyId,
   imageData = null,
   location = null,
-  deviceInfo = 'Web'
+  deviceInfo = 'Web',
+  punchTime = null
 }) {
+  const effectivePunchTime = punchTime ? new Date(punchTime) : new Date();
+  if (Number.isNaN(effectivePunchTime.getTime())) {
+    throw new Error('Invalid punch time');
+  }
+
+  const attendanceDay = effectivePunchTime.toISOString().slice(0, 10);
+
   const record = await knex('attendance')
     .where({
       employee_id: employeeId,
       company_id: companyId
     })
     .whereNull('check_out')
-    .whereRaw('DATE(check_in) = CURDATE()')
+    .whereRaw('DATE(check_in) = ?', [attendanceDay])
     .first();
 
   if (!record) throw new Error('No active check-in');
@@ -150,7 +171,7 @@ async function doCheckOut({
     if (!faceMatch) throw new Error('Face verification failed');
   }
 
-  const checkOutTime = new Date();
+  const checkOutTime = effectivePunchTime;
   let hoursWorked =
     (checkOutTime - new Date(record.check_in)) / (1000 * 60 * 60);
 
@@ -173,7 +194,7 @@ async function doCheckOut({
       hours_worked: hoursWorked,
       overtime_hours: overtimeHours,
       check_out_location: location ? JSON.stringify(location) : null,
-      check_out_image_url: imageData ? `/uploads/attendance/company_${companyId}/${path.basename(imageData)}` : null,
+      check_out_image_url: resolveStoredImageUrl(imageData, companyId),
       device_info: deviceInfo,
       status: finalStatus
     });

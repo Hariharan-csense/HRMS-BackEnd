@@ -11,6 +11,19 @@ const {
   reconcileMissingLeaveBalances
 } = require('../services/leaveBalanceService');
 
+const normalizeWorkflowText = (value) => String(value || '').toLowerCase().trim();
+
+const resolveWorkflowRole = (user = {}) => {
+  const normalizedRole = normalizeWorkflowText(user.role);
+  const normalizedType = normalizeWorkflowText(user.type);
+
+  if (normalizedRole === 'ceo') return 'ceo';
+  if (normalizedRole === 'admin' || normalizedType === 'admin') return 'admin';
+  if (normalizedRole === 'hr') return 'hr';
+  if (normalizedRole === 'manager') return 'manager';
+  return 'employee';
+};
+
 // approved_by in leave_applications references employees.id.
 // Resolve from auth context where req.user.id may be users.id for admin tokens.
 const resolveApproverEmployeeId = async (req, companyId) => {
@@ -469,7 +482,7 @@ const applyLeave = async (req, res) => {
       };
 
       // 1️⃣ EMPLOYEE → Dept Manager + HR (if present) + Admins (if HR present)
-      if (userRole === 'employee') {
+      if (resolveWorkflowRole(req.user) === 'employee') {
         if (managerDesignation && employee.department_id) {
           const deptManager = await knex('employees')
             .where({
@@ -494,7 +507,7 @@ const applyLeave = async (req, res) => {
       }
 
       // 2️⃣ MANAGER → HR (+ admins if HR exists)
-      else if (userRole === 'manager') {
+      else if (resolveWorkflowRole(req.user) === 'manager') {
         const hrEmails = await fetchCompanyHrEmails();
         hrEmails.forEach(e => recipientSet.add(e));
 
@@ -505,19 +518,72 @@ const applyLeave = async (req, res) => {
       }
 
       // 3️⃣ HR → ADMIN (keep existing behavior but allow multiple admins)
-      else if (userRole === 'hr') {
+      else if (resolveWorkflowRole(req.user) === 'hr') {
         const adminEmails = await fetchAdminEmails();
         adminEmails.forEach(e => recipientSet.add(e));
       }
 
       // 4️⃣ ADMIN → HR (+ include admins too so they get a copy)
-      else if (userRole === 'admin') {
+      else if (resolveWorkflowRole(req.user) === 'admin') {
         const hrEmails = await fetchCompanyHrEmails();
         hrEmails.forEach(e => recipientSet.add(e));
 
         // include admins as well so admin group receives notification
         const adminEmails = await fetchAdminEmails();
         adminEmails.forEach(e => recipientSet.add(e));
+      }
+
+      const rebuiltRecipients = [];
+      const workflowRole = resolveWorkflowRole(req.user);
+
+      if (workflowRole === 'employee') {
+        if (managerDesignation && employee.department_id) {
+          const deptManager = await knex('employees')
+            .where({
+              company_id: companyId,
+              department_id: employee.department_id,
+              designation_id: managerDesignation.id,
+              status: 'Active'
+            })
+            .select('email')
+            .first();
+
+          if (deptManager?.email) rebuiltRecipients.push(deptManager.email);
+        }
+
+        const [adminEmails, ceoEmails] = await Promise.all([
+          fetchAdminEmails(),
+          knex('employees')
+            .whereRaw("TRIM(LOWER(role)) = ?", ['ceo'])
+            .andWhere({ company_id: companyId, status: 'Active' })
+            .select('email')
+            .then(rows => rows.map((row) => row.email).filter(Boolean))
+        ]);
+
+        [...adminEmails, ...ceoEmails].forEach((email) => {
+          if (email && !rebuiltRecipients.includes(email)) {
+            rebuiltRecipients.push(email);
+          }
+        });
+      } else if (['manager', 'hr', 'admin', 'ceo'].includes(workflowRole)) {
+        const ceoEmails = await knex('employees')
+          .whereRaw("TRIM(LOWER(role)) = ?", ['ceo'])
+          .andWhere({ company_id: companyId, status: 'Active' })
+          .select('email');
+
+        ceoEmails
+          .map((row) => row.email)
+          .filter(Boolean)
+          .forEach((email) => {
+            if (!rebuiltRecipients.includes(email)) {
+              rebuiltRecipients.push(email);
+            }
+          });
+      }
+
+      if (rebuiltRecipients.length > 0) {
+        recipientSet.clear();
+        rebuiltRecipients.forEach((email) => recipientSet.add(email));
       }
 
       // FALLBACK
@@ -1100,6 +1166,7 @@ const getRelevantUsers = async (req, res) => {
   try {
     const userId = req.user.id;
     const userRole = (req.user.role || '').toLowerCase(); // employee role (HR, Manager, Sales, etc.)
+    const workflowRole = resolveWorkflowRole(req.user);
     const companyId = req.user.company_id;
 
     if (!companyId) {
@@ -1123,7 +1190,7 @@ const getRelevantUsers = async (req, res) => {
     let result;
 
     // Employee -> department head + all HR + all Admin
-    if (userRole === 'employee') {
+    if (workflowRole === 'employee') {
       const employee = await knex('employees')
         .where({ id: userId, company_id: companyId })
         .first();
@@ -1162,17 +1229,58 @@ const getRelevantUsers = async (req, res) => {
       };
 
     // Admin/Manager -> only HR list
-    } else if (['admin', 'manager', 'ceo'].includes(userRole)) {
+    } else if (['admin', 'manager', 'ceo'].includes(workflowRole)) {
       const hrUsers = await getUsersByRole('hr');
       result = { hr: hrUsers };
 
     // HR -> only Admin list
-    } else if (userRole === 'hr') {
+    } else if (workflowRole === 'hr') {
       const adminUsers = await getUsersByRole('admin');
       result = { admin: adminUsers };
 
     } else {
       return res.status(403).json({ message: 'Access denied' });
+    }
+
+    if (workflowRole === 'employee') {
+      const employee = await knex('employees')
+        .where({ id: userId, company_id: companyId })
+        .first();
+
+      if (!employee) return res.status(404).json({ message: 'Employee not found' });
+
+      const departmentHead = await knex('departments')
+        .where({ id: employee.department_id, company_id: companyId })
+        .select('head_name', 'head_id')
+        .first();
+
+      const [adminUsers, ceoUsers] = await Promise.all([
+        getUsersByRole('admin'),
+        getUsersByRole('ceo')
+      ]);
+
+      let manager = null;
+      if (departmentHead?.head_id) {
+        const headEmployee = await knex('employees')
+          .where({ id: departmentHead.head_id, company_id: companyId })
+          .select(...userSelectColumns)
+          .first();
+        if (headEmployee) {
+          manager = headEmployee;
+        }
+      }
+      if (!manager && departmentHead?.head_name) {
+        manager = { name: departmentHead.head_name };
+      }
+
+      result = {
+        manager,
+        admin: adminUsers,
+        ceo: ceoUsers
+      };
+    } else if (['manager', 'hr', 'admin', 'ceo'].includes(workflowRole)) {
+      const ceoUsers = await getUsersByRole('ceo');
+      result = { ceo: ceoUsers };
     }
 
     res.json(result);

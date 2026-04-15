@@ -9,7 +9,10 @@ const {
   createOverride, 
   processOverride, 
   getEmployeeSummary,
-  getOverrides
+  getOverrides,
+  postLiveLocation,
+  getLiveLocations,
+  getLiveLocationHistory
 } = require('../controllers/attendanceController');
 const { protect } = require('../middleware/authMiddleware');
 const uploadAttendanceImage = require('../middleware/attendanceUpload');
@@ -41,6 +44,9 @@ router.put(
 // Reports
 router.get('/summary/employee/:employeeId', protect, requirePermission("attendance", "view"), getEmployeeSummary);
 router.get('/overrides', protect, requirePermission("attendance", "view", { submodule: "override" }), getOverrides);
+router.post('/locations', protect, requirePermission("attendance", "create", { submodule: "capture" }), postLiveLocation);
+router.get('/locations', protect, requirePermission("attendance", "view"), getLiveLocations);
+router.get('/locations/:employeeId/history', protect, requirePermission("attendance", "view"), getLiveLocationHistory);
 
 // Payroll helper: employee monthly attendance (employee code or id)
 router.get('/:employeeId/:month', protect, requirePermission("attendance", "view"), getAttendanceByEmployeeAndMonth);

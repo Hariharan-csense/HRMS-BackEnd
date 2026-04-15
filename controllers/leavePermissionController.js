@@ -11,6 +11,17 @@ const { generateAutoNumber } = require('../utils/generateAutoNumber');
 
 const normalizeText = (value) => String(value || '').toLowerCase().trim();
 
+const resolveWorkflowRole = (user = {}) => {
+  const normalizedRole = normalizeText(user.role);
+  const normalizedType = normalizeText(user.type);
+
+  if (normalizedRole === 'ceo') return 'ceo';
+  if (normalizedRole === 'admin' || normalizedType === 'admin') return 'admin';
+  if (normalizedRole === 'hr') return 'hr';
+  if (normalizedRole === 'manager') return 'manager';
+  return 'employee';
+};
+
 const resolveEmployeeProfile = async (req, companyId) => {
   // Prefer explicit mapped employee_id from auth middleware (admin->employee mapping)
   if (req.user?.employee_id) {
@@ -60,7 +71,7 @@ const applyLeavePermission = async (req, res) => {
     }
 
     const employeeId = req.user.id;
-    const userRole = req.user.role;
+    const workflowRole = resolveWorkflowRole(req.user);
 
     try {
       // ===============================
@@ -165,7 +176,7 @@ const applyLeavePermission = async (req, res) => {
       // ===============================
       // 1️⃣ EMPLOYEE → ASSIGNED REPORTING MANAGER + SAME DEPT MANAGER + ALL HR
       // ===============================
-      if (userRole === 'employee') {
+      if (workflowRole === 'employee') {
         // First, get the assigned reporting manager from employee record
         if (employee.reporting_manager_id) {
           const assignedManager = await knex('employees')
@@ -284,6 +295,70 @@ const applyLeavePermission = async (req, res) => {
             toEmails.push(hr.email);
           }
         });
+      }
+
+      const rebuiltRecipients = [];
+      if (workflowRole === 'employee') {
+        if (employee.reporting_manager_id) {
+          const assignedManager = await knex('employees')
+            .where({
+              company_id: companyId,
+              id: employee.reporting_manager_id,
+              status: 'Active'
+            })
+            .select('email')
+            .first();
+
+          if (assignedManager?.email) {
+            rebuiltRecipients.push(assignedManager.email);
+          }
+        }
+
+        if (managerDesignation && employee.department_id) {
+          const deptManager = await knex('employees')
+            .where({
+              company_id: companyId,
+              department_id: employee.department_id,
+              designation_id: managerDesignation.id,
+              status: 'Active'
+            })
+            .whereNot('id', employee.reporting_manager_id || 0)
+            .select('email')
+            .first();
+
+          if (deptManager?.email && !rebuiltRecipients.includes(deptManager.email)) {
+            rebuiltRecipients.push(deptManager.email);
+          }
+        }
+
+        const [adminUsers, ceoUsers] = await Promise.all([
+          knex('employees')
+            .where({ company_id: companyId, role: 'admin', status: 'Active' })
+            .select('email'),
+          knex('employees')
+            .where({ company_id: companyId, role: 'ceo', status: 'Active' })
+            .select('email')
+        ]);
+
+        [...adminUsers, ...ceoUsers].forEach((entry) => {
+          if (entry?.email && !rebuiltRecipients.includes(entry.email)) {
+            rebuiltRecipients.push(entry.email);
+          }
+        });
+      } else if (['manager', 'hr', 'admin', 'ceo'].includes(workflowRole)) {
+        const ceoUsers = await knex('employees')
+          .where({ company_id: companyId, role: 'ceo', status: 'Active' })
+          .select('email');
+
+        ceoUsers.forEach((entry) => {
+          if (entry?.email && !rebuiltRecipients.includes(entry.email)) {
+            rebuiltRecipients.push(entry.email);
+          }
+        });
+      }
+
+      if (rebuiltRecipients.length > 0) {
+        toEmails = rebuiltRecipients;
       }
 
       // ===============================
@@ -505,6 +580,7 @@ const updateLeavePermissionStatus = async (req, res) => {
 const getLeavePermissionRelevantUsers = async (req, res) => {
   try {
     const userRole = normalizeText(req.user.role);
+    const workflowRole = resolveWorkflowRole(req.user);
     const companyId = req.user.company_id;
 
     // Fetch current employee
@@ -517,7 +593,7 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
     // ===============================
     // 1️⃣ EMPLOYEE → SAME DEPT MANAGER + ALL HR
     // ===============================
-    if (userRole === 'employee') {
+    if (workflowRole === 'employee') {
       // Get same department managers
       if (employee.department_id) {
         const deptManagers = await knex('employees')
@@ -571,7 +647,7 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
     // ===============================
     // 2️⃣ MANAGER → ALL HR
     // ===============================
-    else if (userRole === 'manager') {
+    else if (workflowRole === 'manager') {
       const hrUsers = await getEmployeesByRole(companyId, 'hr');
 
       result.push(...hrUsers.map(hr => ({
@@ -586,7 +662,7 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
     // ===============================
     // 3️⃣ HR → ALL ADMIN
     // ===============================
-    else if (userRole === 'hr') {
+    else if (workflowRole === 'hr') {
       const adminUsers = await getEmployeesByRole(companyId, 'admin');
 
       result.push(...adminUsers.map(admin => ({
@@ -602,7 +678,7 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
     // ===============================
     // 4️⃣ ADMIN → ALL HR
     // ===============================
-    else if (userRole === 'admin' || userRole === 'ceo') {
+    else if (workflowRole === 'admin' || workflowRole === 'ceo') {
       const hrUsers = await getEmployeesByRole(companyId, 'hr');
 
       result.push(...hrUsers.map(hr => ({
@@ -614,12 +690,83 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
       })));
     }
 
+    if (workflowRole === 'employee') {
+      const rebuiltResult = [];
+
+      if (employee.department_id) {
+        const deptManagers = await knex('employees')
+          .where('company_id', companyId)
+          .where('department_id', employee.department_id)
+          .whereRaw('LOWER(TRIM(role)) = ?', ['manager'])
+          .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ['active'])
+          .select(
+            'id',
+            'first_name',
+            'last_name',
+            'email',
+            'role',
+            'department_id'
+          );
+
+        rebuiltResult.push(...deptManagers.map(mgr => ({
+          ...mgr,
+          fullName: `${mgr.first_name} ${mgr.last_name || ''}`.trim(),
+          isManager: true,
+          isHR: false,
+          isAdmin: false,
+          isCEO: false,
+          isSameDepartment: true
+        })));
+      }
+
+      const [adminUsers, ceoUsers] = await Promise.all([
+        getEmployeesByRole(companyId, 'admin'),
+        getEmployeesByRole(companyId, 'ceo')
+      ]);
+
+      rebuiltResult.push(...adminUsers.map(admin => ({
+        ...admin,
+        fullName: `${admin.first_name} ${admin.last_name || ''}`.trim(),
+        isManager: false,
+        isHR: false,
+        isAdmin: true,
+        isCEO: false,
+        isSameDepartment: false
+      })));
+
+      rebuiltResult.push(...ceoUsers.map(ceo => ({
+        ...ceo,
+        fullName: `${ceo.first_name} ${ceo.last_name || ''}`.trim(),
+        isManager: false,
+        isHR: false,
+        isAdmin: false,
+        isCEO: true,
+        isSameDepartment: false
+      })));
+
+      result = rebuiltResult;
+    } else if (['manager', 'hr', 'admin', 'ceo'].includes(workflowRole)) {
+      const ceoUsers = await getEmployeesByRole(companyId, 'ceo');
+
+      result = ceoUsers.map(ceo => ({
+        ...ceo,
+        fullName: `${ceo.first_name} ${ceo.last_name || ''}`.trim(),
+        isManager: false,
+        isHR: false,
+        isAdmin: false,
+        isCEO: true,
+        isSameDepartment: false
+      }));
+    }
+
     // Sort: same-dept managers first, then HR, then others
     result.sort((a, b) => {
       if (a.isManager && a.isSameDepartment && !(b.isManager && b.isSameDepartment)) return -1;
       if (!(a.isManager && a.isSameDepartment) && b.isManager && b.isSameDepartment) return 1;
       if (a.isHR && !b.isHR) return -1;
       if (!a.isHR && b.isHR) return 1;
+      if (a.isCEO && !b.isCEO) return -1;
+      if (!a.isCEO && b.isCEO) return 1;
       if (a.isAdmin && !b.isAdmin) return -1;
       if (!a.isAdmin && b.isAdmin) return 1;
       return 0;

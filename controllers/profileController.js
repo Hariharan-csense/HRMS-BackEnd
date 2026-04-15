@@ -1,27 +1,29 @@
-const knex = require('../db/db');
-const fs = require('fs');
-const path = require('path');
+const knex = require("../db/db");
+const fs = require("fs");
+const path = require("path");
 
 const resolveEmployeeIdFromAuth = async (req) => {
   const companyId = Number(req.user?.company_id);
   if (!companyId) return null;
 
   if (req.user?.employee_id) {
-    const direct = await knex('employees')
+    const direct = await knex("employees")
       .where({ id: Number(req.user.employee_id), company_id: companyId })
       .first();
     if (direct) return Number(direct.id);
   }
 
-  const fallbackById = await knex('employees')
+  const fallbackById = await knex("employees")
     .where({ id: Number(req.user?.id), company_id: companyId })
     .first();
   if (fallbackById) return Number(fallbackById.id);
 
   if (req.user?.email) {
-    const byEmail = await knex('employees')
+    const byEmail = await knex("employees")
       .where({ company_id: companyId })
-      .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+      .whereRaw("LOWER(email) = ?", [
+        String(req.user.email).toLowerCase().trim(),
+      ])
       .first();
     if (byEmail) return Number(byEmail.id);
   }
@@ -78,7 +80,6 @@ const resolveEmployeeIdFromAuth = async (req) => {
 //   }
 // };
 
-
 /**
  * GET Logged-in Employee Profile
  */
@@ -87,66 +88,63 @@ const getMyProfile = async (req, res) => {
     const employeeId = await resolveEmployeeIdFromAuth(req);
     const companyId = req.user.company_id;
 
-    console.log('PROFILE DEBUG - User Info:', {
+    console.log("PROFILE DEBUG - User Info:", {
       employeeId,
       companyId,
       userType: req.user.type,
-      email: req.user.email
+      email: req.user.email,
     });
 
-    const employee = await knex('employees')
-      .leftJoin('departments', 'employees.department_id', 'departments.id')
-      .leftJoin('designations', 'employees.designation_id', 'designations.id')
-      .where('employees.id', employeeId)
-      .andWhere('employees.company_id', companyId) // ✅ CRITICAL: Filter by company_id
+    const employee = await knex("employees")
+      .leftJoin("departments", "employees.department_id", "departments.id")
+      .leftJoin("designations", "employees.designation_id", "designations.id")
+      .where("employees.id", employeeId)
+      .andWhere("employees.company_id", companyId) // ✅ CRITICAL: Filter by company_id
       .select(
-        'employees.id',
-        'employees.employee_id',
-        'employees.first_name',
-        'employees.last_name',
-        'employees.email',
-        'employees.mobile',
-        'employees.profile_photo',          // ✅ ADD THIS
-        'employees.department_id',
-        'departments.name as department_name',
-        'employees.designation_id',
-        'designations.name as designation_name',
-        'employees.status',
-        'employees.location_office',
-        'employees.doj',
-        'employees.created_at'
+        "employees.id",
+        "employees.employee_id",
+        "employees.first_name",
+        "employees.last_name",
+        "employees.email",
+        "employees.mobile",
+        "employees.profile_photo", // ✅ ADD THIS
+        "employees.department_id",
+        "departments.name as department_name",
+        "employees.designation_id",
+        "designations.name as designation_name",
+        "employees.status",
+        "employees.location_office",
+        "employees.doj",
+        "employees.created_at",
       )
       .first();
 
     if (!employee) {
-      console.log('PROFILE DEBUG - Employee not found for company:', companyId);
+      console.log("PROFILE DEBUG - Employee not found for company:", companyId);
       return res.status(404).json({
         success: false,
-        message: 'Employee not found'
+        message: "Employee not found",
       });
     }
 
-    console.log('PROFILE DEBUG - Profile loaded successfully:', {
+    console.log("PROFILE DEBUG - Profile loaded successfully:", {
       employeeId: employee.id,
       name: employee.first_name,
-      company_id: companyId
+      company_id: companyId,
     });
 
     res.json({
       success: true,
-      data: employee
+      data: employee,
     });
-
   } catch (error) {
-    console.error('Error fetching profile:', error);
+    console.error("Error fetching profile:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch profile'
+      message: "Failed to fetch profile",
     });
   }
 };
-
-
 
 /**
  * UPDATE Logged-in Employee Profile
@@ -159,20 +157,15 @@ const updateMyProfile = async (req, res) => {
     const employeeId = await resolveEmployeeIdFromAuth(req);
     const companyId = req.user.company_id;
 
-    console.log('PROFILE UPDATE DEBUG - User Info:', {
+    console.log("PROFILE UPDATE DEBUG - User Info:", {
       employeeId,
       companyId,
       userType: req.user.type,
-      email: req.user.email
+      email: req.user.email,
     });
 
-    const {
-      first_name,
-      last_name,
-      mobile,
-      department_id,
-      designation_id
-    } = req.body;
+    const { first_name, last_name, mobile, department_id, designation_id } =
+      req.body;
 
     const updateData = {
       first_name,
@@ -180,7 +173,7 @@ const updateMyProfile = async (req, res) => {
       mobile,
       department_id,
       designation_id,
-      updated_at: knex.fn.now()
+      updated_at: knex.fn.now(),
     };
 
     // ✅ If profile photo uploaded, save FULL PATH
@@ -189,57 +182,59 @@ const updateMyProfile = async (req, res) => {
     }
 
     // Update with company_id filter to prevent cross-company data modification
-    const updateResult = await knex('employees')
-      .where('id', employeeId)
-      .andWhere('company_id', companyId) // ✅ CRITICAL: Filter by company_id
+    const updateResult = await knex("employees")
+      .where("id", employeeId)
+      .andWhere("company_id", companyId) // ✅ CRITICAL: Filter by company_id
       .update(updateData);
 
     if (updateResult === 0) {
-      console.log('PROFILE UPDATE DEBUG - No employee found to update for company:', companyId);
+      console.log(
+        "PROFILE UPDATE DEBUG - No employee found to update for company:",
+        companyId,
+      );
       return res.status(404).json({
         success: false,
-        message: 'Employee not found or unauthorized'
+        message: "Employee not found or unauthorized",
       });
     }
 
-    const updatedEmployee = await knex('employees')
-      .leftJoin('departments', 'employees.department_id', 'departments.id')
-      .leftJoin('designations', 'employees.designation_id', 'designations.id')
-      .where('employees.id', employeeId)
-      .andWhere('employees.company_id', companyId) // ✅ CRITICAL: Filter by company_id
+    const updatedEmployee = await knex("employees")
+      .leftJoin("departments", "employees.department_id", "departments.id")
+      .leftJoin("designations", "employees.designation_id", "designations.id")
+      .where("employees.id", employeeId)
+      .andWhere("employees.company_id", companyId) // ✅ CRITICAL: Filter by company_id
       .select(
-        'employees.id',
-        'employees.employee_id',
-        'employees.first_name',
-        'employees.last_name',
-        'employees.email',
-        'employees.mobile',
-        'employees.profile_photo',   // ✅ FULL PATH
-        'employees.department_id',
-        'departments.name as department_name',
-        'employees.designation_id',
-        'designations.name as designation_name',
-        'employees.status'
+        "employees.id",
+        "employees.employee_id",
+        "employees.first_name",
+        "employees.last_name",
+        "employees.email",
+        "employees.mobile",
+        "employees.profile_photo", // ✅ FULL PATH
+        "employees.department_id",
+        "departments.name as department_name",
+        "employees.designation_id",
+        "designations.name as designation_name",
+        "employees.status",
       )
       .first();
 
-    console.log('PROFILE UPDATE DEBUG - Profile updated successfully:', {
+    console.log("PROFILE UPDATE DEBUG - Profile updated successfully:", {
       employeeId: updatedEmployee.id,
       name: updatedEmployee.first_name,
-      company_id: companyId
+      company_id: companyId,
     });
 
     res.json({
       success: true,
-      message: 'Profile updated successfully',
-      data: updatedEmployee
+      message: "Profile updated successfully",
+      data: updatedEmployee,
     });
-
   } catch (error) {
-    console.error('Error updating profile:', error);
+    console.error("Error updating profile:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update profile'
+      message: "Failed to update profile",
     });
   }
 };
@@ -252,51 +247,55 @@ const deleteMyAccountAndOrganization = async (req, res) => {
   try {
     const userId = Number(req.user?.id);
     const companyId = Number(req.user?.company_id);
-    const userType = String(req.user?.type || '').toLowerCase();
-    const userRole = String(req.user?.role || '').toLowerCase();
-    const confirmation = String(req.body?.confirmation || '').trim().toUpperCase();
+    const userType = String(req.user?.type || "").toLowerCase();
+    const userRole = String(req.user?.role || "").toLowerCase();
+    const confirmation = String(req.body?.confirmation || "")
+      .trim()
+      .toUpperCase();
 
-    if (userType !== 'admin') {
+    if (userType !== "admin") {
       return res.status(403).json({
         success: false,
-        message: 'Only admin users can delete organization account.'
+        message: "Only admin users can delete organization account.",
       });
     }
 
-    if (userRole === 'superadmin') {
+    if (userRole === "superadmin") {
       return res.status(403).json({
         success: false,
-        message: 'Superadmin account cannot be deleted from profile.'
+        message: "Superadmin account cannot be deleted from profile.",
       });
     }
 
     if (!companyId) {
       return res.status(400).json({
         success: false,
-        message: 'No organization is linked to this admin account.'
+        message: "No organization is linked to this admin account.",
       });
     }
 
-    if (confirmation !== 'DELETE') {
+    if (confirmation !== "DELETE") {
       return res.status(400).json({
         success: false,
-        message: 'Please type DELETE to confirm account deletion.'
+        message: "Please type DELETE to confirm account deletion.",
       });
     }
 
-    const company = await knex('companies').where({ id: companyId }).first();
+    const company = await knex("companies").where({ id: companyId }).first();
     if (!company) {
       return res.status(404).json({
         success: false,
-        message: 'Organization not found.'
+        message: "Organization not found.",
       });
     }
 
-    const companyCode = company.company_id ? String(company.company_id) : null;
-
     await knex.transaction(async (trx) => {
-      const employeeRows = await trx('employees').where({ company_id: companyId }).select('id');
-      const userRows = await trx('users').where({ company_id: companyId }).select('id');
+      const employeeRows = await trx("employees")
+        .where({ company_id: companyId })
+        .select("id");
+      const userRows = await trx("users")
+        .where({ company_id: companyId })
+        .select("id");
       const employeeIds = employeeRows.map((r) => r.id);
       const userIds = userRows.map((r) => r.id);
 
@@ -306,16 +305,24 @@ const deleteMyAccountAndOrganization = async (req, res) => {
         WHERE TABLE_SCHEMA = DATABASE()
           AND COLUMN_NAME = 'company_id'
       `);
-      const companyColumnTables = (companyColumnTablesRaw[0] || []).map((r) => r.TABLE_NAME);
+      const companyColumnTables = (companyColumnTablesRaw[0] || []).map(
+        (r) => r.TABLE_NAME,
+      );
 
-      const doNotDeleteByCompany = new Set(['companies', 'knex_migrations', 'knex_migrations_lock']);
-      const deleteCompanyLast = new Set(['users', 'employees']);
+      const doNotDeleteByCompany = new Set([
+        "companies",
+        "knex_migrations",
+        "knex_migrations_lock",
+      ]);
+      const deleteCompanyLast = new Set(["users", "employees"]);
 
       for (const tableName of companyColumnTables) {
-        if (doNotDeleteByCompany.has(tableName) || deleteCompanyLast.has(tableName)) continue;
-        const query = trx(tableName).where('company_id', companyId);
-        if (companyCode) query.orWhere('company_id', companyCode);
-        await query.del();
+        if (
+          doNotDeleteByCompany.has(tableName) ||
+          deleteCompanyLast.has(tableName)
+        )
+          continue;
+        await trx(tableName).where("company_id", companyId).del();
       }
 
       if (employeeIds.length > 0) {
@@ -330,11 +337,18 @@ const deleteMyAccountAndOrganization = async (req, res) => {
             AND c.COLUMN_NAME = 'employee_id'
             AND c2.COLUMN_NAME IS NULL
         `);
-        const employeeColumnTables = (employeeColumnTablesRaw[0] || []).map((r) => r.TABLE_NAME);
+        const employeeColumnTables = (employeeColumnTablesRaw[0] || []).map(
+          (r) => r.TABLE_NAME,
+        );
 
         for (const tableName of employeeColumnTables) {
-          if (['employees', 'knex_migrations', 'knex_migrations_lock'].includes(tableName)) continue;
-          await trx(tableName).whereIn('employee_id', employeeIds).del();
+          if (
+            ["employees", "knex_migrations", "knex_migrations_lock"].includes(
+              tableName,
+            )
+          )
+            continue;
+          await trx(tableName).whereIn("employee_id", employeeIds).del();
         }
       }
 
@@ -350,38 +364,45 @@ const deleteMyAccountAndOrganization = async (req, res) => {
             AND c.COLUMN_NAME = 'user_id'
             AND c2.COLUMN_NAME IS NULL
         `);
-        const userColumnTables = (userColumnTablesRaw[0] || []).map((r) => r.TABLE_NAME);
+        const userColumnTables = (userColumnTablesRaw[0] || []).map(
+          (r) => r.TABLE_NAME,
+        );
 
         for (const tableName of userColumnTables) {
-          if (['users', 'knex_migrations', 'knex_migrations_lock'].includes(tableName)) continue;
-          await trx(tableName).whereIn('user_id', userIds).del();
+          if (
+            ["users", "knex_migrations", "knex_migrations_lock"].includes(
+              tableName,
+            )
+          )
+            continue;
+          await trx(tableName).whereIn("user_id", userIds).del();
         }
       }
 
-      const deleteEmployeesQuery = trx('employees').where('company_id', companyId);
-      if (companyCode) deleteEmployeesQuery.orWhere('company_id', companyCode);
-      await deleteEmployeesQuery.del();
+      await trx("employees").where("company_id", companyId).del();
 
-      const deleteUsersQuery = trx('users').where('company_id', companyId);
-      if (companyCode) deleteUsersQuery.orWhere('company_id', companyCode);
-      await deleteUsersQuery.del();
-      await trx('companies').where({ id: companyId }).del();
+      await trx("users").where("company_id", companyId).del();
+      await trx("companies").where({ id: companyId }).del();
     });
 
     if (company.logo) {
-      const logoPath = path.join(__dirname, '..', company.logo.replace(/^\/+/, ''));
+      const logoPath = path.join(
+        __dirname,
+        "..",
+        company.logo.replace(/^\/+/, ""),
+      );
       if (fs.existsSync(logoPath)) {
         fs.unlinkSync(logoPath);
       }
     }
 
-    const uploadRoot = path.join(__dirname, '..', 'uploads');
+    const uploadRoot = path.join(__dirname, "..", "uploads");
     const companyFolderName = `company_${companyId}`;
     const companyUploadDirs = [
-      path.join(uploadRoot, 'attendance', companyFolderName),
-      path.join(uploadRoot, 'employees', companyFolderName),
-      path.join(uploadRoot, 'leave-attachments', companyFolderName),
-      path.join(uploadRoot, 'expense-receipts', companyFolderName),
+      path.join(uploadRoot, "attendance", companyFolderName),
+      path.join(uploadRoot, "employees", companyFolderName),
+      path.join(uploadRoot, "leave-attachments", companyFolderName),
+      path.join(uploadRoot, "expense-receipts", companyFolderName),
     ];
 
     for (const dir of companyUploadDirs) {
@@ -392,20 +413,19 @@ const deleteMyAccountAndOrganization = async (req, res) => {
 
     return res.json({
       success: true,
-      message: 'Account and organization data deleted permanently.'
+      message: "Account and organization data deleted permanently.",
     });
   } catch (error) {
-    console.error('Error deleting account and organization:', error);
+    console.error("Error deleting account and organization:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to delete account and organization data.'
+      message: "Failed to delete account and organization data.",
     });
   }
 };
 
-
 module.exports = {
   getMyProfile,
   updateMyProfile,
-  deleteMyAccountAndOrganization
+  deleteMyAccountAndOrganization,
 };

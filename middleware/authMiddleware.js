@@ -41,7 +41,16 @@
 
   const hasAnyRole = (userLike, allowedRoles = []) => {
     const roleSet = buildRoleSet(userLike);
-    return allowedRoles.map(normalizeRole).some((role) => roleSet.has(role));
+    const normalizedAllowedRoles = allowedRoles.map(normalizeRole);
+    if (normalizedAllowedRoles.includes('employee')) {
+      const privilegedRoles = new Set(['admin', 'manager', 'hr', 'ceo', 'superadmin', 'finance']);
+      const isEmployeeType = String(userLike?.type || '').toLowerCase().trim() === 'employee';
+      const hasPrivilegedRole = [...roleSet].some((role) => privilegedRoles.has(role));
+      if (isEmployeeType && !hasPrivilegedRole) {
+        return true;
+      }
+    }
+    return normalizedAllowedRoles.some((role) => roleSet.has(role));
   };
 
     const protect = async (req, res, next) => {

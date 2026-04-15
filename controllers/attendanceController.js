@@ -1035,6 +1035,325 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
     }
   };
 
+  const postLiveLocation = async (req, res) => {
+    try {
+      const companyId = Number(req.user?.company_id);
+      const employeeId = await resolveAttendanceEmployeeId(req);
+      const latitude = Number(req.body?.latitude);
+      const longitude = Number(req.body?.longitude);
+      const accuracy = req.body?.accuracy != null ? Number(req.body.accuracy) : null;
+
+      if (!companyId || !employeeId) {
+        return res.status(400).json({ success: false, message: 'Missing employee or company context' });
+      }
+
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return res.status(400).json({ success: false, message: 'Valid latitude and longitude are required' });
+      }
+
+      const timestampValue = req.body?.timestamp ? new Date(req.body.timestamp) : new Date();
+      const locationTimestamp = Number.isNaN(timestampValue.getTime()) ? new Date() : timestampValue;
+
+      const insertPayload = {
+        employee_id: employeeId,
+        company_id: companyId,
+        latitude,
+        longitude,
+        accuracy: Number.isFinite(accuracy) ? accuracy : null,
+        address: req.body?.address || null,
+        location_data: JSON.stringify({
+          timestamp: locationTimestamp.toISOString(),
+          source: req.body?.source || 'web',
+        }),
+        is_tracking: true,
+        tracking_status: 'active',
+        device_info: req.body?.device_info || req.body?.deviceInfo || 'web',
+        session_id: req.body?.session_id || null,
+        location_timestamp: locationTimestamp,
+        last_updated: knex.fn.now(),
+      };
+
+      const inserted = await knex('employee_live_locations').insert(insertPayload);
+      const insertedRaw = Array.isArray(inserted) ? inserted[0] : inserted;
+      const insertedId = typeof insertedRaw === 'object' ? insertedRaw.id : insertedRaw;
+
+      const location = await knex('employee_live_locations')
+        .where({ id: insertedId, company_id: companyId })
+        .first();
+
+      return res.status(201).json({
+        success: true,
+        message: 'Live location saved',
+        location,
+      });
+    } catch (error) {
+      console.error('Post live location error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to save live location',
+      });
+    }
+  };
+
+  const getLiveLocations = async (req, res) => {
+    try {
+      const companyId = Number(req.user?.company_id);
+      if (!companyId) {
+        return res.status(400).json({ success: false, message: 'Company not assigned to user' });
+      }
+
+      const latestLocationSubquery = knex('employee_live_locations as ell')
+        .select('ell.employee_id')
+        .max('ell.location_timestamp as latest_timestamp')
+        .where('ell.company_id', companyId)
+        .groupBy('ell.employee_id')
+        .as('latest_locations');
+
+      const locations = await knex('employee_live_locations as ell')
+        .join(latestLocationSubquery, function () {
+          this.on('ell.employee_id', '=', 'latest_locations.employee_id')
+            .andOn('ell.location_timestamp', '=', 'latest_locations.latest_timestamp');
+        })
+        .leftJoin('employees as e', 'ell.employee_id', 'e.id')
+        .where('ell.company_id', companyId)
+        .select(
+          'ell.id',
+          'ell.employee_id',
+          'ell.latitude',
+          'ell.longitude',
+          'ell.accuracy',
+          'ell.address',
+          'ell.location_timestamp',
+          'ell.last_updated',
+          'ell.device_info',
+          'ell.tracking_status',
+          'ell.is_tracking',
+          'e.first_name',
+          'e.last_name',
+          'e.employee_id as employee_code'
+        )
+        .orderBy('ell.location_timestamp', 'desc');
+
+      return res.json({
+        success: true,
+        locations,
+      });
+    } catch (error) {
+      console.error('Get live locations error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch live locations',
+      });
+    }
+  };
+
+  const getLiveLocationHistory = async (req, res) => {
+    try {
+      const companyId = Number(req.user?.company_id);
+      const requestedEmployeeId = Number(req.params?.employeeId);
+
+      if (!companyId) {
+        return res.status(400).json({ success: false, message: 'Company not assigned to user' });
+      }
+
+      if (!Number.isFinite(requestedEmployeeId)) {
+        return res.status(400).json({ success: false, message: 'Valid employee id is required' });
+      }
+
+      let loggedInUser = null;
+      const hasCompanyWideAccess = hasAnyRole(req.user, ['admin', 'hr', 'finance', 'ceo', 'superadmin']);
+
+      if (!hasCompanyWideAccess) {
+        loggedInUser = await knex('employees')
+          .where({ id: req.user.id, company_id: companyId })
+          .first();
+
+        if (!loggedInUser) {
+          return res.status(403).json({ success: false, message: 'User not found' });
+        }
+
+        if (hasAnyRole(loggedInUser, ['manager'])) {
+          const requestedEmployee = await knex('employees')
+            .where({ id: requestedEmployeeId, company_id: companyId })
+            .first();
+
+          if (!requestedEmployee) {
+            return res.status(404).json({ success: false, message: 'Employee not found' });
+          }
+
+          if (requestedEmployee.id !== loggedInUser.id && requestedEmployee.department_id !== loggedInUser.department_id) {
+            return res.status(403).json({ success: false, message: 'Not allowed to view this employee history' });
+          }
+        } else if (requestedEmployeeId !== loggedInUser.id) {
+          return res.status(403).json({ success: false, message: 'Not allowed to view this employee history' });
+        }
+      }
+
+      const {
+        startDate,
+        endDate,
+        sessionId,
+        limit = 500,
+      } = req.query;
+
+      const employee = await knex('employees')
+        .where({ id: requestedEmployeeId, company_id: companyId })
+        .first('id', 'first_name', 'last_name', 'employee_id');
+
+      if (!employee) {
+        return res.status(404).json({ success: false, message: 'Employee not found' });
+      }
+
+      let historyQuery = knex('employee_live_locations as ell')
+        .where({
+          'ell.company_id': companyId,
+          'ell.employee_id': requestedEmployeeId,
+        });
+
+      if (startDate) {
+        historyQuery = historyQuery.where('ell.location_timestamp', '>=', new Date(startDate));
+      }
+
+      if (endDate) {
+        historyQuery = historyQuery.where('ell.location_timestamp', '<=', new Date(endDate));
+      }
+
+      if (sessionId) {
+        historyQuery = historyQuery.where('ell.session_id', String(sessionId));
+      }
+
+      const pointLimit = Math.min(Math.max(Number(limit) || 500, 1), 2000);
+
+      const points = await historyQuery
+        .clone()
+        .select(
+          'ell.id',
+          'ell.employee_id',
+          'ell.latitude',
+          'ell.longitude',
+          'ell.accuracy',
+          'ell.address',
+          'ell.location_timestamp',
+          'ell.device_info',
+          'ell.session_id',
+          'ell.tracking_status',
+          'ell.is_tracking'
+        )
+        .orderBy('ell.location_timestamp', 'asc')
+        .limit(pointLimit);
+
+      const attendanceRecord = await knex('attendance as a')
+        .where({
+          'a.company_id': companyId,
+          'a.employee_id': requestedEmployeeId,
+        })
+        .modify((qb) => {
+          if (startDate) qb.where('a.check_in', '>=', new Date(startDate));
+          if (endDate) qb.where('a.check_in', '<=', new Date(endDate));
+        })
+        .orderBy('a.check_in', 'desc')
+        .first(
+          'a.id',
+          'a.check_in',
+          'a.check_out',
+          'a.check_in_location',
+          'a.check_out_location',
+          'a.hours_worked',
+          'a.status'
+        );
+
+      const parseStoredLocation = (rawValue) => {
+        if (!rawValue) return null;
+        if (typeof rawValue === 'string') {
+          try {
+            return JSON.parse(rawValue);
+          } catch {
+            return null;
+          }
+        }
+        return rawValue;
+      };
+
+      const formatCoordinateLabel = (latitude, longitude) => {
+        const lat = Number(latitude);
+        const lng = Number(longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+        return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      };
+
+      const parsedCheckInLocation = parseStoredLocation(attendanceRecord?.check_in_location);
+      const parsedCheckOutLocation = parseStoredLocation(attendanceRecord?.check_out_location);
+
+      const haversineMeters = (lat1, lon1, lat2, lon2) => {
+        const toRad = (deg) => (deg * Math.PI) / 180;
+        const R = 6371000;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a =
+          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(toRad(lat1)) *
+            Math.cos(toRad(lat2)) *
+            Math.sin(dLon / 2) *
+            Math.sin(dLon / 2);
+        return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      };
+
+      let totalDistanceMeters = 0;
+      for (let i = 1; i < points.length; i += 1) {
+        const prev = points[i - 1];
+        const current = points[i];
+        const prevLat = Number(prev.latitude);
+        const prevLng = Number(prev.longitude);
+        const currentLat = Number(current.latitude);
+        const currentLng = Number(current.longitude);
+
+        if (Number.isFinite(prevLat) && Number.isFinite(prevLng) && Number.isFinite(currentLat) && Number.isFinite(currentLng)) {
+          totalDistanceMeters += haversineMeters(prevLat, prevLng, currentLat, currentLng);
+        }
+      }
+
+      const startPoint = points[0] || null;
+      const endPoint = points[points.length - 1] || null;
+      const tripDurationMinutes =
+        startPoint && endPoint
+          ? Math.max(0, Math.round((new Date(endPoint.location_timestamp).getTime() - new Date(startPoint.location_timestamp).getTime()) / 60000))
+          : 0;
+
+      return res.json({
+        success: true,
+        employee,
+        points,
+        summary: {
+          pointCount: points.length,
+          totalDistanceMeters: Number(totalDistanceMeters.toFixed(2)),
+          tripDurationMinutes,
+          startedAt: startPoint?.location_timestamp || attendanceRecord?.check_in || null,
+          endedAt: endPoint?.location_timestamp || attendanceRecord?.check_out || null,
+          startAddress:
+            startPoint?.address ||
+            parsedCheckInLocation?.address ||
+            formatCoordinateLabel(parsedCheckInLocation?.latitude, parsedCheckInLocation?.longitude) ||
+            null,
+          endAddress:
+            endPoint?.address ||
+            parsedCheckOutLocation?.address ||
+            formatCoordinateLabel(endPoint?.latitude, endPoint?.longitude) ||
+            parsedCheckInLocation?.address ||
+            formatCoordinateLabel(parsedCheckInLocation?.latitude, parsedCheckInLocation?.longitude) ||
+            formatCoordinateLabel(parsedCheckOutLocation?.latitude, parsedCheckOutLocation?.longitude) ||
+            null,
+          attendance: attendanceRecord || null,
+        },
+      });
+    } catch (error) {
+      console.error('Get live location history error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch live location history',
+      });
+    }
+  };
+
   // Helper functions
 
 
@@ -1049,6 +1368,9 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
     processOverride,
     getEmployeeSummary,
     getOverrides,
+    postLiveLocation,
+    getLiveLocations,
+    getLiveLocationHistory,
     //getEmployeeShift,
     //determineShiftTyp
   };
