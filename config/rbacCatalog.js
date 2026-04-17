@@ -45,6 +45,7 @@ const RBAC_MODULE_CATALOG = [
       { key: "log", label: "Attendance Log" },
       { key: "override", label: "Override" },
       { key: "shift", label: "Shift Management" },
+      { key: "setup", label: "ESSL Setup" },
     ],
   },
   { key: "shift_management", label: "Shift Management", submodules: [] },

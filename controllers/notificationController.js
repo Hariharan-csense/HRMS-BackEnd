@@ -1,5 +1,9 @@
 const knex = require('../db/db');
-const { v4: uuidv4 } = require('uuid');
+
+const isMySqlClient = () => {
+  const clientName = String(knex?.client?.config?.client || knex?.client?.dialect || "").toLowerCase();
+  return clientName.includes('mysql');
+};
 
 // Get all notifications for the authenticated user
 const getNotifications = async (req, res) => {
@@ -52,7 +56,6 @@ const createNotification = async (req, res) => {
     }
 
     const notificationData = {
-      id: uuidv4(),
       user_id: userId || req.user?.id,
       title,
       description,
@@ -63,11 +66,22 @@ const createNotification = async (req, res) => {
       created_at: new Date()
     };
 
-    const insertResult = await knex('notifications')
-      .insert(notificationData)
-      .returning('*');
+    let notification;
 
-    const notification = Array.isArray(insertResult) ? insertResult[0] : insertResult;
+    if (isMySqlClient()) {
+      const insertResult = await knex('notifications').insert(notificationData);
+      const insertedId = Array.isArray(insertResult) ? insertResult[0] : insertResult;
+
+      notification = await knex('notifications')
+        .where({ id: insertedId })
+        .first();
+    } else {
+      const insertResult = await knex('notifications')
+        .insert(notificationData)
+        .returning('*');
+
+      notification = Array.isArray(insertResult) ? insertResult[0] : insertResult;
+    }
 
     res.status(201).json({
       success: true,
@@ -98,12 +112,28 @@ const markNotificationAsRead = async (req, res) => {
       return res.status(401).json({ message: 'User not authenticated' });
     }
 
-    const updateResult = await knex('notifications')
-      .where({ id: notificationId, user_id: userId })
-      .update({ read: true })
-      .returning('*');
+    let updatedNotification;
 
-    const updatedNotification = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+    if (isMySqlClient()) {
+      const updatedCount = await knex('notifications')
+        .where({ id: notificationId, user_id: userId })
+        .update({ read: true });
+
+      if (!updatedCount) {
+        return res.status(404).json({ message: 'Notification not found' });
+      }
+
+      updatedNotification = await knex('notifications')
+        .where({ id: notificationId, user_id: userId })
+        .first();
+    } else {
+      const updateResult = await knex('notifications')
+        .where({ id: notificationId, user_id: userId })
+        .update({ read: true })
+        .returning('*');
+
+      updatedNotification = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+    }
 
     if (!updatedNotification) {
       return res.status(404).json({ message: 'Notification not found' });
