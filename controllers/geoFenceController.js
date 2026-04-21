@@ -1,4 +1,5 @@
 const knex = require('../db/db');
+const { isClientAssignedToEmployee } = require('../utils/clientAssignments');
 
 // Calculate distance between two coordinates in meters
 function calculateDistance(lat1, lon1, lat2, lon2) {
@@ -161,10 +162,18 @@ const checkInWithGeoFence = async (req, res) => {
 
     // Verify client is assigned to this employee
     const client = await knex('clients')
-      .where({ id: clientId, assigned_to: employeeId })
+      .where({ id: clientId })
       .first();
 
-    if (!client) {
+    const isAssigned = client
+      ? await isClientAssignedToEmployee({
+          clientId,
+          companyId: req.user.company_id,
+          employeeId,
+        })
+      : false;
+
+    if (!client || !isAssigned) {
       return res.status(403).json({
         success: false,
         error: 'Client not assigned to you'

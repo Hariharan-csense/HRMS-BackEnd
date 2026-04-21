@@ -1,5 +1,6 @@
 const knex = require('../db/db');
 const { hasAnyRole } = require('../middleware/authMiddleware');
+const { isClientAssignedToEmployee } = require('../utils/clientAssignments');
 
 // Get today's client attendance for employee
 // const getTodayClientAttendance = async (req, res) => {
@@ -95,10 +96,18 @@ const checkInToClient = async (req, res) => {
 
     // Verify client is assigned to this employee
     const client = await knex('clients')
-      .where({ id: clientId, assigned_to: employeeId })
+      .where({ id: clientId })
       .first();
 
-    if (!client) {
+    const isAssigned = client
+      ? await isClientAssignedToEmployee({
+          clientId,
+          companyId: req.user.company_id,
+          employeeId,
+        })
+      : false;
+
+    if (!client || !isAssigned) {
       return res.status(403).json({
         success: false,
         error: 'Client not assigned to you'

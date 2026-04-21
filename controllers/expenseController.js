@@ -6,6 +6,11 @@ const { generateAutoNumber } = require('../utils/generateAutoNumber');
 const scanReceipt = require('../utils/scanReceipt');
 const moment = require('moment');
 const { sendExpenseStatusNotification } = require('../utils/sendExpenseStatusMail');
+const {
+  applyEmployeeAssignmentFilter,
+  getAssignedClientCountForEmployee,
+  isClientAssignedToEmployee,
+} = require('../utils/clientAssignments');
 
 const normalizeExpenseCategory = (raw) => {
   if (!raw) return null;
@@ -28,22 +33,6 @@ const parseExpenseDateToISO = (raw) => {
   return parsed.format('YYYY-MM-DD');
 };
 
-const getAssignedClientCountForEmployee = async ({ companyId, employeeId }) => {
-  const countRow = await knex('clients')
-    .where({
-      company_id: companyId,
-      assigned_to: employeeId
-    })
-    .count({ count: '*' })
-    .first();
-
-  return Number(
-    countRow?.count ??
-    countRow?.['count(*)'] ??
-    0
-  );
-};
-
 const assertClientIsAllowed = async ({ companyId, employeeId, userType, clientId }) => {
   if (!clientId) return null;
 
@@ -59,7 +48,13 @@ const assertClientIsAllowed = async ({ companyId, employeeId, userType, clientId
 
     // Employees with assigned clients are restricted to those clients.
     // Employees with no assignment can submit against any client in their company.
-    if (assignedClientCount > 0 && Number(client.assigned_to) !== Number(employeeId)) {
+    const isAssigned = await isClientAssignedToEmployee({
+      clientId,
+      companyId,
+      employeeId,
+    });
+
+    if (assignedClientCount > 0 && !isAssigned) {
       return null;
     }
   }
@@ -278,21 +273,21 @@ const submitExpense = async (req, res) => {
               if (match) {
                 const amount = parseFloat(match[1].replace(',', ''));
                 // Less strict filtering
-                if (amount >= 1 && amount <= 10000 && 
-                    !lastLine.toLowerCase().includes('phone') &&
-                    !lastLine.toLowerCase().includes('bill no') &&
-                    !lastLine.toLowerCase().includes('gst') &&
-                    !lastLine.toLowerCase().includes('fssai') &&
-                    !lastLine.toLowerCase().includes('qty') &&
-                    !lastLine.toLowerCase().includes('rate') &&
-                    !lastLine.toLowerCase().includes('mrp')) {
+                if (amount >= 1 && amount <= 10000 &&
+                  !lastLine.toLowerCase().includes('phone') &&
+                  !lastLine.toLowerCase().includes('bill no') &&
+                  !lastLine.toLowerCase().includes('gst') &&
+                  !lastLine.toLowerCase().includes('fssai') &&
+                  !lastLine.toLowerCase().includes('qty') &&
+                  !lastLine.toLowerCase().includes('rate') &&
+                  !lastLine.toLowerCase().includes('mrp')) {
                   return match;
                 }
               }
             }
             return null;
           })();
-        
+
         if (amtMatch) {
           amount = amtMatch[1].replace(',', '');
         }
@@ -377,19 +372,19 @@ const submitExpense = async (req, res) => {
     const canStoreClientId = await ensureExpensesClientIdColumn();
 
     // 📝 Insert expense
-const [id] = await knex('expenses').insert({
-  company_id: companyId,
-  expense_id,
-  employee_id: employeeId,
-  employee_name: employeeName,  // ✅ add this
-  ...(canStoreClientId ? { client_id: clientId || null } : {}),
-  category,
-  amount: parseFloat(amount),
-  expense_date,
-  description,
-  receipt_path: receiptPath,
-  status: 'Pending'
-});
+    const [id] = await knex('expenses').insert({
+      company_id: companyId,
+      expense_id,
+      employee_id: employeeId,
+      employee_name: employeeName,  // ✅ add this
+      ...(canStoreClientId ? { client_id: clientId || null } : {}),
+      category,
+      amount: parseFloat(amount),
+      expense_date,
+      description,
+      receipt_path: receiptPath,
+      status: 'Pending'
+    });
 
 
     // ✅ Fetch inserted expense and add employee_name
@@ -578,7 +573,7 @@ const getExpenses = async (req, res) => {
         )
         .where('e.company_id', companyId)
         .orderBy('e.created_at', 'desc');
-    } 
+    }
     // 🔒 ALL OTHERS → Only self
     else {
       let query = knex('expenses as e');
@@ -606,9 +601,9 @@ const getExpenses = async (req, res) => {
           'e.created_at',
           'e.updated_at'
         )
-        .where({ 
-          'e.employee_id': req.user.id, 
-          'e.company_id': companyId 
+        .where({
+          'e.employee_id': req.user.id,
+          'e.company_id': companyId
         })
         .orderBy('e.created_at', 'desc');
 
@@ -747,6 +742,30 @@ const updateExpenseStatus = async (req, res) => {
       .first();
 
     if (status && ['Approved', 'Rejected'].includes(status)) {
+      const sameDateExpenses = await knex('expenses')
+        .where({
+          company_id: companyId,
+          employee_id: updated.employee_id,
+          expense_date: updated.expense_date
+        })
+        .select(
+          'expense_id',
+          'expense_date',
+          'amount',
+          'category',
+          'description',
+          'status',
+          'approved_at'
+        );
+
+      const hasPendingExpenseOnSameDate = sameDateExpenses.some(
+        (item) => String(item.status || '').toLowerCase() === 'pending'
+      );
+
+      const matchingStatusExpenses = sameDateExpenses.filter(
+        (item) => String(item.status || '').toLowerCase() === status.toLowerCase()
+      );
+
       const employee = await knex('employees')
         .where({ id: updated.employee_id })
         .first();
@@ -754,12 +773,12 @@ const updateExpenseStatus = async (req, res) => {
       console.log('Employee record:', employee);
       console.log('Email To:', employee?.email);
 
-      if (employee && employee.email) {
+      if (employee && employee.email && !hasPendingExpenseOnSameDate && matchingStatusExpenses.length > 0) {
         console.log('Trying to send expense status email...');
 
         try {
           await sendExpenseStatusNotification(
-            updated,
+            matchingStatusExpenses,
             {
               employee_email: employee.email,
               employee_name: `${employee.first_name} ${employee.last_name}`
@@ -771,6 +790,8 @@ const updateExpenseStatus = async (req, res) => {
         } catch (mailError) {
           console.error('Mail sending failed:', mailError);
         }
+      } else if (hasPendingExpenseOnSameDate) {
+        console.log('Skipping expense status email because same-date expenses are still pending.');
       } else {
         console.warn('No employee email found. Skipping mail.');
       }
@@ -881,21 +902,21 @@ const scanReceiptOnly = async (req, res) => {
               if (match) {
                 const amount = parseFloat(match[1].replace(',', ''));
                 // Less strict filtering
-                if (amount >= 1 && amount <= 10000 && 
-                    !lastLine.toLowerCase().includes('phone') &&
-                    !lastLine.toLowerCase().includes('bill no') &&
-                    !lastLine.toLowerCase().includes('gst') &&
-                    !lastLine.toLowerCase().includes('fssai') &&
-                    !lastLine.toLowerCase().includes('qty') &&
-                    !lastLine.toLowerCase().includes('rate') &&
-                    !lastLine.toLowerCase().includes('mrp')) {
+                if (amount >= 1 && amount <= 10000 &&
+                  !lastLine.toLowerCase().includes('phone') &&
+                  !lastLine.toLowerCase().includes('bill no') &&
+                  !lastLine.toLowerCase().includes('gst') &&
+                  !lastLine.toLowerCase().includes('fssai') &&
+                  !lastLine.toLowerCase().includes('qty') &&
+                  !lastLine.toLowerCase().includes('rate') &&
+                  !lastLine.toLowerCase().includes('mrp')) {
                   return match;
                 }
               }
             }
             return null;
           })();
-        
+
         if (amtMatch) {
           extractedAmount = amtMatch[1].replace(',', '');
         }
@@ -959,7 +980,7 @@ const scanReceiptOnly = async (req, res) => {
 
   } catch (error) {
     console.error('Scan receipt error:', error);
-    
+
     // 🧹 Clean up uploaded file on error
     if (req.file && req.file.path) {
       try {
@@ -1044,16 +1065,16 @@ const exportExpenses = async (req, res) => {
     if (format === 'csv') {
       // Generate CSV
       const csvHeader = Object.keys(exportData[0] || {}).join(',');
-      const csvRows = exportData.map(row => 
-        Object.values(row).map(value => 
-          typeof value === 'string' && value.includes(',') 
-            ? `"${value.replace(/"/g, '""')}"` 
+      const csvRows = exportData.map(row =>
+        Object.values(row).map(value =>
+          typeof value === 'string' && value.includes(',')
+            ? `"${value.replace(/"/g, '""')}"`
             : value
         ).join(',')
       );
-      
+
       const csvContent = [csvHeader, ...csvRows].join('\n');
-      
+
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', `attachment; filename=expenses_${moment().format('YYYY-MM-DD')}.csv`);
       res.send(csvContent);
@@ -1096,7 +1117,10 @@ const getAssignedClientsForClaims = async (req, res) => {
       // Employees with at least one assigned client should only see those clients.
       // Employees with no assignment should fall back to the full company client list.
       if (assignedClientCount > 0) {
-        query = query.andWhere('assigned_to', employeeId);
+        await applyEmployeeAssignmentFilter(query, {
+          clientTable: 'clients',
+          employeeId,
+        });
       }
     }
 
