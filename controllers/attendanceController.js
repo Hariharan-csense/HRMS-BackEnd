@@ -1,5 +1,6 @@
 // src/controllers/attendanceController.js
 const knex = require('../db/db');
+const { getIo } = require('../socket');
 const { hasAnyRole } = require('../middleware/authMiddleware');
 const { doCheckIn, doCheckOut } = require('../services/attendance.service');
 const { getEmployeeShift } = require('../utils/shift.util');
@@ -1081,6 +1082,25 @@ const postLiveLocation = async (req, res) => {
     const location = await knex('employee_live_locations')
       .where({ id: insertedId, company_id: companyId })
       .first();
+
+    if (location) {
+      const employee = await knex('employees')
+        .where({ id: employeeId, company_id: companyId })
+        .first('first_name', 'last_name', 'employee_id');
+
+      const io = getIo();
+      if (io) {
+        io.to(`company:${companyId}`).emit('location:update', {
+          ...location,
+          employeeName: employee
+            ? `${employee.first_name || ''} ${employee.last_name || ''}`.trim()
+            : undefined,
+          employee_code: employee?.employee_id || null,
+          tracking_status: 'active',
+          minutes_since_update: 0,
+        });
+      }
+    }
 
     return res.status(201).json({
       success: true,

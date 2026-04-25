@@ -6,8 +6,10 @@ const { generateAccessToken, generateRefreshToken } = require('../utils/jwt');
 const { transporter } = require('../utils/mailer');
 const moment = require('moment');
 
- const {generateAutoNumber} = require('../utils/generateAutoNumber');
- const { sendRegistrationSuccessMail } = require('../utils/sendRegistrationSuccessMail');
+const { generateAutoNumber } = require('../utils/generateAutoNumber');
+const { sendRegistrationSuccessMail } = require('../utils/sendRegistrationSuccessMail');
+const { RBAC_ACTIONS, RBAC_MODULE_CATALOG } = require('../config/rbacCatalog');
+const { normalizeModulesPayload } = require('../utils/rbac');
 
 const parseCookies = (cookieHeader = '') => {
   return String(cookieHeader || '')
@@ -116,11 +118,12 @@ const registerUser = async (req, res) => {
     email,
     password,
     confirmPassword,
-    role = 'admin',
     department,
     company_name,
     phone
   } = req.body;
+
+  const role = 'admin';
 
   try {
 
@@ -186,6 +189,57 @@ const registerUser = async (req, res) => {
 
         companyPkId = newCompanyId;
         createdCompanyName = company_name.trim();
+
+        const existingAdminRole = await trx('roles')
+          .whereRaw('LOWER(name) = ? AND company_id = ?', ['admin', companyPkId])
+          .first();
+
+        if (!existingAdminRole) {
+          const lastRole = await trx('roles')
+            .where({ company_id: companyPkId })
+            .orderBy('id', 'desc')
+            .first();
+
+          const nextRoleNumber = lastRole?.role_id
+            ? parseInt(String(lastRole.role_id).replace('ROLE', ''), 10) + 1
+            : 1;
+          const role_id = `ROLE${String(nextRoleNumber).padStart(3, '0')}`;
+
+          const fullPermissions = {};
+          RBAC_ACTIONS.forEach((action) => {
+            fullPermissions[action] = true;
+          });
+
+          const adminModules = {};
+          (RBAC_MODULE_CATALOG || []).forEach((moduleEntry) => {
+            if (!moduleEntry?.key) return;
+            const moduleKey = moduleEntry.key;
+            const submodules = {};
+            (moduleEntry.submodules || []).forEach((subEntry) => {
+              if (!subEntry?.key) return;
+              submodules[subEntry.key] = { permissions: { ...fullPermissions } };
+            });
+
+            adminModules[moduleKey] = {
+              permissions: { ...fullPermissions },
+              submodules,
+            };
+          });
+
+          const structuredModules = normalizeModulesPayload(adminModules);
+
+          await trx('roles').insert({
+            company_id: companyPkId,
+            role_id,
+            name: 'Admin',
+            approval_authority: '',
+            data_visibility: '',
+            modules: JSON.stringify(structuredModules),
+            description: null,
+            created_at: trx.fn.now(),
+            updated_at: trx.fn.now(),
+          });
+        }
       }
 
       /* ---------------- CREATE USER ---------------- */
@@ -308,12 +362,86 @@ const registerUser = async (req, res) => {
         .where({ id: newUserId })
         .first();
 
+      /* ---------------- CREATE FREE TRIAL SUBSCRIPTION FOR NEW COMPANY ---------------- */
+      if (role === 'admin' && companyPkId) {
+        try {
+          // Check if company already has a subscription
+          const existingSubscription = await trx('company_subscriptions')
+            .where('company_id', companyPkId)
+            .first();
+
+          if (!existingSubscription) {
+            // Get the best available plan for trial (highest trial days, or create a default)
+            let plan = await trx('subscription_plans')
+              .where('is_active', true)
+              .orderBy('trial_days', 'desc')
+              .first();
+
+            if (!plan) {
+              const planColumns = await trx('subscription_plans').columnInfo();
+              const monthlyPriceField = planColumns.monthly_price ? 'monthly_price' : 'price';
+              const hasYearlyPrice = Boolean(planColumns.yearly_price);
+              const hasStorage = Boolean(planColumns.storage_gb);
+              const hasMaxUsers = Boolean(planColumns.max_users);
+
+              const defaultPlanData = {
+                name: 'Trial',
+                description: 'Trial plan (auto-created)',
+                trial_days: 30,
+                is_active: true,
+                created_at: trx.fn.now(),
+                updated_at: trx.fn.now(),
+              };
+
+              defaultPlanData[monthlyPriceField] = 0;
+              if (hasYearlyPrice) defaultPlanData.yearly_price = 0;
+              if (hasStorage) defaultPlanData.storage_gb = 10;
+              if (hasMaxUsers) defaultPlanData.max_users = 25
+
+              const [planId] = await trx('subscription_plans').insert(defaultPlanData);
+              plan = await trx('subscription_plans').where('id', planId).first();
+            }
+
+            const startDate = new Date();
+            const trialDays = plan.trial_days || 30; // Default 30 days if not set
+            const trialEndDate = new Date(startDate);
+            trialEndDate.setDate(trialEndDate.getDate() + trialDays);
+
+            const subscriptionColumns = await trx('company_subscriptions').columnInfo();
+            const subscriptionData = {
+              company_id: companyPkId,
+              plan_id: plan.id,
+              start_date: startDate,
+              end_date: trialEndDate,
+              trial_end_date: trialEndDate,
+              status: 'trial',
+              billing_cycle: 'monthly',
+              next_billing_date: trialEndDate,
+            };
+
+            if (subscriptionColumns.max_users) {
+              subscriptionData.max_users = 999; // Unlimited users during trial
+            }
+
+            if (subscriptionColumns.storage_gb) {
+              subscriptionData.storage_gb = plan.storage_gb || 10;
+            }
+
+            await trx('company_subscriptions').insert(subscriptionData);
+            console.log(`Free trial subscription created for company ${companyPkId} - ${trialDays} days`);
+          }
+        } catch (subscriptionError) {
+          console.error('Failed to create trial subscription:', subscriptionError);
+          // Don't fail registration if subscription creation fails
+        }
+      }
+
       /* ---------------- CREATE LEAVE BALANCES FOR ADMIN ---------------- */
       if (role === 'admin' && companyPkId) {
         try {
           // Get the employee record that was just created
           const adminEmployee = await trx('employees')
-            .where({ 
+            .where({
               company_id: companyPkId,
               email: email.trim().toLowerCase()
             })
@@ -651,14 +779,14 @@ const changePassword = async (req, res) => {
       await knex('users').where({ id: userId }).update({ password: hashedPassword });
     } else {
       // Employee
-      await knex('employees').where({ id: userId }).update({ 
+      await knex('employees').where({ id: userId }).update({
         password: hashedPassword
       });
     }
 
-    res.json({ 
-      success: true, 
-      message: 'Password changed successfully' 
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
     });
 
   } catch (error) {
@@ -692,7 +820,7 @@ const initiateForgotPassword = async (req, res) => {
 
     // Check if email exists in users table (admins)
     let user = await knex('users').where({ email: email.trim().toLowerCase() }).first();
-    
+
     // If not found in users, check employees table
     if (!user) {
       user = await knex('employees').where({ email: email.trim().toLowerCase() }).first();
@@ -709,7 +837,7 @@ const initiateForgotPassword = async (req, res) => {
     // Check which table the user is in and update with OTP
     let userFoundInTable = 'users'; // default
     const usersTableUser = await knex('users').where({ id: user.id }).first();
-    
+
     if (usersTableUser) {
       // User is in users table (admin)
       await knex('users').where({ id: user.id }).update({
@@ -773,7 +901,7 @@ const verifyOTP = async (req, res) => {
 
     // Check users table (admins)
     let user = await knex('users').where({ email: email.trim().toLowerCase() }).first();
-    
+
     // If not found, check employees
     if (!user) {
       user = await knex('employees').where({ email: email.trim().toLowerCase() }).first();
@@ -795,7 +923,7 @@ const verifyOTP = async (req, res) => {
 
     // Mark OTP as verified
     const usersTableUser = await knex('users').where({ id: user.id }).first();
-    
+
     if (usersTableUser) {
       // User is in users table
       await knex('users').where({ id: user.id }).update({
@@ -839,7 +967,7 @@ const resetPassword = async (req, res) => {
 
     // Check users table (admins)
     let user = await knex('users').where({ email: email.trim().toLowerCase() }).first();
-    
+
     // If not found, check employees
     if (!user) {
       user = await knex('employees').where({ email: email.trim().toLowerCase() }).first();
@@ -860,7 +988,7 @@ const resetPassword = async (req, res) => {
 
     // Update password and clear OTP
     const usersTableUser = await knex('users').where({ id: user.id }).first();
-    
+
     if (usersTableUser) {
       // User is in users table
       await knex('users').where({ id: user.id }).update({

@@ -97,10 +97,54 @@ const getRoles = async (req, res) => {
   }
 
   try {
-    const roles = await knex('roles')
+    let roles = await knex('roles')
       .where({ company_id: companyId })
       .select('id', 'role_id', 'name', 'approval_authority', 'data_visibility', 'modules', 'description', 'created_at', 'updated_at')
       .orderBy('name');
+
+    if (!roles || roles.length === 0) {
+      const role_id = await generateRoleId(companyId);
+
+      const fullPermissions = {};
+      RBAC_ACTIONS.forEach((action) => {
+        fullPermissions[action] = true;
+      });
+
+      const adminModules = {};
+      (RBAC_MODULE_CATALOG || []).forEach((moduleEntry) => {
+        if (!moduleEntry?.key) return;
+        const moduleKey = moduleEntry.key;
+        const submodules = {};
+        (moduleEntry.submodules || []).forEach((subEntry) => {
+          if (!subEntry?.key) return;
+          submodules[subEntry.key] = { permissions: { ...fullPermissions } };
+        });
+
+        adminModules[moduleKey] = {
+          permissions: { ...fullPermissions },
+          submodules,
+        };
+      });
+
+      const structuredModules = normalizeModulesPayload(adminModules);
+
+      await knex('roles').insert({
+        company_id: companyId,
+        role_id,
+        name: 'Admin',
+        approval_authority: '',
+        data_visibility: '',
+        modules: JSON.stringify(structuredModules),
+        description: null,
+        created_at: knex.fn.now(),
+        updated_at: knex.fn.now(),
+      });
+
+      roles = await knex('roles')
+        .where({ company_id: companyId })
+        .select('id', 'role_id', 'name', 'approval_authority', 'data_visibility', 'modules', 'description', 'created_at', 'updated_at')
+        .orderBy('name');
+    }
 
     const parsedRoles = roles.map((role) => ({
       ...role,
@@ -205,19 +249,14 @@ const deleteRole = async (req, res) => {
       return res.status(404).json({ message: 'Role not found or access denied' });
     }
 
-    // Prevent deleting critical roles
-    if (role.name.toLowerCase() === 'admin') {
-      return res.status(403).json({ message: 'Cannot delete Admin role' });
-    }
-
     // Check if role is assigned to any employees
     const assignments = await knex('role_assignments')
       .where({ role_id: id, company_id: companyId, status: 'Active' })
       .first();
 
     if (assignments) {
-      return res.status(400).json({ 
-        message: 'Cannot delete role that is assigned to employees. Please remove assignments first.' 
+      return res.status(400).json({
+        message: 'Cannot delete role that is assigned to employees. Please remove assignments first.'
       });
     }
 

@@ -3,9 +3,35 @@ const path = require("path");
 const cors = require("cors");
 require("dotenv").config();
 const fs = require("fs");
+const http = require("http");
+const { Server } = require("socket.io");
+const { setIo } = require("./socket");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  path: "/backeclsnd/socket.io",
+  cors: {
+    origin: true,
+    credentials: true,
+  },
+});
+
+setIo(io);
+
+io.on("connection", (socket) => {
+  socket.on("join:company", (companyId) => {
+    if (!companyId) return;
+    socket.join(`company:${companyId}`);
+  });
+
+  socket.on("leave:company", (companyId) => {
+    if (!companyId) return;
+    socket.leave(`company:${companyId}`);
+  });
+});
 
 app.use(
   cors({
@@ -70,6 +96,7 @@ const expenseRoutes = require("./routes/expenseRoutes");
 const employeeRoutes = require("./routes/employeeRoutes");
 const leaveRoutes = require("./routes/leaveRoutes");
 const roleRoutes = require("./routes/roleRoutes");
+
 const payrollRoutes = require("./routes/payrollRoutes");
 const autoNumberRoutes = require("./routes/autoNumberroutes");
 const resignationRoutes = require("./routes/resignations");
@@ -117,6 +144,7 @@ app.use("/backend/api/attendance", attendanceRoutes);
 app.use("/backend/api/employee", employeeRoutes);
 app.use("/backend/api/leave", leaveRoutes);
 app.use("/backend/api/role", roleRoutes);
+
 app.use("/backend/api/payroll", payrollRoutes);
 app.use("/backend/api/autonumber", autoNumberRoutes);
 app.use("/backend/api/resignations", resignationRoutes);
@@ -164,7 +192,7 @@ app.use("*", (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   //console.log(`Uploads available at: http://localhost:${PORT}/uploads`);
 });
