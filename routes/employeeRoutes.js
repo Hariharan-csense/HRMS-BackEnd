@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const {
   addEmployee,
+  checkEmployeeDuplicate,
   getEmployees,
   getEmployeeById,
   updateEmployee,
@@ -52,6 +53,9 @@ router.post('/add', protect, requirePermission("employees", "create", { submodul
 
 // Get all employees - with general subscription check
 router.get('/', protect, requirePermission("employees", "view", { submodule: "list" }), getEmployees);
+
+// Check duplicate employee fields while filling forms
+router.get('/check-duplicate', protect, requirePermission("employees", "view", { submodule: "list" }), checkEmployeeDuplicate);
 
 // Get employee by ID - with general subscription check
 router.get('/:id', protect, requirePermission("employees", "view", { submodule: "profile" }), getEmployeeById);

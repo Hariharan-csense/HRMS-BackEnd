@@ -28,6 +28,55 @@ const resolveCompanyId = async (req) => {
   return companyId || null;
 };
 
+const toDateKey = (value) => {
+  if (!value) return null;
+  if (typeof value === 'string') return value.slice(0, 10);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const addDays = (dateKey, days) => {
+  const date = new Date(`${dateKey}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return toDateKey(date);
+};
+
+const clampDateRange = (fromDate, toDate, startDate, endDate) => {
+  const from = toDateKey(fromDate);
+  const to = toDateKey(toDate);
+  if (!from || !to) return null;
+
+  const start = startDate ? toDateKey(startDate) : from;
+  const end = endDate ? toDateKey(endDate) : to;
+
+  const clampedFrom = from > start ? from : start;
+  const clampedTo = to < end ? to : end;
+
+  if (clampedFrom > clampedTo) return null;
+  return { from: clampedFrom, to: clampedTo };
+};
+
+const minutesBetweenTimes = (fromTime, toTime) => {
+  if (!fromTime || !toTime) return 0;
+  const [fromH, fromM] = String(fromTime).split(':').map(Number);
+  const [toH, toM] = String(toTime).split(':').map(Number);
+  if ([fromH, fromM, toH, toM].some(Number.isNaN)) return 0;
+  return Math.max(0, (toH * 60 + toM) - (fromH * 60 + fromM));
+};
+
+const formatHoursFromMinutes = (minutes) => {
+  if (!minutes) return '00:00:00';
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
+};
+
+const normalizeStatus = (value) => String(value || '').toLowerCase().trim();
+
 /* =========================
    ATTENDANCE REPORT
 ========================= */
@@ -101,16 +150,19 @@ const getAttendanceReport = async (req, res) => {
     }
 
     // ========= Detailed rows (for CSV/export) =========
-    const rows = await base
+    const attendanceRows = await base
       .clone()
       .select(
         'a.id',
+        'e.id as employeePkId',
         'e.employee_id as employeeCode',
         knex.raw("CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,'')) as employeeName"),
         'e.mobile as phoneNumber',
+        'e.location_office as branch',
         'd.name as department',
+        'desg.name as designation',
         'a.status',
-        knex.raw('DATE(a.check_in) as date'),
+        knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as date"),
         knex.raw("TIME_FORMAT(a.check_in, '%H:%i:%s') as checkInTime"),
         knex.raw("TIME_FORMAT(a.check_out, '%H:%i:%s') as checkOutTime"),
         'a.hours_worked as hoursWorked',
@@ -121,7 +173,268 @@ const getAttendanceReport = async (req, res) => {
         'a.check_in_location',
         'a.check_out_location'
       )
+      .leftJoin('designations as desg', 'e.designation_id', 'desg.id')
       .orderBy('a.check_in', 'desc');
+
+    const reportStartDate = startDate || `${year}-01-01`;
+    const reportEndDate = endDate || `${year}-12-31`;
+
+    const employeeScope = (query, employeeAlias = 'e') => {
+      if (employeeId) {
+        query.where(function () {
+          this.where(`${employeeAlias}.employee_id`, employeeId);
+          if (/^\d+$/.test(String(employeeId))) {
+            this.orWhere(`${employeeAlias}.id`, Number(employeeId));
+          }
+        });
+      }
+
+      if (departmentId) {
+        query.where(`${employeeAlias}.department_id`, departmentId);
+      }
+
+      return query;
+    };
+
+    const leaveHasCompanyId = await knex.schema.hasColumn('leave_applications', 'company_id');
+    let leaveQuery = knex('leave_applications as l')
+      .leftJoin('employees as e', 'l.employee_id', 'e.id')
+      .leftJoin('departments as d', 'e.department_id', 'd.id')
+      .leftJoin('designations as desg', 'e.designation_id', 'desg.id')
+      .whereRaw('DATE(l.from_date) <= ?', [reportEndDate])
+      .whereRaw('DATE(l.to_date) >= ?', [reportStartDate])
+      .select(
+        'l.id as leaveId',
+        'l.application_id as leaveApplicationId',
+        'l.employee_id as employeePkId',
+        'e.employee_id as employeeCode',
+        knex.raw("CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,'')) as employeeName"),
+        'e.mobile as phoneNumber',
+        'e.location_office as branch',
+        'd.name as department',
+        'desg.name as designation',
+        'l.leave_type_name as leaveType',
+        knex.raw("DATE_FORMAT(l.from_date, '%Y-%m-%d') as leaveFromDate"),
+        knex.raw("DATE_FORMAT(l.to_date, '%Y-%m-%d') as leaveToDate"),
+        'l.days as leaveDays',
+        'l.status as leaveStatus',
+        'l.reason as leaveReason',
+        'l.remarks as leaveRemarks'
+      );
+
+    leaveQuery = leaveHasCompanyId
+      ? leaveQuery.where('l.company_id', companyId)
+      : leaveQuery.where('e.company_id', companyId);
+    leaveQuery = employeeScope(leaveQuery);
+
+    const allLeaveApplications = await leaveQuery;
+    const leaveApplications = allLeaveApplications.filter((leave) => normalizeStatus(leave.leaveStatus) === 'approved');
+
+    let permissionQuery = knex('leave_permissions as p')
+      .leftJoin('employees as e', 'p.employee_id', 'e.id')
+      .leftJoin('departments as d', 'e.department_id', 'd.id')
+      .leftJoin('designations as desg', 'e.designation_id', 'desg.id')
+      .where('p.company_id', companyId)
+      .whereRaw('DATE(p.permission_date) >= ?', [reportStartDate])
+      .whereRaw('DATE(p.permission_date) <= ?', [reportEndDate])
+      .select(
+        'p.id as permissionId',
+        'p.permission_id as permissionApplicationId',
+        'p.employee_id as employeePkId',
+        'e.employee_id as employeeCode',
+        knex.raw("CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,'')) as employeeName"),
+        'e.mobile as phoneNumber',
+        'e.location_office as branch',
+        'd.name as department',
+        'desg.name as designation',
+        knex.raw("DATE_FORMAT(p.permission_date, '%Y-%m-%d') as permissionDate"),
+        knex.raw("TIME_FORMAT(p.permission_time_from, '%H:%i:%s') as permissionFromTime"),
+        knex.raw("TIME_FORMAT(p.permission_time_to, '%H:%i:%s') as permissionToTime"),
+        'p.status as permissionStatus',
+        'p.reason as permissionReason',
+        'p.remarks as permissionRemarks'
+      );
+
+    permissionQuery = employeeScope(permissionQuery);
+
+    const allPermissionApplications = await permissionQuery;
+    const permissionApplications = allPermissionApplications.filter(
+      (permission) => normalizeStatus(permission.permissionStatus) === 'approved'
+    );
+
+    const rowsByEmployeeDate = new Map();
+    const rowKey = (employeePkId, date) => `${employeePkId || ''}-${toDateKey(date) || ''}`;
+
+    const rows = attendanceRows.map((row) => {
+      const normalized = {
+        ...row,
+        date: toDateKey(row.date),
+        leaveTaken: '',
+        leaveType: '',
+        leaveDays: '',
+        leaveReason: '',
+        permissionTaken: '',
+        permissionFromTime: '',
+        permissionToTime: '',
+        permissionDuration: '',
+        permissionReason: '',
+      };
+      rowsByEmployeeDate.set(rowKey(normalized.employeePkId, normalized.date), normalized);
+      return normalized;
+    });
+
+    leaveApplications.forEach((leave) => {
+      const range = clampDateRange(
+        leave.leaveFromDate,
+        leave.leaveToDate,
+        reportStartDate,
+        reportEndDate
+      );
+      if (!range) return;
+
+      for (let date = range.from; date <= range.to; date = addDays(date, 1)) {
+        const key = rowKey(leave.employeePkId, date);
+        const existing = rowsByEmployeeDate.get(key);
+
+        if (existing) {
+          existing.leaveTaken = 'Yes';
+          existing.leaveType = leave.leaveType || '';
+          existing.leaveDays = leave.leaveDays || '';
+          existing.leaveReason = leave.leaveReason || leave.leaveRemarks || '';
+          if (!existing.status || existing.status === 'absent') {
+            existing.status = 'leave';
+          }
+          continue;
+        }
+
+        const leaveRow = {
+          id: `leave-${leave.leaveId}-${date}`,
+          employeePkId: leave.employeePkId,
+          employeeCode: leave.employeeCode,
+          employeeName: leave.employeeName,
+          phoneNumber: leave.phoneNumber,
+          branch: leave.branch,
+          department: leave.department,
+          designation: leave.designation,
+          status: 'leave',
+          date,
+          checkInTime: null,
+          checkOutTime: null,
+          hoursWorked: 0,
+          overtimeHours: 0,
+          deviceInfo: null,
+          autoFlag: null,
+          flagReason: leave.leaveReason || leave.leaveRemarks || '',
+          check_in_location: null,
+          check_out_location: null,
+          leaveTaken: 'Yes',
+          leaveType: leave.leaveType || '',
+          leaveDays: leave.leaveDays || '',
+          leaveReason: leave.leaveReason || leave.leaveRemarks || '',
+          permissionTaken: '',
+          permissionFromTime: '',
+          permissionToTime: '',
+          permissionDuration: '',
+          permissionReason: '',
+        };
+
+        rowsByEmployeeDate.set(key, leaveRow);
+        rows.push(leaveRow);
+      }
+    });
+
+    permissionApplications.forEach((permission) => {
+      const date = toDateKey(permission.permissionDate);
+      if (!date) return;
+      const key = rowKey(permission.employeePkId, date);
+      const duration = formatHoursFromMinutes(
+        minutesBetweenTimes(permission.permissionFromTime, permission.permissionToTime)
+      );
+      const existing = rowsByEmployeeDate.get(key);
+
+      if (existing) {
+        existing.permissionTaken = 'Yes';
+        existing.permissionFromTime = permission.permissionFromTime || '';
+        existing.permissionToTime = permission.permissionToTime || '';
+        existing.permissionDuration = duration;
+        existing.permissionReason = permission.permissionReason || permission.permissionRemarks || '';
+        return;
+      }
+
+      const permissionRow = {
+        id: `permission-${permission.permissionId}`,
+        employeePkId: permission.employeePkId,
+        employeeCode: permission.employeeCode,
+        employeeName: permission.employeeName,
+        phoneNumber: permission.phoneNumber,
+        branch: permission.branch,
+        department: permission.department,
+        designation: permission.designation,
+        status: 'permission',
+        date,
+        checkInTime: null,
+        checkOutTime: null,
+        hoursWorked: 0,
+        overtimeHours: 0,
+        deviceInfo: null,
+        autoFlag: null,
+        flagReason: permission.permissionReason || permission.permissionRemarks || '',
+        check_in_location: null,
+        check_out_location: null,
+        leaveTaken: '',
+        leaveType: '',
+        leaveDays: '',
+        leaveReason: '',
+        permissionTaken: 'Yes',
+        permissionFromTime: permission.permissionFromTime || '',
+        permissionToTime: permission.permissionToTime || '',
+        permissionDuration: duration,
+        permissionReason: permission.permissionReason || permission.permissionRemarks || '',
+      };
+
+      rowsByEmployeeDate.set(key, permissionRow);
+      rows.push(permissionRow);
+    });
+
+    rows.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+
+    const leaveRows = allLeaveApplications.map((leave) => ({
+      leaveApplicationId: leave.leaveApplicationId || leave.leaveId,
+      employeePkId: leave.employeePkId,
+      employeeCode: leave.employeeCode,
+      employeeName: leave.employeeName,
+      phoneNumber: leave.phoneNumber,
+      branch: leave.branch,
+      department: leave.department,
+      designation: leave.designation,
+      leaveType: leave.leaveType || '',
+      leaveFromDate: toDateKey(leave.leaveFromDate),
+      leaveToDate: toDateKey(leave.leaveToDate),
+      leaveDays: leave.leaveDays || '',
+      leaveStatus: leave.leaveStatus || '',
+      leaveReason: leave.leaveReason || '',
+      leaveRemarks: leave.leaveRemarks || '',
+    }));
+
+    const permissionRows = allPermissionApplications.map((permission) => ({
+      permissionApplicationId: permission.permissionApplicationId || permission.permissionId,
+      employeePkId: permission.employeePkId,
+      employeeCode: permission.employeeCode,
+      employeeName: permission.employeeName,
+      phoneNumber: permission.phoneNumber,
+      branch: permission.branch,
+      department: permission.department,
+      designation: permission.designation,
+      permissionDate: toDateKey(permission.permissionDate),
+      permissionFromTime: permission.permissionFromTime || '',
+      permissionToTime: permission.permissionToTime || '',
+      permissionDuration: formatHoursFromMinutes(
+        minutesBetweenTimes(permission.permissionFromTime, permission.permissionToTime)
+      ),
+      permissionStatus: permission.permissionStatus || '',
+      permissionReason: permission.permissionReason || '',
+      permissionRemarks: permission.permissionRemarks || '',
+    }));
 
     // ========= Monthly trend (respecting filters) =========
     const trendRaw = await base
@@ -192,7 +505,7 @@ const getAttendanceReport = async (req, res) => {
 
     return res.json({
       success: true,
-      data: { trend, summary, rows },
+      data: { trend, summary, rows, leaveRows, permissionRows },
     });
   } catch (err) {
     console.error('Attendance report error:', err);

@@ -41,32 +41,108 @@ const resolveAttendanceEmployeeId = async (req) => {
   throw new Error('Employee profile not found for this account');
 };
 
+const getDayWindow = (date = new Date()) => {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  return { start, end };
+};
+
+const normalizeRequestedTime = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return null;
+  const match = normalized.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = match[3] ? Number(match[3]) : 0;
+
+  if (hours > 23 || minutes > 59 || seconds > 59) return null;
+
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
+const buildDateTime = (date, time) => `${date} ${time}`;
+
+const calculateWorkedHours = (date, checkInTime, checkOutTime) => {
+  const checkInDate = new Date(`${date}T${checkInTime}`);
+  const checkOutDate = new Date(`${date}T${checkOutTime}`);
+
+  if (Number.isNaN(checkInDate.getTime()) || Number.isNaN(checkOutDate.getTime())) {
+    return null;
+  }
+
+  if (checkOutDate <= checkInDate) {
+    checkOutDate.setDate(checkOutDate.getDate() + 1);
+  }
+
+  return Math.max(0, (checkOutDate - checkInDate) / (1000 * 60 * 60));
+};
+
+const buildAttendanceOverrideUpdate = ({ override, date }) => {
+  const requestedCheckIn = normalizeRequestedTime(override.requested_check_in);
+  const requestedCheckOut = normalizeRequestedTime(override.requested_check_out);
+  const updatePayload = {
+    status: override.overridden_status
+  };
+
+  if (requestedCheckIn) {
+    updatePayload.check_in = buildDateTime(date, requestedCheckIn);
+  }
+
+  if (requestedCheckOut) {
+    updatePayload.check_out = buildDateTime(date, requestedCheckOut);
+  }
+
+  if (requestedCheckIn && requestedCheckOut) {
+    const workedHours = calculateWorkedHours(date, requestedCheckIn, requestedCheckOut);
+    if (workedHours !== null) {
+      updatePayload.hours_worked = workedHours;
+      updatePayload.overtime_hours = 0;
+    }
+  }
+
+  return updatePayload;
+};
+
+const getAttendanceDate = (attendance, fallbackDate) => {
+  if (fallbackDate) return fallbackDate;
+  if (!attendance?.check_in) return null;
+  return new Date(attendance.check_in).toISOString().slice(0, 10);
+};
+
 // Check current attendance status
 const getAttendanceStatus = async (req, res) => {
   try {
     const companyId = Number(req.user.company_id);
     const employeeId = await resolveAttendanceEmployeeId(req);
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const { start: todayStart, end: tomorrowStart } = getDayWindow();
 
     const activeAttendance = await knex('attendance')
       .where('employee_id', employeeId)
       .where('company_id', companyId)
-      .where('check_in', '>=', today)
+      .where('check_in', '>=', todayStart)
+      .where('check_in', '<', tomorrowStart)
       .whereNull('check_out')
       .first();
 
     const todayAttendance = await knex('attendance')
       .where('employee_id', employeeId)
       .where('company_id', companyId)
-      .whereRaw('DATE(check_in) = CURDATE()')
+      .where('check_in', '>=', todayStart)
+      .where('check_in', '<', tomorrowStart)
       .orderBy('check_in', 'desc')
       .limit(2);
 
     res.json({
       success: true,
       isCheckedIn: !!activeAttendance,
+      hasCheckedInToday: todayAttendance.some((record) => Boolean(record.check_in)),
       todayRecords: todayAttendance || []
     });
   } catch (error) {
@@ -326,9 +402,10 @@ const checkIn = async (req, res) => {
 
   } catch (err) {
     console.error("Check-in error:", err);
-    res.status(500).json({
+    const isDuplicateCheckIn = err.message === 'Already checked in today';
+    res.status(isDuplicateCheckIn ? 400 : 500).json({
       success: false,
-      message: "Failed to check in",
+      message: isDuplicateCheckIn ? err.message : "Failed to check in",
       error: err.message
     });
   }
@@ -668,7 +745,17 @@ const createOverride = async (req, res) => {
     return res.status(400).json({ message: 'Company not assigned to user' });
   }
 
-  const { attendanceId, employeeId, date, originalStatus, overriddenStatus, reason } = req.body;
+  const {
+    attendanceId,
+    employeeId,
+    date,
+    originalStatus,
+    overriddenStatus,
+    reason,
+    requestedCheckIn,
+    requestedCheckOut,
+    leaveMode
+  } = req.body;
   const userId = req.user.id;
 
   try {
@@ -682,6 +769,22 @@ const createOverride = async (req, res) => {
 
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
       return res.status(400).json({ message: 'Valid date is required (YYYY-MM-DD)' });
+    }
+
+    const normalizedRequestedCheckIn = normalizeRequestedTime(requestedCheckIn);
+    const normalizedRequestedCheckOut = normalizeRequestedTime(requestedCheckOut);
+    const normalizedLeaveMode = String(leaveMode || 'none').toLowerCase();
+    const isLeaveOverride =
+      ['paid', 'half'].includes(normalizedLeaveMode) ||
+      /^\[(Paid Leave|Half Day Leave)\s+-\s+/i.test(String(reason || '').trim());
+    const requiresTimeUpdate = ['present', 'half', 'half_day'].includes(
+      String(overriddenStatus || '').toLowerCase()
+    ) && !isLeaveOverride;
+
+    if (requiresTimeUpdate && (!normalizedRequestedCheckIn || !normalizedRequestedCheckOut)) {
+      return res.status(400).json({
+        message: 'Valid requested check-in and check-out times are required'
+      });
     }
 
     let attendance = null;
@@ -753,6 +856,8 @@ const createOverride = async (req, res) => {
       original_status: originalStatus || attendance.status,
       overridden_status: overriddenStatus || attendance.status,
       reason,
+      requested_check_in: normalizedRequestedCheckIn,
+      requested_check_out: normalizedRequestedCheckOut,
       requested_by: userId,
       approved_by: isAutoApproved ? userId : null,
       status: isAutoApproved ? 'approved' : 'pending'
@@ -768,9 +873,15 @@ const createOverride = async (req, res) => {
 
     // If admin approved immediately
     if (override && override.status === 'approved') {
+      const attendanceDate = getAttendanceDate(attendance, date);
+      const updatePayload = buildAttendanceOverrideUpdate({
+        override,
+        date: attendanceDate
+      });
+
       await knex('attendance')
         .where('id', attendance.id)
-        .update({ status: overriddenStatus || attendance.status });
+        .update(updatePayload);
     }
 
     // await logAudit('create_override', 'attendance_overrides', override.id, userId, {
@@ -836,9 +947,23 @@ const processOverride = async (req, res) => {
       .first();
 
     if (status === 'approved') {
+      const attendance = await knex('attendance')
+        .where({ id: override.attendance_id, company_id: companyId })
+        .first();
+
+      if (!attendance) {
+        return res.status(404).json({ message: 'Attendance record not found for this override' });
+      }
+
+      const attendanceDate = getAttendanceDate(attendance);
+      const updatePayload = buildAttendanceOverrideUpdate({
+        override,
+        date: attendanceDate
+      });
+
       await knex('attendance')
         .where('id', override.attendance_id)
-        .update({ status: override.overridden_status });
+        .update(updatePayload);
     }
 
     // await logAudit(`override_${status}`, 'attendance_overrides', overrideId, userId, { status, comment });
@@ -946,6 +1071,8 @@ const getOverrides = async (req, res) => {
       'original_status',
       'overridden_status',
       'reason',
+      'requested_check_in',
+      'requested_check_out',
       'requested_by',
       'approved_by',
       'status',

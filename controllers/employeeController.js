@@ -137,6 +137,51 @@ const findBankDuplicateMessage = async ({
   return null;
 };
 
+const checkEmployeeDuplicate = async (req, res) => {
+  const companyId = req.user.company_id;
+
+  if (!companyId) {
+    return res.status(400).json({
+      message: "You are not assigned to any company",
+    });
+  }
+
+  const { field, value, excludeEmployeeId } = req.query;
+  const normalizedField = String(field || "").trim();
+  const config = EMPLOYEE_DUPLICATE_FIELD_CONFIG.find(
+    (item) => item.key === normalizedField,
+  );
+
+  if (!config) {
+    return res.status(400).json({ message: "Invalid duplicate check field" });
+  }
+
+  const normalizedValue = normalizeValueForComparison(config, value);
+
+  if (!normalizedValue) {
+    return res.json({ success: true, exists: false, message: null });
+  }
+
+  try {
+    const message = await findEmployeeDuplicateMessage({
+      companyId,
+      excludeEmployeeId: excludeEmployeeId || null,
+      values: {
+        [normalizedField]: normalizedValue,
+      },
+    });
+
+    return res.json({
+      success: true,
+      exists: Boolean(message),
+      message,
+    });
+  } catch (error) {
+    console.error("Employee duplicate check error:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 const getEmployeeDuplicateErrorMessage = (error) => {
   const rawMessage = String(error?.sqlMessage || error?.message || "").toLowerCase();
 
@@ -1335,6 +1380,7 @@ const deleteEmployee = async (req, res) => {
 
 module.exports = {
   addEmployee,
+  checkEmployeeDuplicate,
   getEmployees,
   getEmployeeById,
   updateEmployee,

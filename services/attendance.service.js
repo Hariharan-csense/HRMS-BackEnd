@@ -11,6 +11,16 @@ const resolveStoredImageUrl = (imageData, companyId) => {
   return `/uploads/attendance/company_${companyId}/${path.basename(imageData)}`;
 };
 
+const getDayWindow = (date) => {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  return { start, end };
+};
+
 async function doCheckIn({
   employeeId,
   companyId,
@@ -27,28 +37,27 @@ async function doCheckIn({
 
   if (!employee) throw new Error('Employee not found');
 
-  // Face verify ONLY for Web
-  if (imageData && deviceInfo === 'Web') {
-    const faceMatch = await verifyFace(employeeId, imageData);
-    if (!faceMatch) throw new Error('Face verification failed');
-  }
-
   const effectivePunchTime = punchTime ? new Date(punchTime) : new Date();
   if (Number.isNaN(effectivePunchTime.getTime())) {
     throw new Error('Invalid punch time');
   }
 
-  const today = new Date(effectivePunchTime);
-  today.setHours(0, 0, 0, 0);
+  const { start: attendanceDayStart, end: attendanceDayEnd } = getDayWindow(effectivePunchTime);
 
   const existing = await knex('attendance')
     .where('employee_id', employeeId)
     .where('company_id', companyId)
-    .where('check_in', '>=', today)
-    .whereNull('check_out')
+    .where('check_in', '>=', attendanceDayStart)
+    .where('check_in', '<', attendanceDayEnd)
     .first();
 
-  if (existing) throw new Error('Already checked in');
+  if (existing) throw new Error('Already checked in today');
+
+  // Face verify ONLY for Web
+  if (imageData && deviceInfo === 'Web') {
+    const faceMatch = await verifyFace(employeeId, imageData);
+    if (!faceMatch) throw new Error('Face verification failed');
+  }
 
   // Use provided shift parameters or fetch as fallback
   let finalShiftId = shiftId;

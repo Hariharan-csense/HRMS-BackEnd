@@ -1,47 +1,52 @@
 // src/controllers/leavePermissionController.js
-const knex = require('../db/db');
-const fs = require('fs');
-const upload = require('../middleware/leaveAttachmentUpload');
-const { hasAnyRole } = require('../middleware/authMiddleware');
+const knex = require("../db/db");
+const fs = require("fs");
+const upload = require("../middleware/leaveAttachmentUpload");
+const { hasAnyRole } = require("../middleware/authMiddleware");
 const {
   sendLeavePermissionNotification,
-  sendLeavePermissionStatusNotification
-} = require('../utils/sendLeavePermissionStatusNotification');
-const { generateAutoNumber } = require('../utils/generateAutoNumber');
+  sendLeavePermissionStatusNotification,
+} = require("../utils/sendLeavePermissionStatusNotification");
+//const { generateAutoNumber } = require("../utils/generateAutoNumber");
 
-const normalizeText = (value) => String(value || '').toLowerCase().trim();
+const normalizeText = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .trim();
 
 const resolveWorkflowRole = (user = {}) => {
   const normalizedRole = normalizeText(user.role);
   const normalizedType = normalizeText(user.type);
 
-  if (normalizedRole === 'ceo') return 'ceo';
-  if (normalizedRole === 'admin' || normalizedType === 'admin') return 'admin';
-  if (normalizedRole === 'hr') return 'hr';
-  if (normalizedRole === 'manager') return 'manager';
-  return 'employee';
+  if (normalizedRole === "ceo") return "ceo";
+  if (normalizedRole === "admin" || normalizedType === "admin") return "admin";
+  if (normalizedRole === "hr") return "hr";
+  if (normalizedRole === "manager") return "manager";
+  return "employee";
 };
 
 const resolveEmployeeProfile = async (req, companyId) => {
   // Prefer explicit mapped employee_id from auth middleware (admin->employee mapping)
   if (req.user?.employee_id) {
-    const byMappedId = await knex('employees')
+    const byMappedId = await knex("employees")
       .where({ id: Number(req.user.employee_id), company_id: companyId })
       .first();
     if (byMappedId) return byMappedId;
   }
 
   // Standard employee token path
-  const byId = await knex('employees')
+  const byId = await knex("employees")
     .where({ id: Number(req.user?.id), company_id: companyId })
     .first();
   if (byId) return byId;
 
   // Fallback for admin/user token path: map by email within same company
   if (req.user?.email) {
-    const byEmail = await knex('employees')
-      .where('company_id', companyId)
-      .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+    const byEmail = await knex("employees")
+      .where("company_id", companyId)
+      .whereRaw("LOWER(email) = ?", [
+        String(req.user.email).toLowerCase().trim(),
+      ])
       .first();
     if (byEmail) return byEmail;
   }
@@ -50,14 +55,435 @@ const resolveEmployeeProfile = async (req, companyId) => {
 };
 
 const getEmployeesByRole = async (companyId, roleName) => {
-  return knex('employees')
-    .where('company_id', companyId)
-    .whereRaw('LOWER(TRIM(role)) = ?', [normalizeText(roleName)])
-    .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ['active'])
-    .select('id', 'first_name', 'last_name', 'email', 'role', 'department_id');
+  const employeeUsers = await knex("employees")
+    .where("company_id", companyId)
+    .whereRaw("LOWER(TRIM(role)) = ?", [normalizeText(roleName)])
+    .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ["active"])
+    .select("id", "first_name", "last_name", "email", "role", "department_id");
+
+  const appUsers = await knex("users")
+    .where("company_id", companyId)
+    .whereRaw("LOWER(TRIM(role)) = ?", [normalizeText(roleName)])
+    .select("id", "name", "email", "role", "department");
+
+  return [
+    ...employeeUsers,
+    ...appUsers.map((user) => ({
+      id: `user:${user.id}`,
+      first_name: user.name || "",
+      last_name: "",
+      fullName: user.name || user.email || "User",
+      email: user.email,
+      role: user.role,
+      department_id: null,
+      department: user.department,
+      source_table: "users",
+    })),
+  ];
+};
+
+const parseCsv = (value) =>
+  String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+const getSelectedApproverEmails = async (companyId, body = {}) => {
+  const selectedEntries = parseCsv(body.reporting_manager_id);
+  const selectedUserIds = selectedEntries
+    .filter((id) => id.startsWith("user:"))
+    .map((id) => Number(id.replace("user:", "")))
+    .filter(Boolean);
+  const selectedIds = selectedEntries
+    .filter((id) => !id.startsWith("user:"))
+    .map((id) => Number(id))
+    .filter(Boolean);
+
+  const emails = [];
+
+  if (selectedIds.length > 0) {
+    const rows = await knex("employees")
+      .where("company_id", companyId)
+      .whereIn("id", selectedIds)
+      .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ["active"])
+      .select("email");
+
+    emails.push(...rows.map((row) => row.email).filter(Boolean));
+  }
+
+  if (selectedUserIds.length > 0) {
+    const rows = await knex("users")
+      .where("company_id", companyId)
+      .whereIn("id", selectedUserIds)
+      .select("email");
+
+    emails.push(...rows.map((row) => row.email).filter(Boolean));
+  }
+
+  if (emails.length > 0) {
+    return [...new Set(emails)];
+  }
+
+  return [...new Set(parseCsv(body.reporting_manager_email))];
 };
 
 // Apply Leave Permission (company scoped)
+// const applyLeavePermission = async (req, res) => {
+//   upload(req, res, async (err) => {
+//     if (err) {
+//       return res.status(400).json({ message: err.message });
+//     }
+
+//     const companyId = req.user.company_id;
+//     if (!companyId) {
+//       if (req.file) fs.unlinkSync(req.file.path);
+//       return res.status(400).json({ message: 'You are not assigned to any company' });
+//     }
+
+//     const employeeId = req.user.id;
+//     const workflowRole = resolveWorkflowRole(req.user);
+
+//     try {
+//       // ===============================
+//       // GET EMPLOYEE DETAILS
+//       // ===============================
+//       const employee = await knex('employees')
+//         .where({ id: employeeId, company_id: companyId })
+//         .select(
+//           'id',
+//           'first_name',
+//           'last_name',
+//           'email',
+//           'department_id',
+//           'designation_id'
+//         )
+//         .first();
+
+//       if (!employee) {
+//         if (req.file) fs.unlinkSync(req.file.path);
+//         return res.status(404).json({ message: 'Employee not found or access denied' });
+//       }
+
+//       const employeeName = `${employee.first_name} ${employee.last_name || ''}`.trim();
+
+//       const { permission_date, permission_time_from, permission_time_to, reason } = req.body;
+
+//       if (!permission_date || !permission_time_from || !permission_time_to || !reason) {
+//         if (req.file) fs.unlinkSync(req.file.path);
+//         return res.status(400).json({ message: 'All fields required' });
+//       }
+
+//       // ===============================
+//       // FILE ATTACHMENT
+//       // ===============================
+//       let attachmentPath = null;
+//       if (req.file) {
+//         attachmentPath = `/uploads/leave-permission-attachments/${req.file.filename}`;
+//       }
+
+//       // ===============================
+//       // CREATE LEAVE PERMISSION APPLICATION
+//       // ===============================
+//       // Generate permission ID (PRM001 format)
+//       const lastPermission = await knex('leave_permissions')
+//         .where({ company_id: companyId })
+//         .orderBy('id', 'desc')
+//         .first();
+
+//       let nextNumber = 1;
+//       if (lastPermission && lastPermission.permission_id) {
+//         const match = lastPermission.permission_id.match(/PRM(\d+)/);
+//         if (match) {
+//           nextNumber = parseInt(match[1]) + 1;
+//         }
+//       }
+
+//       const permission_id = `PRM${nextNumber.toString().padStart(3, '0')}`;
+
+//       const [newId] = await knex('leave_permissions').insert({
+//         company_id: companyId,
+//         permission_id,
+//         employee_id: employeeId,
+//         employee_name: employeeName,
+//         permission_date,
+//         permission_time_from,
+//         permission_time_to,
+//         reason,
+//         attachment_path: attachmentPath,
+//         status: 'pending'
+//       });
+
+//       const newPermission = await knex('leave_permissions')
+//         .where({ id: newId })
+//         .first();
+
+//       // ===============================
+//       // 📧 EMAIL NOTIFICATION LOGIC
+//       // ===============================
+//       const toEmails = [];
+
+//       console.log('================ LEAVE PERMISSION EMAIL DEBUG ================');
+//       console.log('Applicant ID:', employee.id);
+//       console.log('Applicant Role (token):', userRole);
+//       console.log('Applicant Department:', employee.department_id);
+//       console.log('Applicant Designation:', employee.designation_id);
+
+//       // Get Manager Designation
+//       const managerDesignation = await knex('designations')
+//         .whereRaw('LOWER(name) = ?', ['manager'])
+//         .andWhere({ company_id: companyId })
+//         .first();
+
+//       // Get HR Department
+//       const hrDepartment = await knex('departments')
+//         .whereRaw('LOWER(name) = ?', ['hr'])
+//         .andWhere({ company_id: companyId })
+//         .first();
+
+//       console.log('Manager Designation:', managerDesignation);
+//       console.log('HR Department:', hrDepartment);
+
+//       // ===============================
+//       // 1️⃣ EMPLOYEE → ASSIGNED REPORTING MANAGER + SAME DEPT MANAGER + ALL HR
+//       // ===============================
+//       if (workflowRole === 'employee') {
+//         // First, get the assigned reporting manager from employee record
+//         if (employee.reporting_manager_id) {
+//           const assignedManager = await knex('employees')
+//             .where({
+//               company_id: companyId,
+//               id: employee.reporting_manager_id,
+//               status: 'Active'
+//             })
+//             .select('id', 'first_name', 'last_name', 'email')
+//             .first();
+
+//           console.log('Employee → Assigned Reporting Manager Found:', assignedManager);
+
+//           if (assignedManager?.email) {
+//             toEmails.push(assignedManager.email);
+//           }
+//         }
+
+//         // Also get same department manager (if different from assigned)
+//         if (managerDesignation && employee.department_id) {
+//           const deptManager = await knex('employees')
+//             .where({
+//               company_id: companyId,
+//               department_id: employee.department_id,
+//               designation_id: managerDesignation.id,
+//               status: 'Active'
+//             })
+//             .whereNot('id', employee.reporting_manager_id || 0) // Exclude if same as assigned
+//             .select('id', 'first_name', 'last_name', 'email')
+//             .first();
+
+//           console.log('Employee → Dept Manager Found:', deptManager);
+
+//           if (deptManager?.email && !toEmails.includes(deptManager.email)) {
+//             toEmails.push(deptManager.email);
+//           }
+//         }
+
+//         // Also get ALL HR users
+//         const hrUsers = await knex('employees')
+//           .where({
+//             company_id: companyId,
+//             role: 'hr',
+//             status: 'Active'
+//           })
+//           .select('id', 'first_name', 'last_name', 'email');
+
+//         console.log('Employee → HR Users Found:', hrUsers);
+
+//         hrUsers.forEach(hr => {
+//           if (hr?.email && !toEmails.includes(hr.email)) {
+//             toEmails.push(hr.email);
+//           }
+//         });
+//       }
+
+//       // ===============================
+//       // 2️⃣ MANAGER → ALL HR
+//       // ===============================
+//       else if (userRole === 'manager') {
+//         // Get ALL HR users
+//         const hrUsers = await knex('employees')
+//           .where({
+//             company_id: companyId,
+//             role: 'hr',
+//             status: 'Active'
+//           })
+//           .select('id', 'first_name', 'last_name', 'email');
+
+//         console.log('Manager → HR Users Found:', hrUsers);
+
+//         hrUsers.forEach(hr => {
+//           if (hr?.email) {
+//             toEmails.push(hr.email);
+//           }
+//         });
+//       }
+
+//       // ===============================
+//       // 3️⃣ HR → ADMIN
+//       // ===============================
+//       else if (userRole === 'hr') {
+//         const adminUser = await knex('employees')
+//           .where({
+//             company_id: companyId,
+//             role: 'admin',
+//             status: 'Active'
+//           })
+//           .select('id', 'first_name', 'last_name', 'email')
+//           .first();
+
+//         console.log('HR → Admin Found:', adminUser);
+
+//         if (adminUser?.email) {
+//           toEmails.push(adminUser.email);
+//         }
+//       }
+
+//       // ===============================
+//       // 4️⃣ ADMIN → ALL HR
+//       // ===============================
+//       else if (userRole === 'admin' || userRole === 'ceo') {
+//         // Get ALL HR users
+//         const hrUsers = await knex('employees')
+//           .where({
+//             company_id: companyId,
+//             role: 'hr',
+//             status: 'Active'
+//           })
+//           .select('id', 'first_name', 'last_name', 'email');
+
+//         console.log('Admin → HR Users Found:', hrUsers);
+
+//         hrUsers.forEach(hr => {
+//           if (hr?.email) {
+//             toEmails.push(hr.email);
+//           }
+//         });
+//       }
+
+//       const rebuiltRecipients = [];
+//       if (workflowRole === 'employee') {
+//         if (employee.reporting_manager_id) {
+//           const assignedManager = await knex('employees')
+//             .where({
+//               company_id: companyId,
+//               id: employee.reporting_manager_id,
+//               status: 'Active'
+//             })
+//             .select('email')
+//             .first();
+
+//           if (assignedManager?.email) {
+//             rebuiltRecipients.push(assignedManager.email);
+//           }
+//         }
+
+//         if (managerDesignation && employee.department_id) {
+//           const deptManager = await knex('employees')
+//             .where({
+//               company_id: companyId,
+//               department_id: employee.department_id,
+//               designation_id: managerDesignation.id,
+//               status: 'Active'
+//             })
+//             .whereNot('id', employee.reporting_manager_id || 0)
+//             .select('email')
+//             .first();
+
+//           if (deptManager?.email && !rebuiltRecipients.includes(deptManager.email)) {
+//             rebuiltRecipients.push(deptManager.email);
+//           }
+//         }
+
+//         const [adminUsers, ceoUsers] = await Promise.all([
+//           knex('employees')
+//             .where({ company_id: companyId, role: 'admin', status: 'Active' })
+//             .select('email'),
+//           knex('employees')
+//             .where({ company_id: companyId, role: 'ceo', status: 'Active' })
+//             .select('email')
+//         ]);
+
+//         [...adminUsers, ...ceoUsers].forEach((entry) => {
+//           if (entry?.email && !rebuiltRecipients.includes(entry.email)) {
+//             rebuiltRecipients.push(entry.email);
+//           }
+//         });
+//       } else if (['manager', 'hr', 'admin', 'ceo'].includes(workflowRole)) {
+//         const ceoUsers = await knex('employees')
+//           .where({ company_id: companyId, role: 'ceo', status: 'Active' })
+//           .select('email');
+
+//         ceoUsers.forEach((entry) => {
+//           if (entry?.email && !rebuiltRecipients.includes(entry.email)) {
+//             rebuiltRecipients.push(entry.email);
+//           }
+//         });
+//       }
+
+//       if (rebuiltRecipients.length > 0) {
+//         toEmails = rebuiltRecipients;
+//       }
+
+//       // ===============================
+//       // FALLBACK
+//       // ===============================
+//       if (toEmails.length === 0) {
+//         const fallback = process.env.DEFAULT_HR_EMAIL || 'hr@company.com';
+//         console.log('⚠️ Using FALLBACK EMAIL:', fallback);
+//         toEmails.push(fallback);
+//       }
+
+//       console.log('📧 FINAL Leave Permission notification recipients:', toEmails);
+//       console.log('📊 Recipient Count:', toEmails.length);
+//       console.log('👥 Recipients:', toEmails.join(', '));
+//       console.log('=========================================================');
+
+//       // ===============================
+//       // SEND EMAIL
+//       // ===============================
+//       if (toEmails.length > 0) {
+//         await sendLeavePermissionNotification(
+//           toEmails,
+//           newPermission,
+//           {
+//             employee_name: employeeName,
+//             employee_email: employee.email
+//           }
+//         );
+//         console.log('✅ Email notification sent successfully to all recipients');
+//       } else {
+//         console.warn('⚠️ No valid email recipients found - notification not sent');
+//       }
+
+//       // ===============================
+//       // RESPONSE
+//       // ===============================
+//       res.status(201).json({
+//         success: true,
+//         message: 'Leave permission request submitted successfully!',
+//         permission: {
+//           ...newPermission,
+//           attachment_url: attachmentPath
+//             ? `${process.env.BASE_URL}${attachmentPath}`
+//             : null
+//         }
+//       });
+
+//     } catch (error) {
+//       if (req.file) fs.unlinkSync(req.file.path);
+//       console.error('Apply leave permission error:', error);
+//       res.status(500).json({ message: 'Server error' });
+//     }
+//   });
+// };
+
 const applyLeavePermission = async (req, res) => {
   upload(req, res, async (err) => {
     if (err) {
@@ -65,46 +491,52 @@ const applyLeavePermission = async (req, res) => {
     }
 
     const companyId = req.user.company_id;
+
     if (!companyId) {
       if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(400).json({ message: 'You are not assigned to any company' });
+      return res.status(400).json({
+        message: "You are not assigned to any company",
+      });
     }
 
-    const employeeId = req.user.id;
     const workflowRole = resolveWorkflowRole(req.user);
 
     try {
       // ===============================
-      // GET EMPLOYEE DETAILS
+      // ✅ GET EMPLOYEE
       // ===============================
-      const employee = await knex('employees')
-        .where({ id: employeeId, company_id: companyId })
-        .select(
-          'id',
-          'first_name',
-          'last_name',
-          'email',
-          'department_id',
-          'designation_id'
-        )
-        .first();
+      const employee = await resolveEmployeeProfile(req, companyId);
 
       if (!employee) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(404).json({ message: 'Employee not found or access denied' });
+        return res.status(404).json({ message: "Employee not found" });
       }
 
-      const employeeName = `${employee.first_name} ${employee.last_name || ''}`.trim();
+      const employeeName =
+        `${employee.first_name} ${employee.last_name || ""}`.trim();
 
-      const { permission_date, permission_time_from, permission_time_to, reason } = req.body;
+      // ===============================
+      // ✅ VALIDATION
+      // ===============================
+      const {
+        permission_date,
+        permission_time_from,
+        permission_time_to,
+        reason,
+      } = req.body;
 
-      if (!permission_date || !permission_time_from || !permission_time_to || !reason) {
+      if (
+        !permission_date ||
+        !permission_time_from ||
+        !permission_time_to ||
+        !reason
+      ) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: 'All fields required' });
+        return res.status(400).json({ message: "All fields required" });
       }
 
       // ===============================
-      // FILE ATTACHMENT
+      // ✅ FILE
       // ===============================
       let attachmentPath = null;
       if (req.file) {
@@ -112,15 +544,15 @@ const applyLeavePermission = async (req, res) => {
       }
 
       // ===============================
-      // CREATE LEAVE PERMISSION APPLICATION
+      // ✅ GENERATE PRM ID (MANUAL)
       // ===============================
-      // Generate permission ID (PRM001 format)
-      const lastPermission = await knex('leave_permissions')
+      const lastPermission = await knex("leave_permissions")
         .where({ company_id: companyId })
-        .orderBy('id', 'desc')
+        .orderBy("id", "desc")
         .first();
 
       let nextNumber = 1;
+
       if (lastPermission && lastPermission.permission_id) {
         const match = lastPermission.permission_id.match(/PRM(\d+)/);
         if (match) {
@@ -128,335 +560,197 @@ const applyLeavePermission = async (req, res) => {
         }
       }
 
-      const permission_id = `PRM${nextNumber.toString().padStart(3, '0')}`;
+      const permission_id = `PRM${nextNumber.toString().padStart(3, "0")}`;
 
-      const [newId] = await knex('leave_permissions').insert({
+      // ===============================
+      // ✅ INSERT
+      // ===============================
+      const [newId] = await knex("leave_permissions").insert({
         company_id: companyId,
         permission_id,
-        employee_id: employeeId,
+        employee_id: employee.id,
         employee_name: employeeName,
         permission_date,
         permission_time_from,
         permission_time_to,
         reason,
         attachment_path: attachmentPath,
-        status: 'pending'
+        status: "pending",
       });
 
-      const newPermission = await knex('leave_permissions')
+      const newPermission = await knex("leave_permissions")
         .where({ id: newId })
         .first();
 
       // ===============================
-      // 📧 EMAIL NOTIFICATION LOGIC
+      // ✅ MANAGER DESIGNATION
       // ===============================
-      const toEmails = [];
-
-      console.log('================ LEAVE PERMISSION EMAIL DEBUG ================');
-      console.log('Applicant ID:', employee.id);
-      console.log('Applicant Role (token):', userRole);
-      console.log('Applicant Department:', employee.department_id);
-      console.log('Applicant Designation:', employee.designation_id);
-
-      // Get Manager Designation
-      const managerDesignation = await knex('designations')
-        .whereRaw('LOWER(name) = ?', ['manager'])
+      const managerDesignation = await knex("designations")
+        .whereRaw("LOWER(name) = ?", ["manager"])
         .andWhere({ company_id: companyId })
         .first();
 
-      // Get HR Department
-      const hrDepartment = await knex('departments')
-        .whereRaw('LOWER(name) = ?', ['hr'])
-        .andWhere({ company_id: companyId })
-        .first();
-
-      console.log('Manager Designation:', managerDesignation);
-      console.log('HR Department:', hrDepartment);
-
       // ===============================
-      // 1️⃣ EMPLOYEE → ASSIGNED REPORTING MANAGER + SAME DEPT MANAGER + ALL HR
+      // 📧 EMAIL LOGIC
       // ===============================
-      if (workflowRole === 'employee') {
-        // First, get the assigned reporting manager from employee record
+      let toEmails = [];
+
+      if (workflowRole === "employee") {
         if (employee.reporting_manager_id) {
-          const assignedManager = await knex('employees')
+          const manager = await knex("employees")
             .where({
-              company_id: companyId,
               id: employee.reporting_manager_id,
-              status: 'Active'
+              company_id: companyId,
+              status: "Active",
             })
-            .select('id', 'first_name', 'last_name', 'email')
+            .select("email")
             .first();
 
-          console.log('Employee → Assigned Reporting Manager Found:', assignedManager);
-
-          if (assignedManager?.email) {
-            toEmails.push(assignedManager.email);
-          }
+          if (manager?.email) toEmails.push(manager.email);
         }
 
-        // Also get same department manager (if different from assigned)
         if (managerDesignation && employee.department_id) {
-          const deptManager = await knex('employees')
+          const deptManager = await knex("employees")
             .where({
               company_id: companyId,
               department_id: employee.department_id,
               designation_id: managerDesignation.id,
-              status: 'Active'
+              status: "Active",
             })
-            .whereNot('id', employee.reporting_manager_id || 0) // Exclude if same as assigned
-            .select('id', 'first_name', 'last_name', 'email')
+            .whereNot("id", employee.reporting_manager_id || 0)
+            .select("email")
             .first();
-
-          console.log('Employee → Dept Manager Found:', deptManager);
 
           if (deptManager?.email && !toEmails.includes(deptManager.email)) {
             toEmails.push(deptManager.email);
           }
         }
 
-        // Also get ALL HR users
-        const hrUsers = await knex('employees')
+        const hrUsers = await knex("employees")
           .where({
             company_id: companyId,
-            role: 'hr',
-            status: 'Active'
+            role: "hr",
+            status: "Active",
           })
-          .select('id', 'first_name', 'last_name', 'email');
+          .select("email");
 
-        console.log('Employee → HR Users Found:', hrUsers);
-
-        hrUsers.forEach(hr => {
-          if (hr?.email && !toEmails.includes(hr.email)) {
+        hrUsers.forEach((hr) => {
+          if (hr.email && !toEmails.includes(hr.email)) {
             toEmails.push(hr.email);
           }
         });
-      }
+      } else if (workflowRole === "manager") {
+        const hrUsers = await knex("employees")
+          .where({ company_id: companyId, role: "hr", status: "Active" })
+          .select("email");
 
-      // ===============================
-      // 2️⃣ MANAGER → ALL HR
-      // ===============================
-      else if (userRole === 'manager') {
-        // Get ALL HR users
-        const hrUsers = await knex('employees')
-          .where({
-            company_id: companyId,
-            role: 'hr',
-            status: 'Active'
-          })
-          .select('id', 'first_name', 'last_name', 'email');
-
-        console.log('Manager → HR Users Found:', hrUsers);
-
-        hrUsers.forEach(hr => {
-          if (hr?.email) {
-            toEmails.push(hr.email);
-          }
+        hrUsers.forEach((hr) => {
+          if (hr.email) toEmails.push(hr.email);
         });
-      }
-
-      // ===============================
-      // 3️⃣ HR → ADMIN
-      // ===============================
-      else if (userRole === 'hr') {
-        const adminUser = await knex('employees')
-          .where({
-            company_id: companyId,
-            role: 'admin',
-            status: 'Active'
-          })
-          .select('id', 'first_name', 'last_name', 'email')
+      } else if (workflowRole === "hr") {
+        const admin = await knex("employees")
+          .where({ company_id: companyId, role: "admin", status: "Active" })
+          .select("email")
           .first();
 
-        console.log('HR → Admin Found:', adminUser);
+        if (admin?.email) toEmails.push(admin.email);
+      } else if (["admin", "ceo"].includes(workflowRole)) {
+        const hrUsers = await knex("employees")
+          .where({ company_id: companyId, role: "hr", status: "Active" })
+          .select("email");
 
-        if (adminUser?.email) {
-          toEmails.push(adminUser.email);
-        }
-      }
-
-      // ===============================
-      // 4️⃣ ADMIN → ALL HR
-      // ===============================
-      else if (userRole === 'admin' || userRole === 'ceo') {
-        // Get ALL HR users
-        const hrUsers = await knex('employees')
-          .where({
-            company_id: companyId,
-            role: 'hr',
-            status: 'Active'
-          })
-          .select('id', 'first_name', 'last_name', 'email');
-
-        console.log('Admin → HR Users Found:', hrUsers);
-
-        hrUsers.forEach(hr => {
-          if (hr?.email) {
-            toEmails.push(hr.email);
-          }
+        hrUsers.forEach((hr) => {
+          if (hr.email) toEmails.push(hr.email);
         });
       }
 
-      const rebuiltRecipients = [];
-      if (workflowRole === 'employee') {
-        if (employee.reporting_manager_id) {
-          const assignedManager = await knex('employees')
-            .where({
-              company_id: companyId,
-              id: employee.reporting_manager_id,
-              status: 'Active'
-            })
-            .select('email')
-            .first();
-
-          if (assignedManager?.email) {
-            rebuiltRecipients.push(assignedManager.email);
-          }
-        }
-
-        if (managerDesignation && employee.department_id) {
-          const deptManager = await knex('employees')
-            .where({
-              company_id: companyId,
-              department_id: employee.department_id,
-              designation_id: managerDesignation.id,
-              status: 'Active'
-            })
-            .whereNot('id', employee.reporting_manager_id || 0)
-            .select('email')
-            .first();
-
-          if (deptManager?.email && !rebuiltRecipients.includes(deptManager.email)) {
-            rebuiltRecipients.push(deptManager.email);
-          }
-        }
-
-        const [adminUsers, ceoUsers] = await Promise.all([
-          knex('employees')
-            .where({ company_id: companyId, role: 'admin', status: 'Active' })
-            .select('email'),
-          knex('employees')
-            .where({ company_id: companyId, role: 'ceo', status: 'Active' })
-            .select('email')
-        ]);
-
-        [...adminUsers, ...ceoUsers].forEach((entry) => {
-          if (entry?.email && !rebuiltRecipients.includes(entry.email)) {
-            rebuiltRecipients.push(entry.email);
-          }
-        });
-      } else if (['manager', 'hr', 'admin', 'ceo'].includes(workflowRole)) {
-        const ceoUsers = await knex('employees')
-          .where({ company_id: companyId, role: 'ceo', status: 'Active' })
-          .select('email');
-
-        ceoUsers.forEach((entry) => {
-          if (entry?.email && !rebuiltRecipients.includes(entry.email)) {
-            rebuiltRecipients.push(entry.email);
-          }
-        });
+      // ===============================
+      // ✅ FALLBACK
+      // ===============================
+      const selectedApproverEmails = await getSelectedApproverEmails(
+        companyId,
+        req.body,
+      );
+      if (selectedApproverEmails.length > 0) {
+        toEmails = selectedApproverEmails;
       }
 
-      if (rebuiltRecipients.length > 0) {
-        toEmails = rebuiltRecipients;
-      }
-
-      // ===============================
-      // FALLBACK
-      // ===============================
       if (toEmails.length === 0) {
-        const fallback = process.env.DEFAULT_HR_EMAIL || 'hr@company.com';
-        console.log('⚠️ Using FALLBACK EMAIL:', fallback);
-        toEmails.push(fallback);
+        toEmails.push(process.env.DEFAULT_HR_EMAIL || "hr@company.com");
       }
 
-      console.log('📧 FINAL Leave Permission notification recipients:', toEmails);
-      console.log('📊 Recipient Count:', toEmails.length);
-      console.log('👥 Recipients:', toEmails.join(', '));
-      console.log('=========================================================');
+      console.log("📧 Final Emails:", toEmails);
 
       // ===============================
-      // SEND EMAIL
+      // ✅ SEND EMAIL
       // ===============================
-      if (toEmails.length > 0) {
-        await sendLeavePermissionNotification(
-          toEmails,
-          newPermission,
-          {
-            employee_name: employeeName,
-            employee_email: employee.email
-          }
-        );
-        console.log('✅ Email notification sent successfully to all recipients');
-      } else {
-        console.warn('⚠️ No valid email recipients found - notification not sent');
-      }
+      await sendLeavePermissionNotification(toEmails, newPermission, {
+        employee_name: employeeName,
+        employee_email: employee.email,
+      });
 
       // ===============================
-      // RESPONSE
+      // ✅ RESPONSE
       // ===============================
       res.status(201).json({
         success: true,
-        message: 'Leave permission request submitted successfully!',
+        message: "Leave permission request submitted successfully!",
         permission: {
           ...newPermission,
           attachment_url: attachmentPath
             ? `${process.env.BASE_URL}${attachmentPath}`
-            : null
-        }
+            : null,
+        },
       });
-
     } catch (error) {
       if (req.file) fs.unlinkSync(req.file.path);
-      console.error('Apply leave permission error:', error);
-      res.status(500).json({ message: 'Server error' });
+      console.error("Apply leave permission error:", error);
+      res.status(500).json({ message: "Server error" });
     }
   });
 };
-
 // Get Leave Permission Applications (role-based)
 const getLeavePermissionApplications = async (req, res) => {
   const companyId = req.user.company_id;
   if (!companyId) {
-    return res.status(400).json({ message: 'You are not assigned to any company' });
+    return res
+      .status(400)
+      .json({ message: "You are not assigned to any company" });
   }
 
   try {
-    let query = knex('leave_permissions')
+    let query = knex("leave_permissions")
       .leftJoin(
-        'employees as approver',
-        'leave_permissions.approved_by',
-        'approver.id'
+        "employees as approver",
+        "leave_permissions.approved_by",
+        "approver.id",
       )
-      .where('leave_permissions.company_id', companyId)
+      .where("leave_permissions.company_id", companyId)
       .select(
-        'leave_permissions.*',
-        'approver.first_name as approved_by_first_name',
-        'approver.last_name as approved_by_last_name'
+        "leave_permissions.*",
+        "approver.first_name as approved_by_first_name",
+        "approver.last_name as approved_by_last_name",
       )
-      .orderBy('leave_permissions.created_at', 'desc');
+      .orderBy("leave_permissions.created_at", "desc");
 
-    if (hasAnyRole(req.user, ['employee']) && !hasAnyRole(req.user, ['manager', 'hr', 'admin', 'ceo', 'superadmin'])) {
-      query = query.where(
-        'leave_permissions.employee_id',
-        req.user.id
-      );
-    } 
-    else if (hasAnyRole(req.user, ['manager'])) {
-      query = query.where(builder => {
+    if (
+      hasAnyRole(req.user, ["employee"]) &&
+      !hasAnyRole(req.user, ["manager", "hr", "admin", "ceo", "superadmin"])
+    ) {
+      query = query.where("leave_permissions.employee_id", req.user.id);
+    } else if (hasAnyRole(req.user, ["manager"])) {
+      query = query.where((builder) => {
         builder
-          .where('leave_permissions.employee_id', req.user.id)
+          .where("leave_permissions.employee_id", req.user.id)
           .orWhereExists(function () {
             this.select(1)
-              .from('employees as team')
-              .where('team.company_id', companyId)
-              .whereRaw(
-                'manager_name = CONCAT(?, " ", COALESCE(?, ""))',
-                [req.user.first_name || '', req.user.last_name || '']
-              )
-              .whereRaw(
-                'team.id = leave_permissions.employee_id'
-              );
+              .from("employees as team")
+              .where("team.company_id", companyId)
+              .whereRaw('manager_name = CONCAT(?, " ", COALESCE(?, ""))', [
+                req.user.first_name || "",
+                req.user.last_name || "",
+              ])
+              .whereRaw("team.id = leave_permissions.employee_id");
           });
       });
     }
@@ -464,23 +758,22 @@ const getLeavePermissionApplications = async (req, res) => {
 
     const applications = await query;
 
-    const enriched = applications.map(app => ({
+    const enriched = applications.map((app) => ({
       ...app,
       approved_by_name: app.approved_by_first_name
-        ? `${app.approved_by_first_name} ${app.approved_by_last_name || ''}`.trim()
+        ? `${app.approved_by_first_name} ${app.approved_by_last_name || ""}`.trim()
         : null,
-      attachment_url: app.attachment_path || null
+      attachment_url: app.attachment_path || null,
     }));
 
     res.json({
       success: true,
       count: enriched.length,
-      applications: enriched
+      applications: enriched,
     });
-
   } catch (error) {
-    console.error('Get leave permission applications error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Get leave permission applications error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -489,36 +782,41 @@ const updateLeavePermissionStatus = async (req, res) => {
   const companyId = req.user.company_id;
 
   if (!companyId) {
-    return res.status(400).json({ message: 'You are not assigned to any company' });
+    return res
+      .status(400)
+      .json({ message: "You are not assigned to any company" });
   }
 
   const { id } = req.params;
   const { status, remarks } = req.body;
 
-  if (!['approved', 'rejected'].includes(status)) {
-    return res.status(400).json({ message: 'Invalid status' });
+  if (!["approved", "rejected"].includes(status)) {
+    return res.status(400).json({ message: "Invalid status" });
   }
 
   try {
     // ===============================
     // GET LEAVE PERMISSION APPLICATION
     // ===============================
-    const permission = await knex('leave_permissions')
+    const permission = await knex("leave_permissions")
       .where({ id, company_id: companyId })
       .first();
 
-    if (!permission) return res.status(404).json({ message: 'Permission request not found' });
-    if (permission.status !== 'pending') return res.status(400).json({ message: 'Request already processed' });
+    if (!permission)
+      return res.status(404).json({ message: "Permission request not found" });
+    if (permission.status !== "pending")
+      return res.status(400).json({ message: "Request already processed" });
 
     // ===============================
     // GET APPLICANT EMPLOYEE
     // ===============================
-    const applicant = await knex('employees')
+    const applicant = await knex("employees")
       .where({ id: permission.employee_id, company_id: companyId })
-      .select('id', 'first_name', 'last_name', 'email', 'department_id')
+      .select("id", "first_name", "last_name", "email", "department_id")
       .first();
 
-    if (!applicant) return res.status(404).json({ message: 'Employee not found' });
+    if (!applicant)
+      return res.status(404).json({ message: "Employee not found" });
 
     // ===============================
     // AUTHORIZATION CHECK
@@ -528,51 +826,63 @@ const updateLeavePermissionStatus = async (req, res) => {
         req.user?.role,
         ...(Array.isArray(req.user?.roles) ? req.user.roles : []),
       ]
-        .map((role) => String(role || '').toLowerCase().trim())
-        .filter(Boolean)
+        .map((role) =>
+          String(role || "")
+            .toLowerCase()
+            .trim(),
+        )
+        .filter(Boolean),
     );
 
     let isAuthorized = false;
-    if (roleNames.has('hr') || roleNames.has('admin') || roleNames.has('ceo')) {
+    if (roleNames.has("hr") || roleNames.has("admin") || roleNames.has("ceo")) {
       isAuthorized = true;
     }
 
-    if (!isAuthorized && roleNames.has('manager') && applicant.department_id) {
-      const manager = await knex('employees')
+    if (!isAuthorized && roleNames.has("manager") && applicant.department_id) {
+      const manager = await knex("employees")
         .where({
           id: req.user.id,
           company_id: companyId,
           department_id: applicant.department_id,
-          role: 'manager'
+          role: "manager",
         })
         .first();
       if (manager) isAuthorized = true;
     }
-    if (!isAuthorized) return res.status(403).json({ message: 'Not authorized' });
+    if (!isAuthorized)
+      return res.status(403).json({ message: "Not authorized" });
 
     // ===============================
     // UPDATE LEAVE PERMISSION APPLICATION
     // ===============================
-    await knex('leave_permissions')
+    await knex("leave_permissions")
       .where({ id })
       .update({
         status,
         approved_by: req.user.id,
         approved_at: knex.fn.now(),
-        remarks: remarks || null
+        remarks: remarks || null,
       });
 
     // ===============================
     // SEND EMAIL TO EMPLOYEE
     // ===============================
-    const employeeFullName = `${applicant.first_name} ${applicant.last_name || ''}`.trim();
-    await sendLeavePermissionStatusNotification(permission, { employee_name: employeeFullName, employee_email: applicant.email }, status);
+    const employeeFullName =
+      `${applicant.first_name} ${applicant.last_name || ""}`.trim();
+    await sendLeavePermissionStatusNotification(
+      permission,
+      { employee_name: employeeFullName, employee_email: applicant.email },
+      status,
+    );
 
-    res.json({ success: true, message: `Leave permission ${status} successfully!` });
-
+    res.json({
+      success: true,
+      message: `Leave permission ${status} successfully!`,
+    });
   } catch (error) {
-    console.error('Update leave permission status error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Update leave permission status error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -583,186 +893,217 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
     const workflowRole = resolveWorkflowRole(req.user);
     const companyId = req.user.company_id;
 
-    // Fetch current employee
-    const employee = await resolveEmployeeProfile(req, companyId);
-    
-    if (!employee) return res.status(404).json({ message: 'Employee not found' });
+    const employee =
+      workflowRole === "employee"
+        ? await resolveEmployeeProfile(req, companyId)
+        : null;
+
+    if (workflowRole === "employee" && !employee)
+      return res.status(404).json({ message: "Employee not found" });
 
     let result = [];
 
     // ===============================
     // 1️⃣ EMPLOYEE → SAME DEPT MANAGER + ALL HR
     // ===============================
-    if (workflowRole === 'employee') {
+    if (workflowRole === "employee") {
       // Get same department managers
       if (employee.department_id) {
-        const deptManagers = await knex('employees')
-          .where('company_id', companyId)
-          .where('department_id', employee.department_id)
-          .whereRaw('LOWER(TRIM(role)) = ?', ['manager'])
-          .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ['active'])
+        const deptManagers = await knex("employees")
+          .where("company_id", companyId)
+          .where("department_id", employee.department_id)
+          .whereRaw("LOWER(TRIM(role)) = ?", ["manager"])
+          .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ["active"])
           .select(
-            'id',
-            'first_name',
-            'last_name',
-            'email',
-            'role',
-            'department_id'
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "role",
+            "department_id",
           );
 
-        result.push(...deptManagers.map(mgr => ({
-          ...mgr,
-          fullName: `${mgr.first_name} ${mgr.last_name || ''}`.trim(),
-          isManager: true,
-          isHR: false,
-          isSameDepartment: true
-        })));
+        result.push(
+          ...deptManagers.map((mgr) => ({
+            ...mgr,
+            fullName: `${mgr.first_name} ${mgr.last_name || ""}`.trim(),
+            isManager: true,
+            isHR: false,
+            isSameDepartment: true,
+          })),
+        );
       }
 
       // Get all HR users
-      const hrUsers = await getEmployeesByRole(companyId, 'hr');
+      const hrUsers = await getEmployeesByRole(companyId, "hr");
 
-      result.push(...hrUsers.map(hr => ({
-        ...hr,
-        fullName: `${hr.first_name} ${hr.last_name || ''}`.trim(),
-        isManager: false,
-        isHR: true,
-        isSameDepartment: false
-      })));
+      result.push(
+        ...hrUsers.map((hr) => ({
+          ...hr,
+          fullName: `${hr.first_name} ${hr.last_name || ""}`.trim(),
+          isManager: false,
+          isHR: true,
+          isSameDepartment: false,
+        })),
+      );
 
       // Fallback: if no manager/hr configured, include admins so UI dropdown is not empty.
       if (result.length === 0) {
-        const adminUsers = await getEmployeesByRole(companyId, 'admin');
-        result.push(...adminUsers.map(admin => ({
-          ...admin,
-          fullName: `${admin.first_name} ${admin.last_name || ''}`.trim(),
-          isManager: false,
-          isHR: false,
-          isAdmin: true,
-          isSameDepartment: false
-        })));
+        const adminUsers = await getEmployeesByRole(companyId, "admin");
+        result.push(
+          ...adminUsers.map((admin) => ({
+            ...admin,
+            fullName: `${admin.first_name} ${admin.last_name || ""}`.trim(),
+            isManager: false,
+            isHR: false,
+            isAdmin: true,
+            isSameDepartment: false,
+          })),
+        );
       }
     }
 
     // ===============================
     // 2️⃣ MANAGER → ALL HR
     // ===============================
-    else if (workflowRole === 'manager') {
-      const hrUsers = await getEmployeesByRole(companyId, 'hr');
+    else if (workflowRole === "manager") {
+      const hrUsers = await getEmployeesByRole(companyId, "hr");
 
-      result.push(...hrUsers.map(hr => ({
-        ...hr,
-        fullName: `${hr.first_name} ${hr.last_name || ''}`.trim(),
-        isManager: false,
-        isHR: true,
-        isSameDepartment: false
-      })));
+      result.push(
+        ...hrUsers.map((hr) => ({
+          ...hr,
+          fullName: `${hr.first_name} ${hr.last_name || ""}`.trim(),
+          isManager: false,
+          isHR: true,
+          isSameDepartment: false,
+        })),
+      );
     }
 
     // ===============================
     // 3️⃣ HR → ALL ADMIN
     // ===============================
-    else if (workflowRole === 'hr') {
-      const adminUsers = await getEmployeesByRole(companyId, 'admin');
+    else if (workflowRole === "hr") {
+      const adminUsers = await getEmployeesByRole(companyId, "admin");
 
-      result.push(...adminUsers.map(admin => ({
-        ...admin,
-        fullName: `${admin.first_name} ${admin.last_name || ''}`.trim(),
-        isManager: false,
-        isHR: false,
-        isAdmin: true,
-        isSameDepartment: false
-      })));
+      result.push(
+        ...adminUsers.map((admin) => ({
+          ...admin,
+          fullName: `${admin.first_name} ${admin.last_name || ""}`.trim(),
+          isManager: false,
+          isHR: false,
+          isAdmin: true,
+          isSameDepartment: false,
+        })),
+      );
     }
 
     // ===============================
     // 4️⃣ ADMIN → ALL HR
     // ===============================
-    else if (workflowRole === 'admin' || workflowRole === 'ceo') {
-      const hrUsers = await getEmployeesByRole(companyId, 'hr');
+    else if (workflowRole === "admin" || workflowRole === "ceo") {
+      const hrUsers = await getEmployeesByRole(companyId, "hr");
 
-      result.push(...hrUsers.map(hr => ({
-        ...hr,
-        fullName: `${hr.first_name} ${hr.last_name || ''}`.trim(),
-        isManager: false,
-        isHR: true,
-        isSameDepartment: false
-      })));
+      result.push(
+        ...hrUsers.map((hr) => ({
+          ...hr,
+          fullName: `${hr.first_name} ${hr.last_name || ""}`.trim(),
+          isManager: false,
+          isHR: true,
+          isSameDepartment: false,
+        })),
+      );
     }
 
-    if (workflowRole === 'employee') {
+    if (workflowRole === "employee") {
       const rebuiltResult = [];
 
       if (employee.department_id) {
-        const deptManagers = await knex('employees')
-          .where('company_id', companyId)
-          .where('department_id', employee.department_id)
-          .whereRaw('LOWER(TRIM(role)) = ?', ['manager'])
-          .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ['active'])
+        const deptManagers = await knex("employees")
+          .where("company_id", companyId)
+          .where("department_id", employee.department_id)
+          .whereRaw("LOWER(TRIM(role)) = ?", ["manager"])
+          .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ["active"])
           .select(
-            'id',
-            'first_name',
-            'last_name',
-            'email',
-            'role',
-            'department_id'
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "role",
+            "department_id",
           );
 
-        rebuiltResult.push(...deptManagers.map(mgr => ({
-          ...mgr,
-          fullName: `${mgr.first_name} ${mgr.last_name || ''}`.trim(),
-          isManager: true,
-          isHR: false,
-          isAdmin: false,
-          isCEO: false,
-          isSameDepartment: true
-        })));
+        rebuiltResult.push(
+          ...deptManagers.map((mgr) => ({
+            ...mgr,
+            fullName: `${mgr.first_name} ${mgr.last_name || ""}`.trim(),
+            isManager: true,
+            isHR: false,
+            isAdmin: false,
+            isCEO: false,
+            isSameDepartment: true,
+          })),
+        );
       }
 
       const [adminUsers, ceoUsers] = await Promise.all([
-        getEmployeesByRole(companyId, 'admin'),
-        getEmployeesByRole(companyId, 'ceo')
+        getEmployeesByRole(companyId, "admin"),
+        getEmployeesByRole(companyId, "ceo"),
       ]);
 
-      rebuiltResult.push(...adminUsers.map(admin => ({
-        ...admin,
-        fullName: `${admin.first_name} ${admin.last_name || ''}`.trim(),
-        isManager: false,
-        isHR: false,
-        isAdmin: true,
-        isCEO: false,
-        isSameDepartment: false
-      })));
+      rebuiltResult.push(
+        ...adminUsers.map((admin) => ({
+          ...admin,
+          fullName: `${admin.first_name} ${admin.last_name || ""}`.trim(),
+          isManager: false,
+          isHR: false,
+          isAdmin: true,
+          isCEO: false,
+          isSameDepartment: false,
+        })),
+      );
 
-      rebuiltResult.push(...ceoUsers.map(ceo => ({
-        ...ceo,
-        fullName: `${ceo.first_name} ${ceo.last_name || ''}`.trim(),
-        isManager: false,
-        isHR: false,
-        isAdmin: false,
-        isCEO: true,
-        isSameDepartment: false
-      })));
+      rebuiltResult.push(
+        ...ceoUsers.map((ceo) => ({
+          ...ceo,
+          fullName: `${ceo.first_name} ${ceo.last_name || ""}`.trim(),
+          isManager: false,
+          isHR: false,
+          isAdmin: false,
+          isCEO: true,
+          isSameDepartment: false,
+        })),
+      );
 
       result = rebuiltResult;
-    } else if (['manager', 'hr', 'admin', 'ceo'].includes(workflowRole)) {
-      const ceoUsers = await getEmployeesByRole(companyId, 'ceo');
+    } else if (["manager", "hr", "admin", "ceo"].includes(workflowRole)) {
+      const ceoUsers = await getEmployeesByRole(companyId, "ceo");
 
-      result = ceoUsers.map(ceo => ({
+      result = ceoUsers.map((ceo) => ({
         ...ceo,
-        fullName: `${ceo.first_name} ${ceo.last_name || ''}`.trim(),
+        fullName: `${ceo.first_name} ${ceo.last_name || ""}`.trim(),
         isManager: false,
         isHR: false,
         isAdmin: false,
         isCEO: true,
-        isSameDepartment: false
+        isSameDepartment: false,
       }));
     }
 
     // Sort: same-dept managers first, then HR, then others
     result.sort((a, b) => {
-      if (a.isManager && a.isSameDepartment && !(b.isManager && b.isSameDepartment)) return -1;
-      if (!(a.isManager && a.isSameDepartment) && b.isManager && b.isSameDepartment) return 1;
+      if (
+        a.isManager &&
+        a.isSameDepartment &&
+        !(b.isManager && b.isSameDepartment)
+      )
+        return -1;
+      if (
+        !(a.isManager && a.isSameDepartment) &&
+        b.isManager &&
+        b.isSameDepartment
+      )
+        return 1;
       if (a.isHR && !b.isHR) return -1;
       if (!a.isHR && b.isHR) return 1;
       if (a.isCEO && !b.isCEO) return -1;
@@ -776,7 +1117,7 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
     const unique = [];
     const seen = new Set();
     for (const entry of result) {
-      const key = Number(entry?.id);
+      const key = String(entry?.id || "");
       if (!key || seen.has(key)) continue;
       seen.add(key);
       unique.push(entry);
@@ -784,12 +1125,11 @@ const getLeavePermissionRelevantUsers = async (req, res) => {
 
     res.json({
       success: true,
-      data: unique
+      data: unique,
     });
-
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -797,6 +1137,5 @@ module.exports = {
   applyLeavePermission,
   getLeavePermissionApplications,
   updateLeavePermissionStatus,
-  getLeavePermissionRelevantUsers
+  getLeavePermissionRelevantUsers,
 };
-

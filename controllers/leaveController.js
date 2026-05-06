@@ -24,6 +24,51 @@ const resolveWorkflowRole = (user = {}) => {
   return 'employee';
 };
 
+const parseCsv = (value) =>
+  String(value || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+const getSelectedApproverEmails = async (companyId, body = {}) => {
+  const selectedEntries = parseCsv(body.reporting_manager_id);
+  const selectedUserIds = selectedEntries
+    .filter((id) => id.startsWith('user:'))
+    .map((id) => Number(id.replace('user:', '')))
+    .filter(Boolean);
+  const selectedIds = selectedEntries
+    .filter((id) => !id.startsWith('user:'))
+    .map((id) => Number(id))
+    .filter(Boolean);
+
+  const emails = [];
+
+  if (selectedIds.length > 0) {
+    const rows = await knex('employees')
+      .where('company_id', companyId)
+      .whereIn('id', selectedIds)
+      .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ['active'])
+      .select('email');
+
+    emails.push(...rows.map((row) => row.email).filter(Boolean));
+  }
+
+  if (selectedUserIds.length > 0) {
+    const rows = await knex('users')
+      .where('company_id', companyId)
+      .whereIn('id', selectedUserIds)
+      .select('email');
+
+    emails.push(...rows.map((row) => row.email).filter(Boolean));
+  }
+
+  if (emails.length > 0) {
+    return [...new Set(emails)];
+  }
+
+  return [...new Set(parseCsv(body.reporting_manager_email))];
+};
+
 // approved_by in leave_applications references employees.id.
 // Resolve from auth context where req.user.id may be users.id for admin tokens.
 const resolveApproverEmployeeId = async (req, companyId) => {
@@ -584,6 +629,15 @@ const applyLeave = async (req, res) => {
       if (rebuiltRecipients.length > 0) {
         recipientSet.clear();
         rebuiltRecipients.forEach((email) => recipientSet.add(email));
+      }
+
+      const selectedApproverEmails = await getSelectedApproverEmails(
+        companyId,
+        req.body,
+      );
+      if (selectedApproverEmails.length > 0) {
+        recipientSet.clear();
+        selectedApproverEmails.forEach((email) => recipientSet.add(email));
       }
 
       // FALLBACK
@@ -1181,10 +1235,23 @@ const getRelevantUsers = async (req, res) => {
     ];
 
     const getUsersByRole = async (roleName) => {
-      return knex('employees')
+      const employeeUsers = await knex('employees')
         .whereRaw("TRIM(LOWER(role)) = ?", [roleName])
         .andWhere({ company_id: companyId })
         .select(...userSelectColumns);
+
+      const appUsers = await knex('users')
+        .whereRaw("TRIM(LOWER(role)) = ?", [roleName])
+        .andWhere({ company_id: companyId })
+        .select(
+          knex.raw("CONCAT('user:', id) AS id"),
+          'name',
+          knex.raw('NULL AS department_id'),
+          'role',
+          'email'
+        );
+
+      return [...employeeUsers, ...appUsers];
     };
 
     let result;
