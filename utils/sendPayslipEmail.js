@@ -19,6 +19,8 @@ const toNumber = (value, fallback = 0) => {
 
 const roundTo2 = (value) => Number((Number(value) || 0).toFixed(2));
 
+const calculatePercentageAmount = (base, percentage) => roundTo2((toNumber(base) * toNumber(percentage)) / 100);
+
 const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
   // Fetch company details
   const company = await knex('companies')
@@ -54,13 +56,15 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
     toNumber(structure?.incentives)
   );
   const monthlyGross = roundTo2(toNumber(payrollData?.gross, componentGross));
+  const tdsPercentage = toNumber(structure?.tds_percentage, toNumber(structure?.tds));
+  const tdsAmount = toNumber(payrollData?.tds_amount, calculatePercentageAmount(monthlyGross, tdsPercentage));
 
   const monthlyDeductions = roundTo2(
     toNumber(payrollData?.deductions,
       toNumber(structure?.pf) +
       toNumber(structure?.esi) +
       toNumber(structure?.pt) +
-      toNumber(structure?.tds) +
+      tdsAmount +
       toNumber(structure?.other_deductions)
     )
   );
@@ -117,7 +121,8 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
     pf: toNumber(structure?.pf),
     esi: toNumber(structure?.esi),
     pt: toNumber(structure?.pt),
-    tds: toNumber(structure?.tds),
+    tds: tdsAmount,
+    tds_percentage: tdsPercentage,
     other_deductions: toNumber(structure?.other_deductions),
     gross: monthlyGross,
     monthly_deductions: monthlyDeductions,

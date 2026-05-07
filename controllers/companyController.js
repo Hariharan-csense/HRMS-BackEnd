@@ -47,6 +47,19 @@ const sanitizeCompany = (company) => {
   };
 };
 
+const clampPayrollDay = (value, fallback) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(31, Math.max(1, Math.trunc(parsed)));
+};
+
+const withOptionalColumn = async (tableName, payload, columnName, value) => {
+  if (await knex.schema.hasColumn(tableName, columnName)) {
+    payload[columnName] = value;
+  }
+  return payload;
+};
+
 const createCompany = async (req, res) => {
   const companyId = req.user.company_id;
 
@@ -66,6 +79,8 @@ const createCompany = async (req, res) => {
     industry,
     timezone = 'Asia/Kolkata',
     payroll_cycle = 'Monthly',
+    payroll_start_day = 1,
+    payroll_end_day = 31,
     address,
     essl_api_key,
     essl_enabled
@@ -83,7 +98,7 @@ const createCompany = async (req, res) => {
   try {
     const company_id = await generateAutoNumber('company');
 
-    const [newCompanyId] = await knex('companies').insert({
+    let insertPayload = {
       company_id,
       company_name: company_name.trim(),
       legal_name: legal_name.trim(),
@@ -96,7 +111,11 @@ const createCompany = async (req, res) => {
       essl_enabled: String(essl_enabled).toLowerCase() === 'true' || essl_enabled === true,
       logo: logoPath,
       created_by: req.user.id
-    });
+    };
+    insertPayload = await withOptionalColumn('companies', insertPayload, 'payroll_start_day', clampPayrollDay(payroll_start_day, 1));
+    insertPayload = await withOptionalColumn('companies', insertPayload, 'payroll_end_day', clampPayrollDay(payroll_end_day, 31));
+
+    const [newCompanyId] = await knex('companies').insert(insertPayload);
 
     // Assign company_id to the admin user
     await knex('users').where({ id: req.user.id }).update({
@@ -175,6 +194,8 @@ const updateCompany = async (req, res) => {
     industry,
     timezone,
     payrollCycle,
+    payrollStartDay,
+    payrollEndDay,
     address,
     esslApiKey,
     esslEnabled
@@ -197,7 +218,7 @@ const updateCompany = async (req, res) => {
       removeLogoFileIfExists(company.logo);
     }
 
-    await knex('companies').where({ id: companyId }).update({
+    let updatePayload = {
       company_name: name?.trim() || company.company_name,
       legal_name: legalName?.trim() || company.legal_name,
       gstin_pan: gstin?.trim().toUpperCase() || company.gstin_pan,
@@ -211,7 +232,11 @@ const updateCompany = async (req, res) => {
         : company.essl_enabled,
       logo: logoPath || company.logo,
       updated_at: knex.fn.now()
-    });
+    };
+    updatePayload = await withOptionalColumn('companies', updatePayload, 'payroll_start_day', clampPayrollDay(payrollStartDay, company.payroll_start_day || 1));
+    updatePayload = await withOptionalColumn('companies', updatePayload, 'payroll_end_day', clampPayrollDay(payrollEndDay, company.payroll_end_day || 31));
+
+    await knex('companies').where({ id: companyId }).update(updatePayload);
 
     const updated = await knex('companies').where({ id: companyId }).first();
 

@@ -71,6 +71,42 @@ const calculateAmountFromPercentage = (base, percentage) => {
 
 const roundTo2 = (value) => Number((Number(value) || 0).toFixed(2));
 
+const getTdsPercentage = (structure) => {
+  const explicitPercentage = toNumber(structure?.tds_percentage, NaN);
+  if (Number.isFinite(explicitPercentage)) return explicitPercentage;
+
+  // Legacy rows used `tds` directly. From now on that value is treated as a percentage.
+  return toNumber(structure?.tds);
+};
+
+const clampDayForMonth = (year, monthIndex, day) => {
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+  return Math.min(lastDay, Math.max(1, Number(day) || 1));
+};
+
+const formatDateKey = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const getPayrollPeriod = (month, company) => {
+  const [year, monthNum] = month.split('-').map(Number);
+  const selectedMonthIndex = monthNum - 1;
+  const startDay = Math.min(31, Math.max(1, Number(company?.payroll_start_day) || 1));
+  const endDay = Math.min(31, Math.max(1, Number(company?.payroll_end_day) || 31));
+
+  const startMonthIndex = startDay > endDay ? selectedMonthIndex - 1 : selectedMonthIndex;
+  const startDate = new Date(year, startMonthIndex, clampDayForMonth(year, startMonthIndex, startDay));
+  const endDate = new Date(year, selectedMonthIndex, clampDayForMonth(year, selectedMonthIndex, endDay));
+  startDate.setHours(0, 0, 0, 0);
+  endDate.setHours(23, 59, 59, 999);
+
+  const totalDays = Math.floor((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
+  return { startDate, endDate, totalDays, startDay, endDay };
+};
+
 const normalizeAttendanceStatus = (status) => {
   const s = String(status || '').toLowerCase().trim();
   if (s === 'half-day' || s === 'half_day') return 'half';
@@ -101,6 +137,13 @@ const getNextNumericId = async (tableName) => {
   return Number(result?.maxId || 0) + 1;
 };
 
+const withOptionalColumn = async (tableName, payload, columnName, value) => {
+  if (await knex.schema.hasColumn(tableName, columnName)) {
+    payload[columnName] = value;
+  }
+  return payload;
+};
+
 // Save or Update Salary Structure (company scoped)
 const saveSalaryStructure = async (req, res) => {
   const companyId = req.user.company_id;
@@ -124,6 +167,7 @@ const saveSalaryStructure = async (req, res) => {
     esi_enabled,
     pt = 0,
     tds = 0,
+    tds_percentage,
     other_deductions = 0
   } = req.body;
 
@@ -167,6 +211,7 @@ const saveSalaryStructure = async (req, res) => {
     const esiAmount = esiEnabled
       ? (hasEsiPercentage ? calculateAmountFromPercentage(basicAmount, esiPercentage) : toNumber(esi))
       : 0;
+    const tdsPercentage = toNumber(tds_percentage ?? tds);
 
     const calculatedGross = grossAmount || (basicAmount + hraAmount + ltaAmount + toNumber(allowances) + toNumber(incentives));
 
@@ -175,22 +220,24 @@ const saveSalaryStructure = async (req, res) => {
       .first();
 
     if (existing) {
+      const updatePayload = await withOptionalColumn('payroll_structures', {
+        gross: calculatedGross,
+        basic: basicAmount,
+        hra: hraAmount,
+        lta: ltaAmount,
+        allowances: toNumber(allowances),
+        incentives: toNumber(incentives),
+        pf: pfAmount,
+        esi: esiAmount,
+        pt: toNumber(pt),
+        tds: tdsPercentage,
+        other_deductions: toNumber(other_deductions)
+      }, 'tds_percentage', tdsPercentage);
+
       // UPDATE
       await knex('payroll_structures')
         .where({ employee_id: actualEmployeeId, company_id: companyId })
-        .update({
-          gross: calculatedGross,
-          basic: basicAmount,
-          hra: hraAmount,
-          lta: ltaAmount,
-          allowances: toNumber(allowances),
-          incentives: toNumber(incentives),
-          pf: pfAmount,
-          esi: esiAmount,
-          pt: toNumber(pt),
-          tds: toNumber(tds),
-          other_deductions: toNumber(other_deductions)
-        });
+        .update(updatePayload);
 
       const updated = await knex('payroll_structures')
         .where({ employee_id: actualEmployeeId, company_id: companyId })
@@ -205,7 +252,7 @@ const saveSalaryStructure = async (req, res) => {
       // CREATE
       const nextId = await getNextNumericId('payroll_structures');
 
-      await knex('payroll_structures').insert({
+      const insertPayload = await withOptionalColumn('payroll_structures', {
         id: nextId,
         company_id: companyId,
         employee_id: actualEmployeeId,
@@ -218,9 +265,11 @@ const saveSalaryStructure = async (req, res) => {
         pf: pfAmount,
         esi: esiAmount,
         pt: toNumber(pt),
-        tds: toNumber(tds),
+        tds: tdsPercentage,
         other_deductions: toNumber(other_deductions)
-      });
+      }, 'tds_percentage', tdsPercentage);
+
+      await knex('payroll_structures').insert(insertPayload);
 
       const newStructure = await knex('payroll_structures')
         .where({ employee_id: actualEmployeeId, company_id: companyId })
@@ -577,13 +626,13 @@ const processPayroll = async (req, res) => {
       return res.status(400).json({ message: 'Salary structure not found' });
     }
 
+    const company = await knex('companies').where({ id: companyId }).first();
+
     // ===============================
-    // MONTH INFO
+    // PAYROLL PERIOD INFO
     // ===============================
     const [year, monthNum] = month.split('-').map(Number);
-    const totalDays = new Date(year, monthNum, 0).getDate();
-    const startDate = new Date(year, monthNum - 1, 1);
-    const endDate = new Date(year, monthNum, 0);
+    const { startDate, endDate, totalDays } = getPayrollPeriod(month, company);
 
     // ===============================
     // MONTHLY GROSS
@@ -607,7 +656,7 @@ const processPayroll = async (req, res) => {
         employee_id: empId,
         company_id: companyId,
       })
-      .andWhereRaw('MONTH(check_in) = ? AND YEAR(check_in) = ?', [monthNum, year])
+      .whereBetween('check_in', [startDate, endDate])
       .select(
         knex.raw("DATE(check_in) as day"),
         'status',
@@ -620,7 +669,7 @@ const processPayroll = async (req, res) => {
 
     const holidayRows = await knex('holidays')
       .where({ company_id: companyId })
-      .andWhereRaw('MONTH(date) = ? AND YEAR(date) = ?', [monthNum, year])
+      .whereBetween('date', [formatDateKey(startDate), formatDateKey(endDate)])
       .select(knex.raw("DATE_FORMAT(date, '%Y-%m-%d') as day"));
 
     const holidayDateSet = new Set(holidayRows.map((r) => r.day).filter(Boolean));
@@ -630,18 +679,20 @@ const processPayroll = async (req, res) => {
       return day === 0 || day === 6;
     };
 
-    const employeeShift = await knex('shifts')
-      .where({ id: employee.shift_id, company_id: companyId })
-      .first();
-
     for (const row of attendanceRows) {
-      const dayKey = row.day instanceof Date ? row.day.toISOString().slice(0, 10) : String(row.day).slice(0, 10);
+      const dayKey = row.day instanceof Date ? formatDateKey(row.day) : String(row.day).slice(0, 10);
       if (!dayKey) continue;
 
-      const dayObj = new Date(dayKey);
+      const dayObj = new Date(`${dayKey}T00:00:00`);
+      const status = normalizeAttendanceStatus(row.status);
+
+      if (status === 'holiday' || status === 'weekend') {
+        holidayDateSet.add(dayKey);
+        continue;
+      }
+
       if (isWeekend(dayObj) || holidayDateSet.has(dayKey)) continue;
 
-      const status = normalizeAttendanceStatus(row.status);
       let credit = 0;
 
       if (status === 'absent') {
@@ -690,7 +741,7 @@ const processPayroll = async (req, res) => {
       end.setHours(0, 0, 0, 0);
 
       while (current <= end) {
-        const key = current.toISOString().slice(0, 10);
+        const key = formatDateKey(current);
         if (!isWeekend(current) && !holidayDateSet.has(key)) {
           leaveDateSet.add(key);
         }
@@ -701,47 +752,43 @@ const processPayroll = async (req, res) => {
     const approvedLeaveDays = leaveDateSet.size;
 
     // ===============================
-    // PAYABLE & LOP
+    // WORKING DAYS CALCULATION (excluding weekends & holidays)
     // ===============================
     let workingDays = 0;
-    for (let day = 1; day <= totalDays; day++) {
-      const d = new Date(year, monthNum - 1, day);
-      const key = d.toISOString().slice(0, 10);
-      if (!isWeekend(d) && !holidayDateSet.has(key)) {
+    const workingDayCursor = new Date(startDate);
+    workingDayCursor.setHours(0, 0, 0, 0);
+    while (workingDayCursor <= endDate) {
+      const key = formatDateKey(workingDayCursor);
+      if (!isWeekend(workingDayCursor) && !holidayDateSet.has(key)) {
         workingDays++;
       }
+      workingDayCursor.setDate(workingDayCursor.getDate() + 1);
     }
 
-    const attendancePayableDays = Array.from(attendanceCreditByDay.values()).reduce((sum, c) => sum + c, 0);
-    const leavePayableDays = Array.from(leaveDateSet.values()).reduce((sum, dayKey) => {
-      return sum + (attendanceCreditByDay.has(dayKey) ? 0 : 1);
-    }, 0);
+    const presentDays = presentDateSet.size;
+    const halfDays = roundTo2(halfDayDateSet.size * 0.5);
+    const creditedWorkingDays = roundTo2(presentDays + halfDays + approvedLeaveDays);
+    const lopDays = Math.max(0, roundTo2(workingDays - creditedWorkingDays));
+    const payableDays = roundTo2(totalDays - lopDays);
+    const dailyGross = totalDays > 0 ? monthlyGross / totalDays : 0;
+    const lopAmount = roundTo2(dailyGross * lopDays);
 
-    let payableDays = roundTo2(attendancePayableDays + leavePayableDays);
-    if (payableDays > workingDays) payableDays = workingDays;
-
-    let lopDays = roundTo2(workingDays - payableDays);
-    if (lopDays < 0) lopDays = 0;
-
-    let lopAmount = 0;
-    if (lopDays > 0 && workingDays > 0) {
-      const dailyGross = monthlyGross / workingDays;
-      lopAmount = roundTo2(dailyGross * lopDays);
-    }
-
-    const monthlyDeductions =
+    const tdsPercentage = getTdsPercentage(structure);
+    const tdsAmount = calculateAmountFromPercentage(monthlyGross, tdsPercentage);
+    const monthlyDeductions = roundTo2(
       Number(structure.pf || 0) +
       Number(structure.esi || 0) +
       Number(structure.pt || 0) +
-      Number(structure.tds || 0) +
-      Number(structure.other_deductions || 0);
+      tdsAmount +
+      Number(structure.other_deductions || 0)
+    );
 
     // ===============================
     // EXPENSES
     // ===============================
     const expenses = await knex('expenses')
       .where({ employee_id: empId, company_id: companyId, status: 'approved' })
-      .andWhereRaw('MONTH(expense_date) = ? AND YEAR(expense_date) = ?', [monthNum, year]);
+      .whereBetween('expense_date', [formatDateKey(startDate), formatDateKey(endDate)]);
 
     const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
@@ -753,7 +800,7 @@ const processPayroll = async (req, res) => {
     if (monthlyNet < 0) {
       console.warn(`Negative net salary calculated for employee ${empId}: ${monthlyNet}`);
       console.warn(`Gross: ${monthlyGross}, Deductions: ${monthlyDeductions}, LOP: ${lopAmount}, Expenses: ${totalExpenses}`);
-      
+
       // Fix: Set net to 0 if it goes negative (employee can't have negative salary)
       monthlyNet = 0;
     }
@@ -768,7 +815,7 @@ const processPayroll = async (req, res) => {
     // ===============================
     // SAVE PAYROLL
     // ===============================
-    const payrollData = {
+    const payrollData = await withOptionalColumn('payroll_processing', {
       employee_id: empId,
       company_id: companyId,
       month,
@@ -786,7 +833,7 @@ const processPayroll = async (req, res) => {
       annual_deductions: annualDeductions,
       annual_net: annualNet,
       status: 'processed'
-    };
+    }, 'tds_amount', tdsAmount);
 
     const existing = await knex('payroll_processing')
       .where({ employee_id: empId, company_id: companyId, month })
@@ -801,7 +848,6 @@ const processPayroll = async (req, res) => {
     // ===============================
     // COMPANY + LOGO
     // ===============================
-    const company = await knex('companies').where({ id: companyId }).first();
     let companyLogoBase64 = null;
 
     if (company?.logo) {
@@ -851,7 +897,8 @@ const processPayroll = async (req, res) => {
       pf: structure.pf,
       esi: structure.esi,
       pt: structure.pt,
-      tds: structure.tds,
+      tds: tdsAmount,
+      tds_percentage: tdsPercentage,
       other_deductions: structure.other_deductions,
 
       monthly_net: monthlyNet,
@@ -960,11 +1007,11 @@ const getPayrollRecords = async (req, res) => {
     } else if (hasAnyRole(req.user, ['manager'])) {
       query = query.where(builder => {
         builder.where('payroll_processing.employee_id', req.user.id)
-          .orWhereExists(function() {
+          .orWhereExists(function () {
             this.select(1)
               .from('employees as team')
               .where('team.company_id', companyId)
-              .whereRaw('team.manager_name = CONCAT(?, " ", COALESCE(?, ""))', 
+              .whereRaw('team.manager_name = CONCAT(?, " ", COALESCE(?, ""))',
                 [req.user.first_name || '', req.user.last_name || ''])
               .whereRaw('team.id = payroll_processing.employee_id');
           });
@@ -1034,7 +1081,7 @@ const getPayrollRecords = async (req, res) => {
 //       .first();
 
 
-    
+
 //     // ===============================
 //     // COMPANY
 //     // ===============================
@@ -1203,8 +1250,8 @@ const payslipPreview = async (req, res) => {
     const bankDetails = await knex('employee_bank_details')
       .where({ employee_id: empId, company_id: companyId })
       .first();
-    
-     const structure = await knex('payroll_structures')
+
+    const structure = await knex('payroll_structures')
       .where({ employee_id: empId, company_id: companyId })
       .first();
 
@@ -1225,8 +1272,8 @@ const payslipPreview = async (req, res) => {
         const ext = path.extname(logoPath).toLowerCase();
         const mimeType =
           ext === '.png' ? 'image/png' :
-          ext === '.svg' ? 'image/svg+xml' :
-          'image/jpeg';
+            ext === '.svg' ? 'image/svg+xml' :
+              'image/jpeg';
 
         const buffer = fs.readFileSync(logoPath);
         companyLogoBase64 = `data:${mimeType};base64,${buffer.toString('base64')}`;
@@ -1270,7 +1317,8 @@ const payslipPreview = async (req, res) => {
       pf: structure?.pf,
       esi: structure?.esi,
       pt: structure?.pt,
-      tds: structure?.tds,
+      tds: payroll.tds_amount || 0,
+      tds_percentage: getTdsPercentage(structure),
       other_deductions: structure?.other_deductions,
 
       monthly_net: payroll.net,
@@ -1313,7 +1361,7 @@ const getSalaryStructures = async (req, res) => {
     const salaryStructures = await knex('payroll_structures')
       .where({ company_id: companyId })
       .select(
-       '*'
+        '*'
       )
       .orderBy('created_at', 'desc');
 
@@ -1324,7 +1372,7 @@ const getSalaryStructures = async (req, res) => {
           .where({ id: structure.employee_id, company_id: companyId })
           .select('first_name', 'last_name', 'employee_id as emp_id')
           .first();
-          
+
         return {
           ...structure,
           pf_enabled: Number(structure.pf || 0) > 0,
@@ -1335,6 +1383,7 @@ const getSalaryStructures = async (req, res) => {
           esi_percentage: Number(structure.basic || 0) > 0
             ? Number(((Number(structure.esi || 0) / Number(structure.basic || 0)) * 100).toFixed(2))
             : 0,
+          tds_percentage: getTdsPercentage(structure),
           employee_name: employee ? `${employee.first_name} ${employee.last_name}` : 'N/A',
           employee_code: employee?.emp_id || 'N/A'
         };
@@ -1371,6 +1420,7 @@ const updateSalaryStructure = async (req, res) => {
     esi_enabled,
     pt = 0,
     tds = 0,
+    tds_percentage,
     other_deductions = 0
   } = req.body;
 
@@ -1401,6 +1451,7 @@ const updateSalaryStructure = async (req, res) => {
     const esiAmount = esiEnabled
       ? (hasEsiPercentage ? calculateAmountFromPercentage(basicAmount, esiPercentage) : toNumber(esi))
       : 0;
+    const tdsPercentage = toNumber(tds_percentage ?? tds);
 
     const gross =
       basicAmount +
@@ -1409,22 +1460,24 @@ const updateSalaryStructure = async (req, res) => {
       toNumber(allowances) +
       toNumber(incentives);
 
+    const updatePayload = await withOptionalColumn('payroll_structures', {
+      basic: basicAmount,
+      hra: toNumber(hra),
+      lta: toNumber(lta),
+      allowances: toNumber(allowances),
+      incentives: toNumber(incentives),
+      gross,
+      pf: pfAmount,
+      esi: esiAmount,
+      pt: toNumber(pt),
+      tds: tdsPercentage,
+      other_deductions: toNumber(other_deductions),
+      updated_at: knex.fn.now()
+    }, 'tds_percentage', tdsPercentage);
+
     await knex('payroll_structures')
       .where({ id, company_id: companyId })
-      .update({
-        basic: basicAmount,
-        hra: toNumber(hra),
-        lta: toNumber(lta),
-        allowances: toNumber(allowances),
-        incentives: toNumber(incentives),
-        gross,
-        pf: pfAmount,
-        esi: esiAmount,
-        pt: toNumber(pt),
-        tds: toNumber(tds),
-        other_deductions: toNumber(other_deductions),
-        updated_at: knex.fn.now()
-      });
+      .update(updatePayload);
 
     const updated = await knex('payroll_structures')
       .where({ id, company_id: companyId })
@@ -1551,6 +1604,8 @@ const getEmployeePayslips = async (req, res) => {
       payableDays: record.payable_days || 0,
       lopAmount: parseFloat(record.lop_amount) || 0,
       gross: parseFloat(record.gross) || 0,
+      tdsAmount: parseFloat(record.tds_amount) || 0,
+      tds_amount: parseFloat(record.tds_amount) || 0,
       deductions: parseFloat(record.deductions) || 0,
       net: parseFloat(record.net) || 0,
       status: record.status || 'draft',

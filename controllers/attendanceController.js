@@ -68,6 +68,21 @@ const normalizeRequestedTime = (value) => {
 
 const buildDateTime = (date, time) => `${date} ${time}`;
 
+const formatDateOnly = (value) => {
+  if (!value) return null;
+  const text = String(value);
+  const dateMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (dateMatch) return `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 const calculateWorkedHours = (date, checkInTime, checkOutTime) => {
   const checkInDate = new Date(`${date}T${checkInTime}`);
   const checkOutDate = new Date(`${date}T${checkOutTime}`);
@@ -111,8 +126,18 @@ const buildAttendanceOverrideUpdate = ({ override, date }) => {
 
 const getAttendanceDate = (attendance, fallbackDate) => {
   if (fallbackDate) return fallbackDate;
+  if (attendance?.attendance_date) return attendance.attendance_date;
   if (!attendance?.check_in) return null;
-  return new Date(attendance.check_in).toISOString().slice(0, 10);
+  return formatDateOnly(attendance.check_in);
+};
+
+const getAttendanceDateById = async (companyId, attendanceId) => {
+  if (!attendanceId) return null;
+  const row = await knex('attendance')
+    .where({ id: attendanceId, company_id: companyId })
+    .select(knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"))
+    .first();
+  return row?.attendance_date || null;
 };
 
 // Check current attendance status
@@ -633,7 +658,8 @@ const getAttendanceLogs = async (req, res) => {
         'e.last_name',
         'e.employee_id as employee_code',
         'a.hours_worked',
-        'a.overtime_hours'
+        'a.overtime_hours',
+        knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as attendance_date")
       )
       .orderBy('a.check_in', 'desc')
       .limit(limitNum)
@@ -810,6 +836,11 @@ const createOverride = async (req, res) => {
       attendance = await knex('attendance')
         .where({ id: attendanceId, company_id: companyId, employee_id: employee.id })
         .first();
+
+      const attendanceIdDate = attendance ? await getAttendanceDateById(companyId, attendance.id) : null;
+      if (attendanceIdDate && attendanceIdDate !== date) {
+        attendance = null;
+      }
     }
 
     // Resolve attendance by employee + selected date
@@ -820,6 +851,7 @@ const createOverride = async (req, res) => {
           employee_id: employee.id
         })
         .whereRaw('DATE(check_in) = ?', [date])
+        .orderByRaw("CASE WHEN device_info = 'Override' THEN 1 ELSE 0 END ASC")
         .orderBy('check_in', 'desc')
         .first();
     }
@@ -949,6 +981,7 @@ const processOverride = async (req, res) => {
     if (status === 'approved') {
       const attendance = await knex('attendance')
         .where({ id: override.attendance_id, company_id: companyId })
+        .select('*', knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"))
         .first();
 
       if (!attendance) {
@@ -1101,14 +1134,12 @@ const getOverrides = async (req, res) => {
       ? await knex('attendance')
         .where({ company_id: companyId })
         .whereIn('id', attendanceIds)
-        .select('id', 'check_in')
+        .select('id', knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"))
       : [];
 
     const attendanceDateMap = {};
     attendanceRecords.forEach((record) => {
-      attendanceDateMap[record.id] = record.check_in
-        ? new Date(record.check_in).toISOString().split('T')[0]
-        : null;
+      attendanceDateMap[record.id] = record.attendance_date || null;
     });
 
     // Step 4: Resolve requester/approver names (employees first, users fallback)
