@@ -2,6 +2,11 @@
 const knex = require('../db/db');
 const { generateAutoNumber } = require('../utils/generateAutoNumber');
 const { RBAC_ACTIONS, RBAC_MODULE_CATALOG } = require("../config/rbacCatalog");
+const {
+  buildEmployeeDefaultModules,
+  buildFullAccessModules,
+  getDefaultModulesForRoleName,
+} = require("../config/rbacDefaults");
 const { normalizeModulesPayload, parseModulesFromDb } = require("../utils/rbac");
 
 // Auto generate Role ID: ROLE001, ROLE002... per company
@@ -15,6 +20,74 @@ const generateRoleId = async (companyId) => {
 
   const num = parseInt(lastRole.role_id.replace('ROLE', '')) + 1;
   return `ROLE${String(num).padStart(3, '0')}`;
+};
+
+const syncHardcodedDefaultRoles = async (companyId) => {
+  const roles = await knex("roles")
+    .where({ company_id: companyId })
+    .select("id", "name", "modules");
+
+  await Promise.all(
+    roles.map(async (role) => {
+      const defaultModules = getDefaultModulesForRoleName(role.name);
+      if (!defaultModules) return;
+
+      const normalizedDefaultModules = normalizeModulesPayload(defaultModules);
+      const currentModules = parseModulesFromDb(role.modules);
+
+      if (JSON.stringify(currentModules) === JSON.stringify(normalizedDefaultModules)) {
+        return;
+      }
+
+      await knex("roles").where({ id: role.id, company_id: companyId }).update({
+        modules: JSON.stringify(normalizedDefaultModules),
+        updated_at: knex.fn.now(),
+      });
+    })
+  );
+};
+
+const ensureDefaultSystemRoles = async (companyId) => {
+  const defaultRoleDefinitions = [
+    { name: "Admin", modules: buildFullAccessModules() },
+    { name: "CEO", modules: buildFullAccessModules() },
+    { name: "Employee", modules: buildEmployeeDefaultModules() },
+  ];
+
+  const lastRole = await knex("roles")
+    .where({ company_id: companyId })
+    .orderBy("id", "desc")
+    .first();
+
+  let nextRoleNumber = lastRole?.role_id
+    ? parseInt(String(lastRole.role_id).replace("ROLE", ""), 10) + 1
+    : 1;
+
+  for (const defaultRole of defaultRoleDefinitions) {
+    const existingRole = await knex("roles")
+      .whereRaw("LOWER(name) = ? AND company_id = ?", [
+        defaultRole.name.toLowerCase(),
+        companyId,
+      ])
+      .first();
+
+    if (existingRole) continue;
+
+    const role_id = `ROLE${String(nextRoleNumber).padStart(3, "0")}`;
+    nextRoleNumber += 1;
+
+    await knex("roles").insert({
+      company_id: companyId,
+      role_id,
+      name: defaultRole.name,
+      approval_authority: "",
+      data_visibility: "",
+      modules: JSON.stringify(normalizeModulesPayload(defaultRole.modules)),
+      description: null,
+      created_at: knex.fn.now(),
+      updated_at: knex.fn.now(),
+    });
+  }
 };
 
 // Add Role (Admin only - scoped to company)
@@ -40,7 +113,12 @@ const addRole = async (req, res) => {
     });
   }
 
-  if (!modules || typeof modules !== 'object' || Object.keys(modules).length === 0) {
+  const roleDefaultModules = getDefaultModulesForRoleName(name);
+
+  if (
+    !roleDefaultModules &&
+    (!modules || typeof modules !== 'object' || Object.keys(modules).length === 0)
+  ) {
     return res.status(400).json({
       message: 'At least one module permission is required'
     });
@@ -57,8 +135,7 @@ const addRole = async (req, res) => {
     }
 
     const role_id = await generateRoleId(companyId);
-
-    const structuredModules = normalizeModulesPayload(modules);
+    const structuredModules = normalizeModulesPayload(roleDefaultModules || modules);
 
     const [newId] = await knex('roles').insert({
       company_id: companyId,
@@ -97,6 +174,9 @@ const getRoles = async (req, res) => {
   }
 
   try {
+    await ensureDefaultSystemRoles(companyId);
+    await syncHardcodedDefaultRoles(companyId);
+
     let roles = await knex('roles')
       .where({ company_id: companyId })
       .select('id', 'role_id', 'name', 'approval_authority', 'data_visibility', 'modules', 'description', 'created_at', 'updated_at')
@@ -105,28 +185,7 @@ const getRoles = async (req, res) => {
     if (!roles || roles.length === 0) {
       const role_id = await generateRoleId(companyId);
 
-      const fullPermissions = {};
-      RBAC_ACTIONS.forEach((action) => {
-        fullPermissions[action] = true;
-      });
-
-      const adminModules = {};
-      (RBAC_MODULE_CATALOG || []).forEach((moduleEntry) => {
-        if (!moduleEntry?.key) return;
-        const moduleKey = moduleEntry.key;
-        const submodules = {};
-        (moduleEntry.submodules || []).forEach((subEntry) => {
-          if (!subEntry?.key) return;
-          submodules[subEntry.key] = { permissions: { ...fullPermissions } };
-        });
-
-        adminModules[moduleKey] = {
-          permissions: { ...fullPermissions },
-          submodules,
-        };
-      });
-
-      const structuredModules = normalizeModulesPayload(adminModules);
+      const structuredModules = normalizeModulesPayload(buildFullAccessModules());
 
       await knex('roles').insert({
         company_id: companyId,
@@ -139,6 +198,8 @@ const getRoles = async (req, res) => {
         created_at: knex.fn.now(),
         updated_at: knex.fn.now(),
       });
+
+      await syncHardcodedDefaultRoles(companyId);
 
       roles = await knex('roles')
         .where({ company_id: companyId })
@@ -198,7 +259,8 @@ const updateRole = async (req, res) => {
     }
 
     const currentModules = parseModulesFromDb(role.modules);
-    const incomingModules = normalizeModulesPayload(modules || {});
+    const defaultModules = getDefaultModulesForRoleName(name);
+    const incomingModules = normalizeModulesPayload(defaultModules || modules || {});
     const updatedModules = { ...currentModules, ...incomingModules };
 
     await knex('roles').where({ id }).update({

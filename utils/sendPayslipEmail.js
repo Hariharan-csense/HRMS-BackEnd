@@ -21,6 +21,86 @@ const roundTo2 = (value) => Number((Number(value) || 0).toFixed(2));
 
 const calculatePercentageAmount = (base, percentage) => roundTo2((toNumber(base) * toNumber(percentage)) / 100);
 
+const formatPayrollMonth = (month) => {
+  const [year, monthNum] = String(month || '').split('-').map(Number);
+  if (!year || !monthNum || monthNum < 1 || monthNum > 12) return month || '';
+
+  return new Date(year, monthNum - 1, 1).toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric'
+  });
+};
+
+const numberToWords = (value) => {
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
+  const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+  const belowHundred = (num) => {
+    if (num < 10) return ones[num];
+    if (num < 20) return teens[num - 10];
+    return `${tens[Math.floor(num / 10)]}${num % 10 ? ` ${ones[num % 10]}` : ''}`;
+  };
+
+  const belowThousand = (num) => {
+    if (num < 100) return belowHundred(num);
+    return `${ones[Math.floor(num / 100)]} Hundred${num % 100 ? ` ${belowHundred(num % 100)}` : ''}`;
+  };
+
+  const integerPart = Math.floor(Math.abs(Number(value) || 0));
+  if (integerPart === 0) return 'Zero';
+
+  const parts = [];
+  const crore = Math.floor(integerPart / 10000000);
+  const lakh = Math.floor((integerPart % 10000000) / 100000);
+  const thousand = Math.floor((integerPart % 100000) / 1000);
+  const rest = integerPart % 1000;
+
+  if (crore) parts.push(`${belowThousand(crore)} Crore`);
+  if (lakh) parts.push(`${belowThousand(lakh)} Lakh`);
+  if (thousand) parts.push(`${belowThousand(thousand)} Thousand`);
+  if (rest) parts.push(belowThousand(rest));
+
+  return parts.join(' ');
+};
+
+const amountToWords = (value) => {
+  const amount = Math.abs(Number(value) || 0);
+  const rupees = Math.floor(amount);
+  const paise = Math.round((amount - rupees) * 100);
+  const rupeeWords = `${numberToWords(rupees)} Rupees`;
+  const paiseWords = paise ? ` and ${numberToWords(paise)} Paise` : '';
+
+  return `${rupeeWords}${paiseWords} Only`;
+};
+
+const getImageMimeType = (filePath) => {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.webp') return 'image/webp';
+  return 'image/jpeg';
+};
+
+const assetPathToBase64 = (assetPath) => {
+  if (!assetPath) return null;
+  if (String(assetPath).startsWith('http') || String(assetPath).startsWith('data:')) {
+    return assetPath;
+  }
+
+  const relativePath = String(assetPath).replace(/^\/+/, '');
+  const candidates = [
+    path.resolve(__dirname, '..', '..', relativePath),
+    path.join(process.cwd(), '..', relativePath),
+    path.join(process.cwd(), relativePath)
+  ];
+  const filePath = candidates.find((candidate) => fs.existsSync(candidate));
+
+  if (!filePath) return null;
+
+  return `data:${getImageMimeType(filePath)};base64,${fs.readFileSync(filePath).toString('base64')}`;
+};
+
 const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
   // Fetch company details
   const company = await knex('companies')
@@ -79,19 +159,10 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
   const annualGross = roundTo2(toNumber(payrollData?.annual_gross, monthlyGross * 12));
   const annualDeductions = roundTo2(toNumber(payrollData?.annual_deductions, monthlyDeductions * 12));
   const annualNet = roundTo2(toNumber(payrollData?.annual_net, monthlyNet * 12));
+  const displayMonth = formatPayrollMonth(payrollData?.month);
 
-  let companyLogo = company.logo_url || company.logo || null;
-  if (companyLogo && !String(companyLogo).startsWith('http') && !String(companyLogo).startsWith('data:')) {
-    const logoPath = path.join(process.cwd(), '..', String(companyLogo).replace(/^\/+/, ''));
-    if (fs.existsSync(logoPath)) {
-      const ext = path.extname(logoPath).toLowerCase();
-      const mimeType =
-        ext === '.png' ? 'image/png' :
-        ext === '.svg' ? 'image/svg+xml' :
-        'image/jpeg';
-      companyLogo = `data:${mimeType};base64,${fs.readFileSync(logoPath).toString('base64')}`;
-    }
-  }
+  const companyLogo = assetPathToBase64(company.logo_url || company.logo);
+  const companySignature = assetPathToBase64(company.signature_url || company.signature);
 
   // Load Handlebars template
   const templatePath = path.join(__dirname, '..', 'templates', 'payslip.hbs');
@@ -103,7 +174,10 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
     ...payrollData,
     company_name: company.company_name || company.name || 'Company',
     company_logo: companyLogo, // URL or base64 image
+    company_signature: companySignature,
     company_address: company.address,
+    display_month: displayMonth,
+    employee_code: employee.employee_id || '',
     employee_name: `${employee.first_name} ${employee.last_name || ''}`.trim(),
     department_name: department?.name || '-',
     designation_name: designation?.name || '-',
@@ -127,6 +201,7 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
     gross: monthlyGross,
     monthly_deductions: monthlyDeductions,
     monthly_net: monthlyNet,
+    monthly_net_words: amountToWords(monthlyNet),
     annual_gross: annualGross,
     annual_deductions: annualDeductions,
     annual_net: annualNet,
@@ -143,7 +218,7 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
   // Send email with PDF attachment
   await sendEmailWithAttachment(
     employee.email,
-    `Payslip for ${payrollData.month}`,
+    `Payslip for ${displayMonth || payrollData.month}`,
     `Dear ${employee.first_name}, please find your payslip attached.`,
     pdfPath,
     `payslip-${payrollData.month}.pdf`

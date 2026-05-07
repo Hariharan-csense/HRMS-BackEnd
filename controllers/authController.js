@@ -18,7 +18,10 @@ const { generateAutoNumber } = require('../utils/generateAutoNumber');
 
 const { sendRegistrationSuccessMail } = require('../utils/sendRegistrationSuccessMail');
 
-const { RBAC_ACTIONS, RBAC_MODULE_CATALOG } = require('../config/rbacCatalog');
+const {
+  buildEmployeeDefaultModules,
+  buildFullAccessModules,
+} = require('../config/rbacDefaults');
 
 const { normalizeModulesPayload } = require('../utils/rbac');
 
@@ -382,104 +385,56 @@ const registerUser = async (req, res) => {
 
 
 
-        const existingAdminRole = await trx('roles')
+        const defaultRoleDefinitions = [
+          {
+            name: 'Admin',
+            modules: buildFullAccessModules(),
+          },
+          {
+            name: 'CEO',
+            modules: buildFullAccessModules(),
+          },
+          {
+            name: 'Employee',
+            modules: buildEmployeeDefaultModules(),
+          },
+        ];
 
-          .whereRaw('LOWER(name) = ? AND company_id = ?', ['admin', companyPkId])
+        let nextRoleNumber = 1;
 
+        const lastRole = await trx('roles')
+          .where({ company_id: companyPkId })
+          .orderBy('id', 'desc')
           .first();
 
+        if (lastRole?.role_id) {
+          nextRoleNumber = parseInt(String(lastRole.role_id).replace('ROLE', ''), 10) + 1;
+        }
 
-
-        if (!existingAdminRole) {
-
-          const lastRole = await trx('roles')
-
-            .where({ company_id: companyPkId })
-
-            .orderBy('id', 'desc')
-
+        for (const defaultRole of defaultRoleDefinitions) {
+          const existingRole = await trx('roles')
+            .whereRaw('LOWER(name) = ? AND company_id = ?', [
+              defaultRole.name.toLowerCase(),
+              companyPkId,
+            ])
             .first();
 
-
-
-          const nextRoleNumber = lastRole?.role_id
-
-            ? parseInt(String(lastRole.role_id).replace('ROLE', ''), 10) + 1
-
-            : 1;
+          if (existingRole) continue;
 
           const role_id = `ROLE${String(nextRoleNumber).padStart(3, '0')}`;
-
-
-
-          const fullPermissions = {};
-
-          RBAC_ACTIONS.forEach((action) => {
-
-            fullPermissions[action] = true;
-
-          });
-
-
-
-          const adminModules = {};
-
-          (RBAC_MODULE_CATALOG || []).forEach((moduleEntry) => {
-
-            if (!moduleEntry?.key) return;
-
-            const moduleKey = moduleEntry.key;
-
-            const submodules = {};
-
-            (moduleEntry.submodules || []).forEach((subEntry) => {
-
-              if (!subEntry?.key) return;
-
-              submodules[subEntry.key] = { permissions: { ...fullPermissions } };
-
-            });
-
-
-
-            adminModules[moduleKey] = {
-
-              permissions: { ...fullPermissions },
-
-              submodules,
-
-            };
-
-          });
-
-
-
-          const structuredModules = normalizeModulesPayload(adminModules);
-
-
+          nextRoleNumber += 1;
 
           await trx('roles').insert({
-
             company_id: companyPkId,
-
             role_id,
-
-            name: 'Admin',
-
+            name: defaultRole.name,
             approval_authority: '',
-
             data_visibility: '',
-
-            modules: JSON.stringify(structuredModules),
-
+            modules: JSON.stringify(normalizeModulesPayload(defaultRole.modules)),
             description: null,
-
             created_at: trx.fn.now(),
-
             updated_at: trx.fn.now(),
-
           });
-
         }
 
       }

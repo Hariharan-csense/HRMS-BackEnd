@@ -3,7 +3,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 
-// Single directory for all company logos (since one company = one logo)
+// Single directory for company brand assets.
 const uploadDir = path.join(__dirname, "../../uploads/company-logos");
 
 // Ensure directory exists
@@ -20,10 +20,12 @@ const storage = multer.diskStorage({
     const ext = path.extname(file.originalname).toLowerCase();
     const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
 
+    const assetType = file.fieldname === "signature" ? "signature" : "logo";
+
     // Save with a temporary unique filename first. The controller will
-    // rename it to the canonical company_<id>-logo.ext once the actual
+    // rename it to the canonical company_<id>-<asset>.ext once the actual
     // company record is known.
-    cb(null, `company-logo-${uniqueSuffix}${ext}`);
+    cb(null, `company-${assetType}-${uniqueSuffix}${ext}`);
   },
 });
 
@@ -40,7 +42,7 @@ const fileFilter = (req, file, cb) => {
 
   cb(
     new Error(
-      "Invalid file type! Only JPG, PNG, WebP, and SVG images are allowed for company logo.",
+      "Invalid file type! Only JPG, PNG, WebP, and SVG images are allowed for company brand assets.",
     ),
     false,
   );
@@ -54,5 +56,7 @@ const upload = multer({
   fileFilter,
 });
 
-// Export single file upload for field name 'logo'
-module.exports = upload.single("logo");
+module.exports = upload.fields([
+  { name: "logo", maxCount: 1 },
+  { name: "signature", maxCount: 1 },
+]);

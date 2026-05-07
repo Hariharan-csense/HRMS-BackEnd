@@ -91,6 +91,59 @@ const formatDateKey = (date) => {
   return `${year}-${month}-${day}`;
 };
 
+const formatPayrollMonth = (month) => {
+  const [year, monthNum] = String(month || '').split('-').map(Number);
+  if (!year || !monthNum || monthNum < 1 || monthNum > 12) return month || '';
+
+  return new Date(year, monthNum - 1, 1).toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric'
+  });
+};
+
+const numberToWords = (value) => {
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
+  const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+  const belowHundred = (num) => {
+    if (num < 10) return ones[num];
+    if (num < 20) return teens[num - 10];
+    return `${tens[Math.floor(num / 10)]}${num % 10 ? ` ${ones[num % 10]}` : ''}`;
+  };
+
+  const belowThousand = (num) => {
+    if (num < 100) return belowHundred(num);
+    return `${ones[Math.floor(num / 100)]} Hundred${num % 100 ? ` ${belowHundred(num % 100)}` : ''}`;
+  };
+
+  const integerPart = Math.floor(Math.abs(Number(value) || 0));
+  if (integerPart === 0) return 'Zero';
+
+  const parts = [];
+  const crore = Math.floor(integerPart / 10000000);
+  const lakh = Math.floor((integerPart % 10000000) / 100000);
+  const thousand = Math.floor((integerPart % 100000) / 1000);
+  const rest = integerPart % 1000;
+
+  if (crore) parts.push(`${belowThousand(crore)} Crore`);
+  if (lakh) parts.push(`${belowThousand(lakh)} Lakh`);
+  if (thousand) parts.push(`${belowThousand(thousand)} Thousand`);
+  if (rest) parts.push(belowThousand(rest));
+
+  return parts.join(' ');
+};
+
+const amountToWords = (value) => {
+  const amount = Math.abs(Number(value) || 0);
+  const rupees = Math.floor(amount);
+  const paise = Math.round((amount - rupees) * 100);
+  const rupeeWords = `${numberToWords(rupees)} Rupees`;
+  const paiseWords = paise ? ` and ${numberToWords(paise)} Paise` : '';
+
+  return `${rupeeWords}${paiseWords} Only`;
+};
+
 const getPayrollPeriod = (month, company) => {
   const [year, monthNum] = month.split('-').map(Number);
   const selectedMonthIndex = monthNum - 1;
@@ -142,6 +195,34 @@ const withOptionalColumn = async (tableName, payload, columnName, value) => {
     payload[columnName] = value;
   }
   return payload;
+};
+
+const getImageMimeType = (filePath) => {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.webp') return 'image/webp';
+  return 'image/jpeg';
+};
+
+const assetPathToBase64 = (assetPath) => {
+  if (!assetPath) return null;
+  if (String(assetPath).startsWith('data:') || String(assetPath).startsWith('http')) {
+    return assetPath;
+  }
+
+  const relativePath = String(assetPath).replace(/^\/+/, '');
+  const candidates = [
+    path.resolve(__dirname, '..', '..', relativePath),
+    path.join(process.cwd(), '..', relativePath),
+    path.join(process.cwd(), relativePath)
+  ];
+  const filePath = candidates.find((candidate) => fs.existsSync(candidate));
+
+  if (!filePath) return null;
+
+  const buffer = fs.readFileSync(filePath);
+  return `data:${getImageMimeType(filePath)};base64,${buffer.toString('base64')}`;
 };
 
 // Save or Update Salary Structure (company scoped)
@@ -846,17 +927,10 @@ const processPayroll = async (req, res) => {
     }
 
     // ===============================
-    // COMPANY + LOGO
+    // COMPANY BRAND ASSETS
     // ===============================
-    let companyLogoBase64 = null;
-
-    if (company?.logo) {
-      const logoPath = path.join(process.cwd(), '..', company.logo.replace(/^\/+/, ''));
-      if (fs.existsSync(logoPath)) {
-        const buffer = fs.readFileSync(logoPath);
-        companyLogoBase64 = `data:image/png;base64,${buffer.toString('base64')}`;
-      }
-    }
+    const companyLogoBase64 = assetPathToBase64(company?.logo);
+    const companySignatureBase64 = assetPathToBase64(company?.signature);
 
     // ===============================
     // PDF GENERATION
@@ -867,8 +941,10 @@ const processPayroll = async (req, res) => {
     const html = template({
       company_name: company.company_name,
       company_logo: companyLogoBase64,
+      company_signature: companySignatureBase64,
       company_address: company.address,
 
+      employee_code: employee.employee_id || '',
       employee_name: `${employee.first_name} ${employee.last_name || ''}`,
       department_name: department?.name || '-',
       designation_name: designation?.name || '-',
@@ -881,6 +957,7 @@ const processPayroll = async (req, res) => {
       ifsc_code: bankDetails?.ifsc_code || '',
 
       month,
+      display_month: formatPayrollMonth(month),
       total_days: totalDays,
       present_days: presentDateSet.size,
       approved_leave_days: approvedLeaveDays,
@@ -901,11 +978,14 @@ const processPayroll = async (req, res) => {
       tds_percentage: tdsPercentage,
       other_deductions: structure.other_deductions,
 
+      gross: monthlyGross,
       monthly_net: monthlyNet,
+      monthly_net_words: amountToWords(monthlyNet),
       monthly_deductions: monthlyDeductions,
       annual_gross: annualGross,
       annual_deductions: annualDeductions,
-      annual_net: annualNet
+      annual_net: annualNet,
+      current_date: new Date().toISOString().slice(0, 10)
     });
 
     const pdfDir = path.join(__dirname, 'temp');
@@ -1262,23 +1342,8 @@ const payslipPreview = async (req, res) => {
       .where({ id: companyId })
       .first();
 
-    let companyLogoBase64 = null;
-
-    if (company?.logo) {
-      const relativeLogoPath = company.logo.replace(/^\/+/, '');
-      const logoPath = path.join(process.cwd(), '..', relativeLogoPath);
-
-      if (fs.existsSync(logoPath)) {
-        const ext = path.extname(logoPath).toLowerCase();
-        const mimeType =
-          ext === '.png' ? 'image/png' :
-            ext === '.svg' ? 'image/svg+xml' :
-              'image/jpeg';
-
-        const buffer = fs.readFileSync(logoPath);
-        companyLogoBase64 = `data:${mimeType};base64,${buffer.toString('base64')}`;
-      }
-    }
+    const companyLogoBase64 = assetPathToBase64(company?.logo);
+    const companySignatureBase64 = assetPathToBase64(company?.signature);
 
     // ===============================
     // TEMPLATE DATA (🔥 SAME FIELDS)
@@ -1286,8 +1351,10 @@ const payslipPreview = async (req, res) => {
     const templateData = {
       company_name: company.company_name,
       company_logo: companyLogoBase64,
+      company_signature: companySignatureBase64,
       company_address: company.address,
 
+      employee_code: employee.employee_id || '',
       employee_name: `${employee.first_name} ${employee.last_name || ''}`,
       department_name: department?.name || '-',
       designation_name: designation?.name || '-',
@@ -1300,6 +1367,7 @@ const payslipPreview = async (req, res) => {
       ifsc_code: bankDetails?.ifsc_code || '',
 
       month,
+      display_month: formatPayrollMonth(month),
       total_days: payroll.total_days,
       present_days: payroll.present_days,
       payable_days: payroll.payable_days,
@@ -1312,7 +1380,7 @@ const payslipPreview = async (req, res) => {
       lta: structure?.lta || 0,
       allowances: structure?.allowances,
       incentives: structure?.incentives,
-      total_expenses: structure?.total_expenses,
+      total_expenses: payroll.total_expenses || 0,
 
       pf: structure?.pf,
       esi: structure?.esi,
@@ -1321,11 +1389,14 @@ const payslipPreview = async (req, res) => {
       tds_percentage: getTdsPercentage(structure),
       other_deductions: structure?.other_deductions,
 
+      gross: payroll.gross,
       monthly_net: payroll.net,
+      monthly_net_words: amountToWords(payroll.net),
       monthly_deductions: payroll.deductions,
       annual_gross: payroll.annual_gross,
       annual_deductions: payroll.annual_deductions,
-      annual_net: payroll.annual_net
+      annual_net: payroll.annual_net,
+      current_date: new Date().toISOString().slice(0, 10)
     };
 
     // ===============================

@@ -6,25 +6,44 @@ const {generateAutoNumber}   = require('../utils/generateAutoNumber');
 
 const uploadRoot = path.resolve(__dirname, '..', '..', 'uploads', 'company-logos');
 
-const toPublicLogoPath = (filename) => (filename ? `/uploads/company-logos/${filename}` : null);
+const toPublicAssetPath = (filename) => (filename ? `/uploads/company-logos/${filename}` : null);
 
-const toAbsoluteLogoPath = (logoPath) => {
-  if (!logoPath) return null;
-  return path.resolve(__dirname, '..', '..', String(logoPath).replace(/^\/+/, ''));
+const getUploadedAsset = (req, fieldName) => {
+  if (req.files?.[fieldName]?.[0]) return req.files[fieldName][0];
+  if (fieldName === 'logo' && req.file) return req.file;
+  return null;
 };
 
-const removeLogoFileIfExists = (logoPath) => {
-  const absolutePath = toAbsoluteLogoPath(logoPath);
+const cleanupUploadedAssets = (req) => {
+  const files = [
+    ...(Object.values(req.files || {}).flat()),
+    ...(req.file ? [req.file] : [])
+  ];
+
+  files.forEach((file) => {
+    if (file?.path && fs.existsSync(file.path)) {
+      fs.unlinkSync(file.path);
+    }
+  });
+};
+
+const toAbsoluteAssetPath = (assetPath) => {
+  if (!assetPath) return null;
+  return path.resolve(__dirname, '..', '..', String(assetPath).replace(/^\/+/, ''));
+};
+
+const removeAssetFileIfExists = (assetPath) => {
+  const absolutePath = toAbsoluteAssetPath(assetPath);
   if (absolutePath && fs.existsSync(absolutePath)) {
     fs.unlinkSync(absolutePath);
   }
 };
 
-const moveUploadedLogoToCanonicalPath = (file, companyId) => {
+const moveUploadedAssetToCanonicalPath = (file, companyId, assetType) => {
   if (!file || !companyId) return null;
 
   const ext = path.extname(file.originalname || file.filename || '').toLowerCase() || path.extname(file.filename || '').toLowerCase();
-  const finalFilename = `company_${companyId}-logo${ext}`;
+  const finalFilename = `company_${companyId}-${assetType}${ext}`;
   const finalAbsolutePath = path.join(uploadRoot, finalFilename);
 
   if (!fs.existsSync(uploadRoot)) {
@@ -35,7 +54,7 @@ const moveUploadedLogoToCanonicalPath = (file, companyId) => {
     fs.renameSync(file.path, finalAbsolutePath);
   }
 
-  return toPublicLogoPath(finalFilename);
+  return toPublicAssetPath(finalFilename);
 };
 
 const sanitizeCompany = (company) => {
@@ -44,6 +63,8 @@ const sanitizeCompany = (company) => {
   return {
     ...safeCompany,
     essl_api_key_configured: Boolean(essl_api_key),
+    logo_url: company.logo || null,
+    signature_url: company.signature || null,
   };
 };
 
@@ -65,7 +86,7 @@ const createCompany = async (req, res) => {
 
   // Prevent creating multiple companies if already has one
   if (companyId) {
-    if (req.file) fs.unlinkSync(req.file.path);
+    cleanupUploadedAssets(req);
     return res.status(403).json({
       success: false,
       message: 'You are already assigned to a company. Only one company per admin allowed.'
@@ -87,9 +108,10 @@ const createCompany = async (req, res) => {
   } = req.body;
 
   let logoPath = null;
+  let signaturePath = null;
 
   if (!company_name?.trim() || !legal_name?.trim() || !gstin_pan?.trim()) {
-    if (req.file) fs.unlinkSync(req.file.path);
+    cleanupUploadedAssets(req);
     return res.status(400).json({
       message: 'Company Name, Legal Name and GSTIN/PAN are required'
     });
@@ -110,6 +132,7 @@ const createCompany = async (req, res) => {
       essl_api_key: essl_api_key?.trim() || null,
       essl_enabled: String(essl_enabled).toLowerCase() === 'true' || essl_enabled === true,
       logo: logoPath,
+      signature: signaturePath,
       created_by: req.user.id
     };
     insertPayload = await withOptionalColumn('companies', insertPayload, 'payroll_start_day', clampPayrollDay(payroll_start_day, 1));
@@ -122,12 +145,22 @@ const createCompany = async (req, res) => {
       company_id: newCompanyId
     });
 
-    if (req.file) {
-      logoPath = moveUploadedLogoToCanonicalPath(req.file, newCompanyId);
-      await knex('companies').where({ id: newCompanyId }).update({
-        logo: logoPath,
-        updated_at: knex.fn.now()
-      });
+    const logoFile = getUploadedAsset(req, 'logo');
+    const signatureFile = getUploadedAsset(req, 'signature');
+    const imageUpdatePayload = { updated_at: knex.fn.now() };
+
+    if (logoFile) {
+      logoPath = moveUploadedAssetToCanonicalPath(logoFile, newCompanyId, 'logo');
+      imageUpdatePayload.logo = logoPath;
+    }
+
+    if (signatureFile) {
+      signaturePath = moveUploadedAssetToCanonicalPath(signatureFile, newCompanyId, 'signature');
+      imageUpdatePayload.signature = signaturePath;
+    }
+
+    if (logoFile || signatureFile) {
+      await knex('companies').where({ id: newCompanyId }).update(imageUpdatePayload);
     }
 
     const newCompany = await knex('companies').where({ id: newCompanyId }).first();
@@ -135,14 +168,11 @@ const createCompany = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Company created successfully! You are now assigned to this company.',
-      company: {
-        ...sanitizeCompany(newCompany),
-        logo_url: logoPath ? `${logoPath}` : null
-      }
+      company: sanitizeCompany(newCompany)
     });
 
   } catch (error) {
-    if (req.file) fs.unlinkSync(req.file.path);
+    cleanupUploadedAssets(req);
     console.error('Create company error:', error);
     res.status(500).json({ message: 'Server error' });
   }
@@ -168,10 +198,7 @@ const getCompany = async (req, res) => {
 
     res.json({
       success: true,
-      company: {
-        ...sanitizeCompany(company),
-        logo_url: company.logo ? `${company.logo}` : null
-      }
+      company: sanitizeCompany(company)
     });
   } catch (error) {
     console.error('Get company error:', error);
@@ -183,7 +210,7 @@ const updateCompany = async (req, res) => {
   const companyId = req.user.company_id;
 
   if (!companyId) {
-    if (req.file) fs.unlinkSync(req.file.path);
+    cleanupUploadedAssets(req);
     return res.status(400).json({ message: 'No company assigned to update' });
   }
 
@@ -202,20 +229,32 @@ const updateCompany = async (req, res) => {
   } = req.body;
 
   let logoPath = null;
+  let signaturePath = null;
 
   try {
     const company = await knex('companies').where({ id: companyId }).first();
     if (!company) {
-      if (req.file) fs.unlinkSync(req.file.path);
+      cleanupUploadedAssets(req);
       return res.status(404).json({ message: 'Company not found' });
     }
 
-    if (req.file) {
-      logoPath = moveUploadedLogoToCanonicalPath(req.file, companyId);
+    const logoFile = getUploadedAsset(req, 'logo');
+    const signatureFile = getUploadedAsset(req, 'signature');
+
+    if (logoFile) {
+      logoPath = moveUploadedAssetToCanonicalPath(logoFile, companyId, 'logo');
     }
 
-    if (req.file && company.logo && company.logo !== logoPath) {
-      removeLogoFileIfExists(company.logo);
+    if (signatureFile) {
+      signaturePath = moveUploadedAssetToCanonicalPath(signatureFile, companyId, 'signature');
+    }
+
+    if (logoFile && company.logo && company.logo !== logoPath) {
+      removeAssetFileIfExists(company.logo);
+    }
+
+    if (signatureFile && company.signature && company.signature !== signaturePath) {
+      removeAssetFileIfExists(company.signature);
     }
 
     let updatePayload = {
@@ -231,6 +270,7 @@ const updateCompany = async (req, res) => {
         ? String(esslEnabled).toLowerCase() === 'true' || esslEnabled === true
         : company.essl_enabled,
       logo: logoPath || company.logo,
+      signature: signaturePath || company.signature,
       updated_at: knex.fn.now()
     };
     updatePayload = await withOptionalColumn('companies', updatePayload, 'payroll_start_day', clampPayrollDay(payrollStartDay, company.payroll_start_day || 1));
@@ -243,14 +283,11 @@ const updateCompany = async (req, res) => {
     res.json({
       success: true,
       message: 'Company updated successfully!',
-      company: {
-        ...sanitizeCompany(updated),
-        logo_url: updated.logo || null
-      }
+      company: sanitizeCompany(updated)
     });
 
   } catch (error) {
-    if (req.file) fs.unlinkSync(req.file.path);
+    cleanupUploadedAssets(req);
     console.error('Update company error:', error);
     res.status(500).json({ message: 'Server error' });
   }
@@ -274,7 +311,11 @@ const deleteCompany = async (req, res) => {
 
     // Delete logo
     if (company.logo) {
-      removeLogoFileIfExists(company.logo);
+      removeAssetFileIfExists(company.logo);
+    }
+
+    if (company.signature) {
+      removeAssetFileIfExists(company.signature);
     }
 
     // Optional: Delete all company data (cascade delete via foreign keys)
