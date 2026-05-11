@@ -1,4 +1,5 @@
 // src/controllers/leaveController.js
+const fs = require('fs');
 const knex = require('../db/db');
 const upload = require('../middleware/leaveAttachmentUpload');
 const { hasAnyRole } = require('../middleware/authMiddleware');
@@ -29,6 +30,26 @@ const parseCsv = (value) =>
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean);
+
+const parseLeaveDate = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return null;
+  const [year, month, day] = String(value).split('-').map(Number);
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  parsed.setHours(0, 0, 0, 0);
+  return parsed;
+};
+
+const normalizeHalfDaySession = (value) => {
+  const session = String(value || '').toLowerCase().trim();
+  return ['first_half', 'second_half'].includes(session) ? session : null;
+};
 
 const getSelectedApproverEmails = async (companyId, body = {}) => {
   const selectedEntries = parseCsv(body.reporting_manager_id);
@@ -341,18 +362,48 @@ const applyLeave = async (req, res) => {
 
       const employeeName = `${employee.first_name} ${employee.last_name || ''}`.trim();
 
-      const { leave_type_id, from_date, to_date, reason } = req.body;
+      let { leave_type_id } = req.body;
+      const { from_date, to_date, reason } = req.body;
+      const leaveDuration = String(req.body.leave_duration || req.body.leaveDuration || 'full_day').toLowerCase().trim();
+      const isHalfDay = leaveDuration === 'half_day';
+      const halfDaySession = isHalfDay
+        ? normalizeHalfDaySession(req.body.half_day_session || req.body.halfDaySession)
+        : null;
 
       if (!leave_type_id || !from_date || !to_date || !reason) {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(400).json({ message: 'All fields required' });
       }
 
+      const parsedFromDate = parseLeaveDate(from_date);
+      const parsedToDate = parseLeaveDate(to_date);
+
+      if (!parsedFromDate || !parsedToDate) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: 'Please provide valid leave dates' });
+      }
+
+      if (parsedToDate < parsedFromDate) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: 'To date cannot be earlier than from date' });
+      }
+
+      if (isHalfDay && !halfDaySession) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: 'Please select first half or second half for half-day leave' });
+      }
+
+      if (isHalfDay && from_date !== to_date) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: 'Half-day leave must be for a single date' });
+      }
+
       // ===============================
       // CALCULATE LEAVE DAYS
       // ===============================
-      const days =
-        Math.ceil((new Date(to_date) - new Date(from_date)) / (1000 * 60 * 60 * 24)) + 1;
+      const days = isHalfDay
+        ? 0.5
+        : Math.floor((parsedToDate - parsedFromDate) / (1000 * 60 * 60 * 24)) + 1;
 
       // ===============================
       // CHECK LEAVE BALANCE / PROBATION (LOP) HANDLING
@@ -363,6 +414,11 @@ const applyLeave = async (req, res) => {
       let leaveType = await knex('leave_types')
         .where({ id: leave_type_id, company_id: companyId })
         .first();
+
+      if (!leaveType) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: 'Invalid leave type' });
+      }
 
       // If employee is on probation, treat leave as unpaid (loss of pay)
       if (employee.employment_type === 'Probation') {
@@ -422,7 +478,7 @@ const applyLeave = async (req, res) => {
           })
           .first();
 
-        if (!balance || balance.available < days) {
+        if (!balance || Number(balance.available) < days) {
           if (req.file) fs.unlinkSync(req.file.path);
           return res.status(400).json({ message: 'Insufficient leave balance' });
         }
@@ -472,6 +528,7 @@ const applyLeave = async (req, res) => {
         from_date,
         to_date,
         days,
+        half_day_session: halfDaySession,
         reason,
         attachment_path: attachmentPath,
         status: 'pending'
@@ -837,14 +894,15 @@ const updateLeaveStatus = async (req, res) => {
         const total = Number(balance.total ?? balance.opening_balance) || 0;
         const availed = Number(balance.availed) || 0;
 
-        const newAvailed = availed + application.days;
+        const applicationDays = Number(application.days) || 0;
+        const newAvailed = availed + applicationDays;
         const newAvailable = total - newAvailed;
 
         if (newAvailable < 0) {
           return res.status(400).json({
             message: 'Insufficient leave balance',
             leave_type_id: application.leave_type_id,
-            requested_days: application.days,
+            requested_days: applicationDays,
             available_days: total - availed
           });
         }

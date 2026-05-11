@@ -1,10 +1,10 @@
 // src/controllers/attendanceController.js
-const knex = require('../db/db');
-const { getIo } = require('../socket');
-const { hasAnyRole } = require('../middleware/authMiddleware');
-const { doCheckIn, doCheckOut } = require('../services/attendance.service');
-const { getEmployeeShift } = require('../utils/shift.util');
-const { reverseGeocodeGoogle } = require('../services/googleGeocode');
+const knex = require("../db/db");
+const { getIo } = require("../socket");
+const { hasAnyRole } = require("../middleware/authMiddleware");
+const { doCheckIn, doCheckOut } = require("../services/attendance.service");
+const { getEmployeeShift } = require("../utils/shift.util");
+const { reverseGeocodeGoogle } = require("../services/googleGeocode");
 
 // Resolve the real employees.id for the logged-in user.
 // - employee login: req.user.id already points to employees.id
@@ -12,33 +12,35 @@ const { reverseGeocodeGoogle } = require('../services/googleGeocode');
 const resolveAttendanceEmployeeId = async (req) => {
   const companyId = Number(req.user?.company_id);
   if (!companyId) {
-    throw new Error('Company not assigned to user');
+    throw new Error("Company not assigned to user");
   }
 
   // Employee token path (already employees.id)
-  if (req.user?.type === 'employee') {
-    const employee = await knex('employees')
+  if (req.user?.type === "employee") {
+    const employee = await knex("employees")
       .where({ id: Number(req.user.id), company_id: companyId })
       .first();
     if (employee) return Number(employee.id);
   }
 
   // Admin token path (users.id -> employees.id by email)
-  if (req.user?.type === 'admin' && req.user?.email) {
-    const employee = await knex('employees')
-      .where('company_id', companyId)
-      .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+  if (req.user?.type === "admin" && req.user?.email) {
+    const employee = await knex("employees")
+      .where("company_id", companyId)
+      .whereRaw("LOWER(email) = ?", [
+        String(req.user.email).toLowerCase().trim(),
+      ])
       .first();
     if (employee) return Number(employee.id);
   }
 
   // Last fallback: try req.user.id directly as employee id
-  const fallbackEmployee = await knex('employees')
+  const fallbackEmployee = await knex("employees")
     .where({ id: Number(req.user?.id), company_id: companyId })
     .first();
   if (fallbackEmployee) return Number(fallbackEmployee.id);
 
-  throw new Error('Employee profile not found for this account');
+  throw new Error("Employee profile not found for this account");
 };
 
 const getDayWindow = (date = new Date()) => {
@@ -52,7 +54,7 @@ const getDayWindow = (date = new Date()) => {
 };
 
 const normalizeRequestedTime = (value) => {
-  const normalized = String(value || '').trim();
+  const normalized = String(value || "").trim();
   if (!normalized) return null;
   const match = normalized.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
   if (!match) return null;
@@ -63,7 +65,7 @@ const normalizeRequestedTime = (value) => {
 
   if (hours > 23 || minutes > 59 || seconds > 59) return null;
 
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 };
 
 const buildDateTime = (date, time) => `${date} ${time}`;
@@ -78,8 +80,8 @@ const formatDateOnly = (value) => {
   if (Number.isNaN(parsed.getTime())) return null;
 
   const year = parsed.getFullYear();
-  const month = String(parsed.getMonth() + 1).padStart(2, '0');
-  const day = String(parsed.getDate()).padStart(2, '0');
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 };
 
@@ -87,7 +89,10 @@ const calculateWorkedHours = (date, checkInTime, checkOutTime) => {
   const checkInDate = new Date(`${date}T${checkInTime}`);
   const checkOutDate = new Date(`${date}T${checkOutTime}`);
 
-  if (Number.isNaN(checkInDate.getTime()) || Number.isNaN(checkOutDate.getTime())) {
+  if (
+    Number.isNaN(checkInDate.getTime()) ||
+    Number.isNaN(checkOutDate.getTime())
+  ) {
     return null;
   }
 
@@ -100,9 +105,11 @@ const calculateWorkedHours = (date, checkInTime, checkOutTime) => {
 
 const buildAttendanceOverrideUpdate = ({ override, date }) => {
   const requestedCheckIn = normalizeRequestedTime(override.requested_check_in);
-  const requestedCheckOut = normalizeRequestedTime(override.requested_check_out);
+  const requestedCheckOut = normalizeRequestedTime(
+    override.requested_check_out,
+  );
   const updatePayload = {
-    status: override.overridden_status
+    status: override.overridden_status,
   };
 
   if (requestedCheckIn) {
@@ -114,7 +121,11 @@ const buildAttendanceOverrideUpdate = ({ override, date }) => {
   }
 
   if (requestedCheckIn && requestedCheckOut) {
-    const workedHours = calculateWorkedHours(date, requestedCheckIn, requestedCheckOut);
+    const workedHours = calculateWorkedHours(
+      date,
+      requestedCheckIn,
+      requestedCheckOut,
+    );
     if (workedHours !== null) {
       updatePayload.hours_worked = workedHours;
       updatePayload.overtime_hours = 0;
@@ -133,7 +144,7 @@ const getAttendanceDate = (attendance, fallbackDate) => {
 
 const getAttendanceDateById = async (companyId, attendanceId) => {
   if (!attendanceId) return null;
-  const row = await knex('attendance')
+  const row = await knex("attendance")
     .where({ id: attendanceId, company_id: companyId })
     .select(knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"))
     .first();
@@ -148,33 +159,35 @@ const getAttendanceStatus = async (req, res) => {
 
     const { start: todayStart, end: tomorrowStart } = getDayWindow();
 
-    const activeAttendance = await knex('attendance')
-      .where('employee_id', employeeId)
-      .where('company_id', companyId)
-      .where('check_in', '>=', todayStart)
-      .where('check_in', '<', tomorrowStart)
-      .whereNull('check_out')
+    const activeAttendance = await knex("attendance")
+      .where("employee_id", employeeId)
+      .where("company_id", companyId)
+      .where("check_in", ">=", todayStart)
+      .where("check_in", "<", tomorrowStart)
+      .whereNull("check_out")
       .first();
 
-    const todayAttendance = await knex('attendance')
-      .where('employee_id', employeeId)
-      .where('company_id', companyId)
-      .where('check_in', '>=', todayStart)
-      .where('check_in', '<', tomorrowStart)
-      .orderBy('check_in', 'desc')
+    const todayAttendance = await knex("attendance")
+      .where("employee_id", employeeId)
+      .where("company_id", companyId)
+      .where("check_in", ">=", todayStart)
+      .where("check_in", "<", tomorrowStart)
+      .orderBy("check_in", "desc")
       .limit(2);
 
     res.json({
       success: true,
       isCheckedIn: !!activeAttendance,
-      hasCheckedInToday: todayAttendance.some((record) => Boolean(record.check_in)),
-      todayRecords: todayAttendance || []
+      hasCheckedInToday: todayAttendance.some((record) =>
+        Boolean(record.check_in),
+      ),
+      todayRecords: todayAttendance || [],
     });
   } catch (error) {
-    console.error('Error fetching attendance status:', error);
+    console.error("Error fetching attendance status:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch attendance status'
+      message: "Failed to fetch attendance status",
     });
   }
 };
@@ -386,8 +399,6 @@ const getAttendanceStatus = async (req, res) => {
 //   }
 // };
 
-
-
 const checkIn = async (req, res) => {
   try {
     // 1️⃣ Resolve employeeId + companyId from authenticated user context
@@ -398,7 +409,7 @@ const checkIn = async (req, res) => {
     if (!employeeId || !companyId) {
       return res.status(400).json({
         success: false,
-        message: "Missing or invalid employeeId or companyId"
+        message: "Missing or invalid employeeId or companyId",
       });
     }
 
@@ -408,7 +419,10 @@ const checkIn = async (req, res) => {
     // (e.g. admin users without shift assignment).
     const shift = await getEmployeeShift(employeeId, companyId);
     if (!shift) {
-      console.warn("Check-in without assigned shift:", { employeeId, companyId });
+      console.warn("Check-in without assigned shift:", {
+        employeeId,
+        companyId,
+      });
     }
 
     // 4️⃣ Insert attendance record
@@ -417,25 +431,23 @@ const checkIn = async (req, res) => {
       companyId: companyId,
       imageData: req.file?.path || null,
       location: req.body.location ? JSON.parse(req.body.location) : null,
-      deviceInfo: 'Web',
+      deviceInfo: "Web",
       shiftId: shift?.id || null,
-      shiftType: 'regular'  // Use string that will be converted to numeric
+      shiftType: "regular", // Use string that will be converted to numeric
     });
 
     // 5️⃣ Return success
     res.json({ success: true, attendance });
-
   } catch (err) {
     console.error("Check-in error:", err);
-    const isDuplicateCheckIn = err.message === 'Already checked in today';
+    const isDuplicateCheckIn = err.message === "Already checked in today";
     res.status(isDuplicateCheckIn ? 400 : 500).json({
       success: false,
       message: isDuplicateCheckIn ? err.message : "Failed to check in",
-      error: err.message
+      error: err.message,
     });
   }
 };
-
 
 const checkOut = async (req, res) => {
   try {
@@ -445,18 +457,14 @@ const checkOut = async (req, res) => {
       companyId: req.user.company_id,
       imageData: req.file?.path || null,
       location: req.body.location ? JSON.parse(req.body.location) : null,
-      deviceInfo: 'Web'
+      deviceInfo: "Web",
     });
 
-    res.json({ success: true, message: 'Checked out successfully' });
+    res.json({ success: true, message: "Checked out successfully" });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
 };
-
-
-
-
 
 // const getAttendanceLogs = async (req, res) => {
 //   const companyId = req.user.company_id;
@@ -555,14 +563,12 @@ const checkOut = async (req, res) => {
 //   }
 // };
 
-
-
 // Create attendance override (company scoped)
 
 const getAttendanceLogs = async (req, res) => {
   const companyId = req.user.company_id;
   if (!companyId) {
-    return res.status(400).json({ message: 'Company not assigned to user' });
+    return res.status(400).json({ message: "Company not assigned to user" });
   }
 
   const {
@@ -571,7 +577,7 @@ const getAttendanceLogs = async (req, res) => {
     endDate,
     status,
     page = 1,
-    limit = 10
+    limit = 10,
   } = req.query;
 
   const pageNum = parseInt(page, 10);
@@ -584,66 +590,74 @@ const getAttendanceLogs = async (req, res) => {
     // ===============================
     let loggedInUser = null;
 
-    const hasCompanyWideAccess = hasAnyRole(req.user, ['admin', 'hr', 'finance', 'ceo', 'superadmin']);
+    const hasCompanyWideAccess = hasAnyRole(req.user, [
+      "admin",
+      "hr",
+      "finance",
+      "ceo",
+      "superadmin",
+    ]);
     if (!hasCompanyWideAccess) {
-      loggedInUser = await knex('employees')
+      loggedInUser = await knex("employees")
         .where({ id: req.user.id, company_id: companyId })
         .first();
 
       if (!loggedInUser) {
-        return res.status(403).json({ message: 'User not found' });
+        return res.status(403).json({ message: "User not found" });
       }
     }
 
     // ===============================
     // Base query
     // ===============================
-    let baseQuery = knex('attendance as a')
-      .leftJoin('employees as e', 'a.employee_id', 'e.id')
-      .where('a.company_id', companyId);
+    let baseQuery = knex("attendance as a")
+      .leftJoin("employees as e", "a.employee_id", "e.id")
+      .where("a.company_id", companyId);
 
     // ===============================
     // Access Control
     // ===============================
     if (hasCompanyWideAccess) {
       // Admin → all employees, no restriction
-    } else if (hasAnyRole(loggedInUser, ['manager'])) {
+    } else if (hasAnyRole(loggedInUser, ["manager"])) {
       // Manager → self + same department
       baseQuery.where(function () {
-        this.where('e.department_id', loggedInUser.department_id)
-          .orWhere('a.employee_id', loggedInUser.id);
+        this.where("e.department_id", loggedInUser.department_id).orWhere(
+          "a.employee_id",
+          loggedInUser.id,
+        );
       });
     } else {
       // Employee / HR / Finance → only self
-      baseQuery.where('a.employee_id', loggedInUser.id);
+      baseQuery.where("a.employee_id", loggedInUser.id);
     }
 
     // ===============================
     // Filters
     // ===============================
-    if (employeeId && (hasCompanyWideAccess || hasAnyRole(loggedInUser, ['manager']))) {
-      baseQuery.where('a.employee_id', employeeId);
+    if (
+      employeeId &&
+      (hasCompanyWideAccess || hasAnyRole(loggedInUser, ["manager"]))
+    ) {
+      baseQuery.where("a.employee_id", employeeId);
     }
 
     if (startDate) {
-      baseQuery.whereRaw('DATE(a.check_in) >= ?', [startDate]);
+      baseQuery.whereRaw("DATE(a.check_in) >= ?", [startDate]);
     }
 
     if (endDate) {
-      baseQuery.whereRaw('DATE(a.check_in) <= ?', [endDate]);
+      baseQuery.whereRaw("DATE(a.check_in) <= ?", [endDate]);
     }
 
     if (status) {
-      baseQuery.where('a.status', status);
+      baseQuery.where("a.status", status);
     }
 
     // ===============================
     // Count query
     // ===============================
-    const countResult = await baseQuery
-      .clone()
-      .count('a.id as count')
-      .first();
+    const countResult = await baseQuery.clone().count("a.id as count").first();
 
     const total = parseInt(countResult.count, 10) || 0;
 
@@ -653,15 +667,15 @@ const getAttendanceLogs = async (req, res) => {
     const data = await baseQuery
       .clone()
       .select(
-        'a.*',
-        'e.first_name',
-        'e.last_name',
-        'e.employee_id as employee_code',
-        'a.hours_worked',
-        'a.overtime_hours',
-        knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as attendance_date")
+        "a.*",
+        "e.first_name",
+        "e.last_name",
+        "e.employee_id as employee_code",
+        "a.hours_worked",
+        "a.overtime_hours",
+        knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as attendance_date"),
       )
-      .orderBy('a.check_in', 'desc')
+      .orderBy("a.check_in", "desc")
       .limit(limitNum)
       .offset(offset);
 
@@ -674,14 +688,13 @@ const getAttendanceLogs = async (req, res) => {
       pagination: {
         page: pageNum,
         limit: limitNum,
-        totalPages: Math.ceil(total / limitNum)
+        totalPages: Math.ceil(total / limitNum),
       },
-      data
+      data,
     });
-
   } catch (error) {
-    console.error('Get attendance logs error:', error);
-    res.status(500).json({ message: 'Error fetching attendance logs' });
+    console.error("Get attendance logs error:", error);
+    res.status(500).json({ message: "Error fetching attendance logs" });
   }
 };
 
@@ -689,23 +702,27 @@ const getAttendanceLogs = async (req, res) => {
 const getAttendanceByEmployeeAndMonth = async (req, res) => {
   const companyId = req.user.company_id;
   if (!companyId) {
-    return res.status(400).json({ message: 'Company not assigned to user' });
+    return res.status(400).json({ message: "Company not assigned to user" });
   }
 
   const { employeeId, month } = req.params;
   if (!employeeId || !month) {
-    return res.status(400).json({ message: 'Employee and month are required' });
+    return res.status(400).json({ message: "Employee and month are required" });
   }
 
   const match = String(month).match(/^(\d{4})-(\d{2})$/);
   if (!match) {
-    return res.status(400).json({ message: 'Invalid month format. Expected YYYY-MM' });
+    return res
+      .status(400)
+      .json({ message: "Invalid month format. Expected YYYY-MM" });
   }
 
   const year = Number(match[1]);
   const monthNum = Number(match[2]);
   if (monthNum < 1 || monthNum > 12) {
-    return res.status(400).json({ message: 'Invalid month value. Expected 01-12' });
+    return res
+      .status(400)
+      .json({ message: "Invalid month value. Expected 01-12" });
   }
 
   const startDate = new Date(year, monthNum - 1, 1, 0, 0, 0, 0);
@@ -713,62 +730,69 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
 
   try {
     // Resolve employee by employee_id (code) first; fall back to numeric DB id.
-    let employee = await knex('employees')
+    let employee = await knex("employees")
       .where({ employee_id: employeeId, company_id: companyId })
       .first();
 
     if (!employee && /^\d+$/.test(String(employeeId))) {
-      employee = await knex('employees')
+      employee = await knex("employees")
         .where({ id: Number(employeeId), company_id: companyId })
         .first();
     }
 
     if (!employee) {
-      return res.status(404).json({ message: 'Employee not found or access denied' });
+      return res
+        .status(404)
+        .json({ message: "Employee not found or access denied" });
     }
 
     // 🔒 Access control: admin/hr/finance can view any; manager can view dept+self; others self only.
-    if (!hasAnyRole(req.user, ['admin', 'hr', 'finance', 'ceo', 'superadmin'])) {
-      const loggedInEmployee = await knex('employees')
+    if (
+      !hasAnyRole(req.user, ["admin", "hr", "finance", "ceo", "superadmin"])
+    ) {
+      const loggedInEmployee = await knex("employees")
         .where({ id: req.user.id, company_id: companyId })
         .first();
 
       if (!loggedInEmployee) {
-        return res.status(403).json({ message: 'User not found' });
+        return res.status(403).json({ message: "User not found" });
       }
 
-      if (hasAnyRole(loggedInEmployee, ['manager'])) {
-        const sameDepartment = employee.department_id && employee.department_id === loggedInEmployee.department_id;
+      if (hasAnyRole(loggedInEmployee, ["manager"])) {
+        const sameDepartment =
+          employee.department_id &&
+          employee.department_id === loggedInEmployee.department_id;
         const isSelf = employee.id === loggedInEmployee.id;
         if (!sameDepartment && !isSelf) {
-          return res.status(403).json({ message: 'Access denied' });
+          return res.status(403).json({ message: "Access denied" });
         }
       } else if (employee.id !== loggedInEmployee.id) {
-        return res.status(403).json({ message: 'Access denied' });
+        return res.status(403).json({ message: "Access denied" });
       }
     }
 
-    const attendance = await knex('attendance')
+    const attendance = await knex("attendance")
       .where({ employee_id: employee.id, company_id: companyId })
-      .whereBetween('check_in', [startDate.toISOString(), endDate.toISOString()])
-      .orderBy('check_in', 'asc');
+      .whereBetween("check_in", [
+        startDate.toISOString(),
+        endDate.toISOString(),
+      ])
+      .orderBy("check_in", "asc");
 
     return res.json({
       success: true,
-      attendance
+      attendance,
     });
   } catch (error) {
-    console.error('Get monthly attendance error:', error);
-    return res.status(500).json({ message: 'Error fetching attendance' });
+    console.error("Get monthly attendance error:", error);
+    return res.status(500).json({ message: "Error fetching attendance" });
   }
 };
-
-
 
 const createOverride = async (req, res) => {
   const companyId = req.user.company_id;
   if (!companyId) {
-    return res.status(400).json({ message: 'Company not assigned to user' });
+    return res.status(400).json({ message: "Company not assigned to user" });
   }
 
   const {
@@ -780,47 +804,56 @@ const createOverride = async (req, res) => {
     reason,
     requestedCheckIn,
     requestedCheckOut,
-    leaveMode
+    leaveMode,
   } = req.body;
   const userId = req.user.id;
 
   try {
     if (!reason || !String(reason).trim()) {
-      return res.status(400).json({ message: 'Reason is required' });
+      return res.status(400).json({ message: "Reason is required" });
     }
 
     if (!employeeId || !String(employeeId).trim()) {
-      return res.status(400).json({ message: 'Employee ID is required' });
+      return res.status(400).json({ message: "Employee ID is required" });
     }
 
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
-      return res.status(400).json({ message: 'Valid date is required (YYYY-MM-DD)' });
+      return res
+        .status(400)
+        .json({ message: "Valid date is required (YYYY-MM-DD)" });
     }
 
     const normalizedRequestedCheckIn = normalizeRequestedTime(requestedCheckIn);
-    const normalizedRequestedCheckOut = normalizeRequestedTime(requestedCheckOut);
-    const normalizedLeaveMode = String(leaveMode || 'none').toLowerCase();
+    const normalizedRequestedCheckOut =
+      normalizeRequestedTime(requestedCheckOut);
+    const normalizedLeaveMode = String(leaveMode || "none").toLowerCase();
     const isLeaveOverride =
-      ['paid', 'half'].includes(normalizedLeaveMode) ||
-      /^\[(Paid Leave|Half Day Leave)\s+-\s+/i.test(String(reason || '').trim());
-    const requiresTimeUpdate = ['present', 'half', 'half_day'].includes(
-      String(overriddenStatus || '').toLowerCase()
-    ) && !isLeaveOverride;
+      ["paid", "half"].includes(normalizedLeaveMode) ||
+      /^\[(Paid Leave|Half Day Leave)\s+-\s+/i.test(
+        String(reason || "").trim(),
+      );
+    const requiresTimeUpdate =
+      ["present", "half", "half_day"].includes(
+        String(overriddenStatus || "").toLowerCase(),
+      ) && !isLeaveOverride;
 
-    if (requiresTimeUpdate && (!normalizedRequestedCheckIn || !normalizedRequestedCheckOut)) {
+    if (
+      requiresTimeUpdate &&
+      (!normalizedRequestedCheckIn || !normalizedRequestedCheckOut)
+    ) {
       return res.status(400).json({
-        message: 'Valid requested check-in and check-out times are required'
+        message: "Valid requested check-in and check-out times are required",
       });
     }
 
     let attendance = null;
     const normalizedEmployeeId = String(employeeId).trim();
-    const employeeQuery = knex('employees')
+    const employeeQuery = knex("employees")
       .where({ company_id: companyId })
       .andWhere((qb) => {
-        qb.whereRaw('LOWER(employee_id) = LOWER(?)', [normalizedEmployeeId]);
+        qb.whereRaw("LOWER(employee_id) = LOWER(?)", [normalizedEmployeeId]);
         if (!Number.isNaN(Number(normalizedEmployeeId))) {
-          qb.orWhere('id', Number(normalizedEmployeeId));
+          qb.orWhere("id", Number(normalizedEmployeeId));
         }
       })
       .first();
@@ -828,16 +861,24 @@ const createOverride = async (req, res) => {
     const employee = await employeeQuery;
 
     if (!employee) {
-      return res.status(404).json({ message: 'Employee not found in this company' });
+      return res
+        .status(404)
+        .json({ message: "Employee not found in this company" });
     }
 
     // Backward compatible path: use attendanceId when available
     if (attendanceId) {
-      attendance = await knex('attendance')
-        .where({ id: attendanceId, company_id: companyId, employee_id: employee.id })
+      attendance = await knex("attendance")
+        .where({
+          id: attendanceId,
+          company_id: companyId,
+          employee_id: employee.id,
+        })
         .first();
 
-      const attendanceIdDate = attendance ? await getAttendanceDateById(companyId, attendance.id) : null;
+      const attendanceIdDate = attendance
+        ? await getAttendanceDateById(companyId, attendance.id)
+        : null;
       if (attendanceIdDate && attendanceIdDate !== date) {
         attendance = null;
       }
@@ -845,21 +886,21 @@ const createOverride = async (req, res) => {
 
     // Resolve attendance by employee + selected date
     if (!attendance) {
-      attendance = await knex('attendance')
+      attendance = await knex("attendance")
         .where({
           company_id: companyId,
-          employee_id: employee.id
+          employee_id: employee.id,
         })
-        .whereRaw('DATE(check_in) = ?', [date])
+        .whereRaw("DATE(check_in) = ?", [date])
         .orderByRaw("CASE WHEN device_info = 'Override' THEN 1 ELSE 0 END ASC")
-        .orderBy('check_in', 'desc')
+        .orderBy("check_in", "desc")
         .first();
     }
 
     // If no row exists for selected date, create a placeholder attendance row for that date.
     if (!attendance) {
-      const seedStatus = (originalStatus || 'absent').toLowerCase();
-      const insertedAttendance = await knex('attendance').insert({
+      const seedStatus = (originalStatus || "absent").toLowerCase();
+      const insertedAttendance = await knex("attendance").insert({
         company_id: companyId,
         employee_id: employee.id,
         check_in: `${date} 00:00:00`,
@@ -867,21 +908,24 @@ const createOverride = async (req, res) => {
         hours_worked: 0,
         overtime_hours: 0,
         status: seedStatus,
-        device_info: 'Override',
-        auto_flag: 0
+        device_info: "Override",
+        auto_flag: 0,
       });
 
-      const insertedAttendanceRaw = Array.isArray(insertedAttendance) ? insertedAttendance[0] : insertedAttendance;
-      const insertedAttendanceId = typeof insertedAttendanceRaw === 'object'
-        ? insertedAttendanceRaw.id
-        : insertedAttendanceRaw;
-      attendance = await knex('attendance')
+      const insertedAttendanceRaw = Array.isArray(insertedAttendance)
+        ? insertedAttendance[0]
+        : insertedAttendance;
+      const insertedAttendanceId =
+        typeof insertedAttendanceRaw === "object"
+          ? insertedAttendanceRaw.id
+          : insertedAttendanceRaw;
+      attendance = await knex("attendance")
         .where({ id: insertedAttendanceId, company_id: companyId })
         .first();
     }
 
-    const isAutoApproved = hasAnyRole(req.user, ['admin', 'ceo', 'superadmin']);
-    const insertedOverride = await knex('attendance_overrides').insert({
+    const isAutoApproved = hasAnyRole(req.user, ["admin", "ceo", "superadmin"]);
+    const insertedOverride = await knex("attendance_overrides").insert({
       company_id: companyId,
       attendance_id: attendance.id,
       employee_id: attendance.employee_id,
@@ -892,28 +936,29 @@ const createOverride = async (req, res) => {
       requested_check_out: normalizedRequestedCheckOut,
       requested_by: userId,
       approved_by: isAutoApproved ? userId : null,
-      status: isAutoApproved ? 'approved' : 'pending'
+      status: isAutoApproved ? "approved" : "pending",
     });
 
-    const insertedOverrideRaw = Array.isArray(insertedOverride) ? insertedOverride[0] : insertedOverride;
-    const insertedOverrideId = typeof insertedOverrideRaw === 'object'
-      ? insertedOverrideRaw.id
-      : insertedOverrideRaw;
-    const override = await knex('attendance_overrides')
+    const insertedOverrideRaw = Array.isArray(insertedOverride)
+      ? insertedOverride[0]
+      : insertedOverride;
+    const insertedOverrideId =
+      typeof insertedOverrideRaw === "object"
+        ? insertedOverrideRaw.id
+        : insertedOverrideRaw;
+    const override = await knex("attendance_overrides")
       .where({ id: insertedOverrideId, company_id: companyId })
       .first();
 
     // If admin approved immediately
-    if (override && override.status === 'approved') {
+    if (override && override.status === "approved") {
       const attendanceDate = getAttendanceDate(attendance, date);
       const updatePayload = buildAttendanceOverrideUpdate({
         override,
-        date: attendanceDate
+        date: attendanceDate,
       });
 
-      await knex('attendance')
-        .where('id', attendance.id)
-        .update(updatePayload);
+      await knex("attendance").where("id", attendance.id).update(updatePayload);
     }
 
     // await logAudit('create_override', 'attendance_overrides', override.id, userId, {
@@ -923,11 +968,11 @@ const createOverride = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      override
+      override,
     });
   } catch (error) {
-    console.error('Create override error:', error);
-    res.status(500).json({ message: 'Error creating attendance override' });
+    console.error("Create override error:", error);
+    res.status(500).json({ message: "Error creating attendance override" });
   }
 };
 
@@ -935,7 +980,7 @@ const createOverride = async (req, res) => {
 const processOverride = async (req, res) => {
   const companyId = req.user.company_id;
   if (!companyId) {
-    return res.status(400).json({ message: 'Company not assigned to user' });
+    return res.status(400).json({ message: "Company not assigned to user" });
   }
 
   const { overrideId } = req.params;
@@ -945,57 +990,70 @@ const processOverride = async (req, res) => {
 
   try {
     // Business rule: only admin/ceo/superadmin can approve or reject overrides.
-    if (!hasAnyRole(req.user, ['admin', 'ceo', 'superadmin'])) {
-      return res.status(403).json({ message: 'Not authorized to process overrides' });
+    if (!hasAnyRole(req.user, ["admin", "ceo", "superadmin"])) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to process overrides" });
     }
 
-    if (!['approved', 'rejected'].includes(String(status || '').toLowerCase())) {
-      return res.status(400).json({ message: 'Invalid status. Expected approved or rejected' });
+    if (
+      !["approved", "rejected"].includes(String(status || "").toLowerCase())
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Invalid status. Expected approved or rejected" });
     }
 
-    const override = await knex('attendance_overrides')
+    const override = await knex("attendance_overrides")
       .where({ id: overrideId, company_id: companyId })
       .first();
 
     if (!override) {
-      return res.status(404).json({ message: 'Override not found or access denied' });
+      return res
+        .status(404)
+        .json({ message: "Override not found or access denied" });
     }
 
-    if (String(override.status || '').toLowerCase() !== 'pending') {
-      return res.status(400).json({ message: 'Only pending overrides can be processed' });
+    if (String(override.status || "").toLowerCase() !== "pending") {
+      return res
+        .status(400)
+        .json({ message: "Only pending overrides can be processed" });
     }
 
-    await knex('attendance_overrides')
-      .where('id', overrideId)
-      .update({
-        status,
-        approved_by: userId,
-        reviewed_at: new Date(),
-        comment
-      });
+    await knex("attendance_overrides").where("id", overrideId).update({
+      status,
+      approved_by: userId,
+      reviewed_at: new Date(),
+      comment,
+    });
 
-    const updatedOverride = await knex('attendance_overrides')
+    const updatedOverride = await knex("attendance_overrides")
       .where({ id: overrideId, company_id: companyId })
       .first();
 
-    if (status === 'approved') {
-      const attendance = await knex('attendance')
+    if (status === "approved") {
+      const attendance = await knex("attendance")
         .where({ id: override.attendance_id, company_id: companyId })
-        .select('*', knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"))
+        .select(
+          "*",
+          knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"),
+        )
         .first();
 
       if (!attendance) {
-        return res.status(404).json({ message: 'Attendance record not found for this override' });
+        return res
+          .status(404)
+          .json({ message: "Attendance record not found for this override" });
       }
 
       const attendanceDate = getAttendanceDate(attendance);
       const updatePayload = buildAttendanceOverrideUpdate({
         override,
-        date: attendanceDate
+        date: attendanceDate,
       });
 
-      await knex('attendance')
-        .where('id', override.attendance_id)
+      await knex("attendance")
+        .where("id", override.attendance_id)
         .update(updatePayload);
     }
 
@@ -1003,11 +1061,11 @@ const processOverride = async (req, res) => {
 
     res.json({
       success: true,
-      override: updatedOverride
+      override: updatedOverride,
     });
   } catch (error) {
-    console.error('Process override error:', error);
-    res.status(500).json({ message: 'Error processing override' });
+    console.error("Process override error:", error);
+    res.status(500).json({ message: "Error processing override" });
   }
 };
 
@@ -1015,59 +1073,72 @@ const processOverride = async (req, res) => {
 const getEmployeeSummary = async (req, res) => {
   const companyId = req.user.company_id;
   if (!companyId) {
-    return res.status(400).json({ message: 'Company not assigned to user' });
+    return res.status(400).json({ message: "Company not assigned to user" });
   }
 
   const { employeeId } = req.params;
   const { startDate, endDate } = req.query;
 
   // 🔒 Employee access control
-  if (hasAnyRole(req.user, ['employee']) && !hasAnyRole(req.user, ['manager', 'hr', 'admin', 'ceo', 'superadmin']) && employeeId != req.user.id) {
-    return res.status(403).json({ message: 'Access denied' });
+  if (
+    hasAnyRole(req.user, ["employee"]) &&
+    !hasAnyRole(req.user, ["manager", "hr", "admin", "ceo", "superadmin"]) &&
+    employeeId != req.user.id
+  ) {
+    return res.status(403).json({ message: "Access denied" });
   }
 
   try {
     // Verify employee belongs to company
-    const employee = await knex('employees')
+    const employee = await knex("employees")
       .where({ id: employeeId, company_id: companyId })
       .first();
 
     if (!employee) {
-      return res.status(404).json({ message: 'Employee not found or access denied' });
+      return res
+        .status(404)
+        .json({ message: "Employee not found or access denied" });
     }
 
-    let query = knex('attendance')
-      .where({ employee_id: employeeId, company_id: companyId });
+    let query = knex("attendance").where({
+      employee_id: employeeId,
+      company_id: companyId,
+    });
 
     if (startDate && endDate) {
       const start = new Date(startDate);
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
-      query = query.whereBetween('check_in', [start, end]);
+      query = query.whereBetween("check_in", [start, end]);
     }
 
-    const records = await query.orderBy('check_in', 'desc');
+    const records = await query.orderBy("check_in", "desc");
 
     const summary = {
       total_days: records.length,
-      present_days: records.filter(r => r.status === 'present').length,
-      half_days: records.filter(r => r.status === 'half').length,
-      absent_days: records.filter(r => r.status === 'absent').length,
+      present_days: records.filter((r) => r.status === "present").length,
+      half_days: records.filter((r) => r.status === "half").length,
+      absent_days: records.filter((r) => r.status === "absent").length,
       total_hours: records.reduce((sum, r) => sum + (r.hours_worked || 0), 0),
-      total_overtime: records.reduce((sum, r) => sum + (r.overtime_hours || 0), 0),
-      average_hours_per_day: records.length > 0
-        ? records.reduce((sum, r) => sum + (r.hours_worked || 0), 0) / records.length
-        : 0,
-      recent_records: records.slice(0, 5)
+      total_overtime: records.reduce(
+        (sum, r) => sum + (r.overtime_hours || 0),
+        0,
+      ),
+      average_hours_per_day:
+        records.length > 0
+          ? records.reduce((sum, r) => sum + (r.hours_worked || 0), 0) /
+            records.length
+          : 0,
+      recent_records: records.slice(0, 5),
     };
 
     res.json({
       success: true,
-      summary
+      summary,
     });
   } catch (error) {
-    console.error('Get employee summary error:', error);
-    res.status(500).json({ message: 'Error generating attendance summary' });
+    console.error("Get employee summary error:", error);
+    res.status(500).json({ message: "Error generating attendance summary" });
   }
 };
 
@@ -1076,17 +1147,25 @@ const getOverrides = async (req, res) => {
   const { employeeId } = req.query; // optional filter by employee
 
   if (!companyId) {
-    return res.status(400).json({ message: 'Company not assigned to user' });
+    return res.status(400).json({ message: "Company not assigned to user" });
   }
 
   try {
-    const canViewAllOverrides = hasAnyRole(req.user, ['manager', 'hr', 'admin', 'ceo', 'superadmin']);
-    const viewerEmployeeId = canViewAllOverrides ? null : await resolveAttendanceEmployeeId(req);
+    const canViewAllOverrides = hasAnyRole(req.user, [
+      "manager",
+      "hr",
+      "admin",
+      "ceo",
+      "superadmin",
+    ]);
+    const viewerEmployeeId = canViewAllOverrides
+      ? null
+      : await resolveAttendanceEmployeeId(req);
 
     // Step 1: Get overrides
-    let query = knex('attendance_overrides')
+    let query = knex("attendance_overrides")
       .where({ company_id: companyId })
-      .orderBy('created_at', 'desc');
+      .orderBy("created_at", "desc");
 
     if (canViewAllOverrides) {
       if (employeeId) {
@@ -1098,43 +1177,46 @@ const getOverrides = async (req, res) => {
     }
 
     const overrides = await query.select(
-      'id',
-      'attendance_id',
-      'employee_id',
-      'original_status',
-      'overridden_status',
-      'reason',
-      'requested_check_in',
-      'requested_check_out',
-      'requested_by',
-      'approved_by',
-      'status',
-      'created_at',
-      'updated_at'
+      "id",
+      "attendance_id",
+      "employee_id",
+      "original_status",
+      "overridden_status",
+      "reason",
+      "requested_check_in",
+      "requested_check_out",
+      "requested_by",
+      "approved_by",
+      "status",
+      "created_at",
+      "updated_at",
     );
 
     if (!overrides.length) {
-      return res.status(404).json({ message: 'No overrides found' });
+      return res.status(404).json({ message: "No overrides found" });
     }
 
     // Step 2: Get employee codes for all employee_ids in overrides
-    const employeeIds = overrides.map(o => o.employee_id);
-    const employees = await knex('employees')
-      .whereIn('id', employeeIds)
-      .select('id', 'employee_id');
+    const employeeIds = overrides.map((o) => o.employee_id);
+    const employees = await knex("employees")
+      .whereIn("id", employeeIds)
+      .select("id", "employee_id");
 
     const employeeMap = {};
-    employees.forEach(emp => {
+    employees.forEach((emp) => {
       employeeMap[emp.id] = emp.employee_id;
     });
 
     // Step 3: Resolve override date from attendance record
-    const attendanceIds = overrides.map(o => o.attendance_id).filter(Boolean);
+    const attendanceIds = overrides.map((o) => o.attendance_id).filter(Boolean);
     const attendanceRecords = attendanceIds.length
-      ? await knex('attendance')
-        .where({ company_id: companyId })
-        .whereIn('id', attendanceIds)
-        .select('id', knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"))
+      ? await knex("attendance")
+          .where({ company_id: companyId })
+          .whereIn("id", attendanceIds)
+          .select(
+            "id",
+            knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"),
+          )
       : [];
 
     const attendanceDateMap = {};
@@ -1147,26 +1229,25 @@ const getOverrides = async (req, res) => {
       ...new Set(
         overrides
           .flatMap((o) => [o.requested_by, o.approved_by])
-          .filter((id) => id !== null && id !== undefined)
-      )
+          .filter((id) => id !== null && id !== undefined),
+      ),
     ];
 
     const actorEmployeeRows = actorIds.length
-      ? await knex('employees')
-        .where({ company_id: companyId })
-        .whereIn('id', actorIds)
-        .select('id', 'first_name', 'last_name')
+      ? await knex("employees")
+          .where({ company_id: companyId })
+          .whereIn("id", actorIds)
+          .select("id", "first_name", "last_name")
       : [];
 
     const actorUserRows = actorIds.length
-      ? await knex('users')
-        .whereIn('id', actorIds)
-        .select('id', 'name')
+      ? await knex("users").whereIn("id", actorIds).select("id", "name")
       : [];
 
     const actorEmployeeNameMap = {};
     actorEmployeeRows.forEach((row) => {
-      actorEmployeeNameMap[row.id] = `${row.first_name || ''} ${row.last_name || ''}`.trim();
+      actorEmployeeNameMap[row.id] =
+        `${row.first_name || ""} ${row.last_name || ""}`.trim();
     });
 
     const actorUserNameMap = {};
@@ -1180,18 +1261,18 @@ const getOverrides = async (req, res) => {
     };
 
     // Step 5: Attach employee code + override date + actor names
-    const overridesWithCode = overrides.map(o => ({
+    const overridesWithCode = overrides.map((o) => ({
       ...o,
       employee_id: employeeMap[o.employee_id] || null,
       override_date: attendanceDateMap[o.attendance_id] || null,
       requested_by_name: resolveActorName(o.requested_by),
-      approved_by_name: resolveActorName(o.approved_by)
+      approved_by_name: resolveActorName(o.approved_by),
     }));
 
     res.status(200).json({ success: true, overrides: overridesWithCode });
   } catch (error) {
-    console.error('Get overrides error:', error);
-    res.status(500).json({ message: 'Error fetching attendance overrides' });
+    console.error("Get overrides error:", error);
+    res.status(500).json({ message: "Error fetching attendance overrides" });
   }
 };
 
@@ -1201,18 +1282,33 @@ const postLiveLocation = async (req, res) => {
     const employeeId = await resolveAttendanceEmployeeId(req);
     const latitude = Number(req.body?.latitude);
     const longitude = Number(req.body?.longitude);
-    const accuracy = req.body?.accuracy != null ? Number(req.body.accuracy) : null;
+    const accuracy =
+      req.body?.accuracy != null ? Number(req.body.accuracy) : null;
 
     if (!companyId || !employeeId) {
-      return res.status(400).json({ success: false, message: 'Missing employee or company context' });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Missing employee or company context",
+        });
     }
 
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      return res.status(400).json({ success: false, message: 'Valid latitude and longitude are required' });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Valid latitude and longitude are required",
+        });
     }
 
-    const timestampValue = req.body?.timestamp ? new Date(req.body.timestamp) : new Date();
-    const locationTimestamp = Number.isNaN(timestampValue.getTime()) ? new Date() : timestampValue;
+    const timestampValue = req.body?.timestamp
+      ? new Date(req.body.timestamp)
+      : new Date();
+    const locationTimestamp = Number.isNaN(timestampValue.getTime())
+      ? new Date()
+      : timestampValue;
 
     const insertPayload = {
       employee_id: employeeId,
@@ -1223,38 +1319,41 @@ const postLiveLocation = async (req, res) => {
       address: req.body?.address || null,
       location_data: JSON.stringify({
         timestamp: locationTimestamp.toISOString(),
-        source: req.body?.source || 'web',
+        source: req.body?.source || "web",
       }),
       is_tracking: true,
-      tracking_status: 'active',
-      device_info: req.body?.device_info || req.body?.deviceInfo || 'web',
+      tracking_status: "active",
+      device_info: req.body?.device_info || req.body?.deviceInfo || "web",
       session_id: req.body?.session_id || null,
       location_timestamp: locationTimestamp,
       last_updated: knex.fn.now(),
     };
 
-    const inserted = await knex('employee_live_locations').insert(insertPayload);
+    const inserted = await knex("employee_live_locations").insert(
+      insertPayload,
+    );
     const insertedRaw = Array.isArray(inserted) ? inserted[0] : inserted;
-    const insertedId = typeof insertedRaw === 'object' ? insertedRaw.id : insertedRaw;
+    const insertedId =
+      typeof insertedRaw === "object" ? insertedRaw.id : insertedRaw;
 
-    const location = await knex('employee_live_locations')
+    const location = await knex("employee_live_locations")
       .where({ id: insertedId, company_id: companyId })
       .first();
 
     if (location) {
-      const employee = await knex('employees')
+      const employee = await knex("employees")
         .where({ id: employeeId, company_id: companyId })
-        .first('first_name', 'last_name', 'employee_id');
+        .first("first_name", "last_name", "employee_id");
 
       const io = getIo();
       if (io) {
-        io.to(`company:${companyId}`).emit('location:update', {
+        io.to(`company:${companyId}`).emit("location:update", {
           ...location,
           employeeName: employee
-            ? `${employee.first_name || ''} ${employee.last_name || ''}`.trim()
+            ? `${employee.first_name || ""} ${employee.last_name || ""}`.trim()
             : undefined,
           employee_code: employee?.employee_id || null,
-          tracking_status: 'active',
+          tracking_status: "active",
           minutes_since_update: 0,
         });
       }
@@ -1262,14 +1361,14 @@ const postLiveLocation = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: 'Live location saved',
+      message: "Live location saved",
       location,
     });
   } catch (error) {
-    console.error('Post live location error:', error);
+    console.error("Post live location error:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to save live location',
+      message: "Failed to save live location",
     });
   }
 };
@@ -1278,57 +1377,65 @@ const getLiveLocations = async (req, res) => {
   try {
     const companyId = Number(req.user?.company_id);
     if (!companyId) {
-      return res.status(400).json({ success: false, message: 'Company not assigned to user' });
+      return res
+        .status(400)
+        .json({ success: false, message: "Company not assigned to user" });
     }
 
-    const latestLocationSubquery = knex('employee_live_locations as ell')
-      .select('ell.employee_id')
-      .max('ell.location_timestamp as latest_timestamp')
-      .where('ell.company_id', companyId)
-      .groupBy('ell.employee_id')
-      .as('latest_locations');
+    const latestLocationSubquery = knex("employee_live_locations as ell")
+      .select("ell.employee_id")
+      .max("ell.location_timestamp as latest_timestamp")
+      .where("ell.company_id", companyId)
+      .groupBy("ell.employee_id")
+      .as("latest_locations");
 
-    const locations = await knex('employee_live_locations as ell')
+    const locations = await knex("employee_live_locations as ell")
       .join(latestLocationSubquery, function () {
-        this.on('ell.employee_id', '=', 'latest_locations.employee_id')
-          .andOn('ell.location_timestamp', '=', 'latest_locations.latest_timestamp');
+        this.on("ell.employee_id", "=", "latest_locations.employee_id").andOn(
+          "ell.location_timestamp",
+          "=",
+          "latest_locations.latest_timestamp",
+        );
       })
-      .leftJoin('employees as e', 'ell.employee_id', 'e.id')
-      .where('ell.company_id', companyId)
+      .leftJoin("employees as e", "ell.employee_id", "e.id")
+      .where("ell.company_id", companyId)
       .select(
-        'ell.id',
-        'ell.employee_id',
-        'ell.latitude',
-        'ell.longitude',
-        'ell.accuracy',
-        'ell.address',
-        'ell.location_timestamp',
-        'ell.last_updated',
-        'ell.device_info',
-        'ell.tracking_status',
-        'ell.is_tracking',
-        'e.first_name',
-        'e.last_name',
-        'e.employee_id as employee_code'
+        "ell.id",
+        "ell.employee_id",
+        "ell.latitude",
+        "ell.longitude",
+        "ell.accuracy",
+        "ell.address",
+        "ell.location_timestamp",
+        "ell.last_updated",
+        "ell.device_info",
+        "ell.tracking_status",
+        "ell.is_tracking",
+        "e.first_name",
+        "e.last_name",
+        "e.employee_id as employee_code",
       )
-      .orderBy('ell.location_timestamp', 'desc');
+      .orderBy("ell.location_timestamp", "desc");
 
     const now = Date.now();
     const enrichedLocations = locations.map((location) => {
-      const timestamp = location.location_timestamp ? new Date(location.location_timestamp) : null;
+      const timestamp = location.location_timestamp
+        ? new Date(location.location_timestamp)
+        : null;
       const minutesSinceUpdate =
         timestamp && !Number.isNaN(timestamp.getTime())
           ? Math.max(0, Math.round((now - timestamp.getTime()) / 60000))
           : null;
 
-      let computedTrackingStatus = String(location.tracking_status || '').toLowerCase() || 'offline';
+      let computedTrackingStatus =
+        String(location.tracking_status || "").toLowerCase() || "offline";
       if (minutesSinceUpdate !== null) {
         if (minutesSinceUpdate <= 5) {
-          computedTrackingStatus = 'active';
+          computedTrackingStatus = "active";
         } else if (minutesSinceUpdate <= 15) {
-          computedTrackingStatus = 'idle';
+          computedTrackingStatus = "idle";
         } else {
-          computedTrackingStatus = 'offline';
+          computedTrackingStatus = "offline";
         }
       }
 
@@ -1344,10 +1451,10 @@ const getLiveLocations = async (req, res) => {
       locations: enrichedLocations,
     });
   } catch (error) {
-    console.error('Get live locations error:', error);
+    console.error("Get live locations error:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to fetch live locations',
+      message: "Failed to fetch live locations",
     });
   }
 };
@@ -1358,39 +1465,66 @@ const getLiveLocationHistory = async (req, res) => {
     const requestedEmployeeId = Number(req.params?.employeeId);
 
     if (!companyId) {
-      return res.status(400).json({ success: false, message: 'Company not assigned to user' });
+      return res
+        .status(400)
+        .json({ success: false, message: "Company not assigned to user" });
     }
 
     if (!Number.isFinite(requestedEmployeeId)) {
-      return res.status(400).json({ success: false, message: 'Valid employee id is required' });
+      return res
+        .status(400)
+        .json({ success: false, message: "Valid employee id is required" });
     }
 
     let loggedInUser = null;
-    const hasCompanyWideAccess = hasAnyRole(req.user, ['admin', 'hr', 'finance', 'ceo', 'superadmin']);
+    const hasCompanyWideAccess = hasAnyRole(req.user, [
+      "admin",
+      "hr",
+      "finance",
+      "ceo",
+      "superadmin",
+    ]);
 
     if (!hasCompanyWideAccess) {
-      loggedInUser = await knex('employees')
+      loggedInUser = await knex("employees")
         .where({ id: req.user.id, company_id: companyId })
         .first();
 
       if (!loggedInUser) {
-        return res.status(403).json({ success: false, message: 'User not found' });
+        return res
+          .status(403)
+          .json({ success: false, message: "User not found" });
       }
 
-      if (hasAnyRole(loggedInUser, ['manager'])) {
-        const requestedEmployee = await knex('employees')
+      if (hasAnyRole(loggedInUser, ["manager"])) {
+        const requestedEmployee = await knex("employees")
           .where({ id: requestedEmployeeId, company_id: companyId })
           .first();
 
         if (!requestedEmployee) {
-          return res.status(404).json({ success: false, message: 'Employee not found' });
+          return res
+            .status(404)
+            .json({ success: false, message: "Employee not found" });
         }
 
-        if (requestedEmployee.id !== loggedInUser.id && requestedEmployee.department_id !== loggedInUser.department_id) {
-          return res.status(403).json({ success: false, message: 'Not allowed to view this employee history' });
+        if (
+          requestedEmployee.id !== loggedInUser.id &&
+          requestedEmployee.department_id !== loggedInUser.department_id
+        ) {
+          return res
+            .status(403)
+            .json({
+              success: false,
+              message: "Not allowed to view this employee history",
+            });
         }
       } else if (requestedEmployeeId !== loggedInUser.id) {
-        return res.status(403).json({ success: false, message: 'Not allowed to view this employee history' });
+        return res
+          .status(403)
+          .json({
+            success: false,
+            message: "Not allowed to view this employee history",
+          });
       }
     }
 
@@ -1403,30 +1537,39 @@ const getLiveLocationHistory = async (req, res) => {
       minimumStayMinutes = 5,
     } = req.query;
 
-    const employee = await knex('employees')
+    const employee = await knex("employees")
       .where({ id: requestedEmployeeId, company_id: companyId })
-      .first('id', 'first_name', 'last_name', 'employee_id');
+      .first("id", "first_name", "last_name", "employee_id");
 
     if (!employee) {
-      return res.status(404).json({ success: false, message: 'Employee not found' });
+      return res
+        .status(404)
+        .json({ success: false, message: "Employee not found" });
     }
 
-    let historyQuery = knex('employee_live_locations as ell')
-      .where({
-        'ell.company_id': companyId,
-        'ell.employee_id': requestedEmployeeId,
-      });
+    let historyQuery = knex("employee_live_locations as ell").where({
+      "ell.company_id": companyId,
+      "ell.employee_id": requestedEmployeeId,
+    });
 
     if (startDate) {
-      historyQuery = historyQuery.where('ell.location_timestamp', '>=', new Date(startDate));
+      historyQuery = historyQuery.where(
+        "ell.location_timestamp",
+        ">=",
+        new Date(startDate),
+      );
     }
 
     if (endDate) {
-      historyQuery = historyQuery.where('ell.location_timestamp', '<=', new Date(endDate));
+      historyQuery = historyQuery.where(
+        "ell.location_timestamp",
+        "<=",
+        new Date(endDate),
+      );
     }
 
     if (sessionId) {
-      historyQuery = historyQuery.where('ell.session_id', String(sessionId));
+      historyQuery = historyQuery.where("ell.session_id", String(sessionId));
     }
 
     const pointLimit = Math.min(Math.max(Number(limit) || 500, 1), 2000);
@@ -1434,19 +1577,19 @@ const getLiveLocationHistory = async (req, res) => {
     const points = await historyQuery
       .clone()
       .select(
-        'ell.id',
-        'ell.employee_id',
-        'ell.latitude',
-        'ell.longitude',
-        'ell.accuracy',
-        'ell.address',
-        'ell.location_timestamp',
-        'ell.device_info',
-        'ell.session_id',
-        'ell.tracking_status',
-        'ell.is_tracking'
+        "ell.id",
+        "ell.employee_id",
+        "ell.latitude",
+        "ell.longitude",
+        "ell.accuracy",
+        "ell.address",
+        "ell.location_timestamp",
+        "ell.device_info",
+        "ell.session_id",
+        "ell.tracking_status",
+        "ell.is_tracking",
       )
-      .orderBy('ell.location_timestamp', 'asc')
+      .orderBy("ell.location_timestamp", "asc")
       .limit(pointLimit);
 
     const pointsWithAddresses = await Promise.all(
@@ -1459,37 +1602,37 @@ const getLiveLocationHistory = async (req, res) => {
           });
           return { ...point, address: reverseGeocoded?.address || null };
         } catch (error) {
-          console.error('Reverse geocoding failed for point:', point.id, error);
+          console.error("Reverse geocoding failed for point:", point.id, error);
           return point;
         }
-      })
+      }),
     );
 
     const finalPoints = [...pointsWithAddresses, ...points.slice(10)];
 
-    const attendanceRecord = await knex('attendance as a')
+    const attendanceRecord = await knex("attendance as a")
       .where({
-        'a.company_id': companyId,
-        'a.employee_id': requestedEmployeeId,
+        "a.company_id": companyId,
+        "a.employee_id": requestedEmployeeId,
       })
       .modify((qb) => {
-        if (startDate) qb.where('a.check_in', '>=', new Date(startDate));
-        if (endDate) qb.where('a.check_in', '<=', new Date(endDate));
+        if (startDate) qb.where("a.check_in", ">=", new Date(startDate));
+        if (endDate) qb.where("a.check_in", "<=", new Date(endDate));
       })
-      .orderBy('a.check_in', 'desc')
+      .orderBy("a.check_in", "desc")
       .first(
-        'a.id',
-        'a.check_in',
-        'a.check_out',
-        'a.check_in_location',
-        'a.check_out_location',
-        'a.hours_worked',
-        'a.status'
+        "a.id",
+        "a.check_in",
+        "a.check_out",
+        "a.check_in_location",
+        "a.check_out_location",
+        "a.hours_worked",
+        "a.status",
       );
 
     const parseStoredLocation = (rawValue) => {
       if (!rawValue) return null;
-      if (typeof rawValue === 'string') {
+      if (typeof rawValue === "string") {
         try {
           return JSON.parse(rawValue);
         } catch {
@@ -1506,8 +1649,12 @@ const getLiveLocationHistory = async (req, res) => {
       return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
     };
 
-    const parsedCheckInLocation = parseStoredLocation(attendanceRecord?.check_in_location);
-    const parsedCheckOutLocation = parseStoredLocation(attendanceRecord?.check_out_location);
+    const parsedCheckInLocation = parseStoredLocation(
+      attendanceRecord?.check_in_location,
+    );
+    const parsedCheckOutLocation = parseStoredLocation(
+      attendanceRecord?.check_out_location,
+    );
 
     const haversineMeters = (lat1, lon1, lat2, lon2) => {
       const toRad = (deg) => (deg * Math.PI) / 180;
@@ -1517,9 +1664,9 @@ const getLiveLocationHistory = async (req, res) => {
       const a =
         Math.sin(dLat / 2) * Math.sin(dLat / 2) +
         Math.cos(toRad(lat1)) *
-        Math.cos(toRad(lat2)) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
+          Math.cos(toRad(lat2)) *
+          Math.sin(dLon / 2) *
+          Math.sin(dLon / 2);
       return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     };
 
@@ -1532,8 +1679,18 @@ const getLiveLocationHistory = async (req, res) => {
       const currentLat = Number(current.latitude);
       const currentLng = Number(current.longitude);
 
-      if (Number.isFinite(prevLat) && Number.isFinite(prevLng) && Number.isFinite(currentLat) && Number.isFinite(currentLng)) {
-        totalDistanceMeters += haversineMeters(prevLat, prevLng, currentLat, currentLng);
+      if (
+        Number.isFinite(prevLat) &&
+        Number.isFinite(prevLng) &&
+        Number.isFinite(currentLat) &&
+        Number.isFinite(currentLng)
+      ) {
+        totalDistanceMeters += haversineMeters(
+          prevLat,
+          prevLng,
+          currentLat,
+          currentLng,
+        );
       }
     }
 
@@ -1541,16 +1698,23 @@ const getLiveLocationHistory = async (req, res) => {
     const endPoint = finalPoints[finalPoints.length - 1] || null;
     const tripDurationMinutes =
       startPoint && endPoint
-        ? Math.max(0, Math.round((new Date(endPoint.location_timestamp).getTime() - new Date(startPoint.location_timestamp).getTime()) / 60000))
+        ? Math.max(
+            0,
+            Math.round(
+              (new Date(endPoint.location_timestamp).getTime() -
+                new Date(startPoint.location_timestamp).getTime()) /
+                60000,
+            ),
+          )
         : 0;
 
     const normalizedStayRadiusMeters = Math.min(
       Math.max(Number(stayRadiusMeters) || 60, 20),
-      250
+      250,
     );
     const normalizedMinimumStayMinutes = Math.min(
       Math.max(Number(minimumStayMinutes) || 5, 1),
-      240
+      240,
     );
 
     const buildStaySegments = (routePoints) => {
@@ -1581,7 +1745,7 @@ const getLiveLocationHistory = async (req, res) => {
 
         const durationMinutes = Math.max(
           0,
-          Math.round((endedAt.getTime() - startedAt.getTime()) / 60000)
+          Math.round((endedAt.getTime() - startedAt.getTime()) / 60000),
         );
 
         if (durationMinutes < normalizedMinimumStayMinutes) {
@@ -1589,11 +1753,15 @@ const getLiveLocationHistory = async (req, res) => {
         }
 
         const avgLatitude =
-          segmentPoints.reduce((sum, point) => sum + Number(point.latitude || 0), 0) /
-          segmentPoints.length;
+          segmentPoints.reduce(
+            (sum, point) => sum + Number(point.latitude || 0),
+            0,
+          ) / segmentPoints.length;
         const avgLongitude =
-          segmentPoints.reduce((sum, point) => sum + Number(point.longitude || 0), 0) /
-          segmentPoints.length;
+          segmentPoints.reduce(
+            (sum, point) => sum + Number(point.longitude || 0),
+            0,
+          ) / segmentPoints.length;
 
         segments.push({
           startTime: firstPoint.location_timestamp || null,
@@ -1603,7 +1771,7 @@ const getLiveLocationHistory = async (req, res) => {
           longitude: Number(avgLongitude.toFixed(6)),
           address:
             segmentPoints
-              .map((point) => String(point.address || '').trim())
+              .map((point) => String(point.address || "").trim())
               .find(Boolean) ||
             formatCoordinateLabel(avgLatitude, avgLongitude),
           pointCount: segmentPoints.length,
@@ -1616,7 +1784,7 @@ const getLiveLocationHistory = async (req, res) => {
           Number(currentSegment.anchor.latitude),
           Number(currentSegment.anchor.longitude),
           Number(point.latitude),
-          Number(point.longitude)
+          Number(point.longitude),
         );
 
         if (distanceFromAnchor <= normalizedStayRadiusMeters) {
@@ -1642,7 +1810,10 @@ const getLiveLocationHistory = async (req, res) => {
     const lastSeenAt = endPoint?.location_timestamp || null;
     const minutesSinceLastPing =
       lastSeenAt && !Number.isNaN(new Date(lastSeenAt).getTime())
-        ? Math.max(0, Math.round((Date.now() - new Date(lastSeenAt).getTime()) / 60000))
+        ? Math.max(
+            0,
+            Math.round((Date.now() - new Date(lastSeenAt).getTime()) / 60000),
+          )
         : null;
 
     return res.json({
@@ -1653,8 +1824,10 @@ const getLiveLocationHistory = async (req, res) => {
         pointCount: finalPoints.length,
         totalDistanceMeters: Number(totalDistanceMeters.toFixed(2)),
         tripDurationMinutes,
-        startedAt: startPoint?.location_timestamp || attendanceRecord?.check_in || null,
-        endedAt: endPoint?.location_timestamp || attendanceRecord?.check_out || null,
+        startedAt:
+          startPoint?.location_timestamp || attendanceRecord?.check_in || null,
+        endedAt:
+          endPoint?.location_timestamp || attendanceRecord?.check_out || null,
         stopCount: staySegments.length,
         stayRadiusMeters: normalizedStayRadiusMeters,
         minimumStayMinutes: normalizedMinimumStayMinutes,
@@ -1665,31 +1838,263 @@ const getLiveLocationHistory = async (req, res) => {
         startAddress:
           startPoint?.address ||
           parsedCheckInLocation?.address ||
-          formatCoordinateLabel(parsedCheckInLocation?.latitude, parsedCheckInLocation?.longitude) ||
+          formatCoordinateLabel(
+            parsedCheckInLocation?.latitude,
+            parsedCheckInLocation?.longitude,
+          ) ||
           null,
         endAddress:
           endPoint?.address ||
           parsedCheckOutLocation?.address ||
           formatCoordinateLabel(endPoint?.latitude, endPoint?.longitude) ||
           parsedCheckInLocation?.address ||
-          formatCoordinateLabel(parsedCheckInLocation?.latitude, parsedCheckInLocation?.longitude) ||
-          formatCoordinateLabel(parsedCheckOutLocation?.latitude, parsedCheckOutLocation?.longitude) ||
+          formatCoordinateLabel(
+            parsedCheckInLocation?.latitude,
+            parsedCheckInLocation?.longitude,
+          ) ||
+          formatCoordinateLabel(
+            parsedCheckOutLocation?.latitude,
+            parsedCheckOutLocation?.longitude,
+          ) ||
           null,
         attendance: attendanceRecord || null,
       },
     });
   } catch (error) {
-    console.error('Get live location history error:', error);
+    console.error("Get live location history error:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to fetch live location history',
+      message: "Failed to fetch live location history",
+    });
+  }
+};
+
+const exportLocationHistory = async (req, res) => {
+  try {
+    const companyId = Number(req.user?.company_id);
+    const requestedEmployeeId = Number(req.params?.employeeId);
+    const { startDate, endDate, format = "csv" } = req.query;
+
+    if (!companyId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Company not assigned to user" });
+    }
+
+    if (!Number.isFinite(requestedEmployeeId)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Valid employee id is required" });
+    }
+
+    // Permission checks
+    let loggedInUser = null;
+    const hasCompanyWideAccess = hasAnyRole(req.user, [
+      "admin",
+      "hr",
+      "finance",
+      "ceo",
+      "superadmin",
+    ]);
+
+    if (!hasCompanyWideAccess) {
+      loggedInUser = await knex("employees")
+        .where({ id: req.user.id, company_id: companyId })
+        .first();
+
+      if (!loggedInUser) {
+        return res
+          .status(403)
+          .json({ success: false, message: "User not found" });
+      }
+
+      if (hasAnyRole(loggedInUser, ["manager"])) {
+        const requestedEmployee = await knex("employees")
+          .where({ id: requestedEmployeeId, company_id: companyId })
+          .first();
+
+        if (!requestedEmployee) {
+          return res
+            .status(404)
+            .json({ success: false, message: "Employee not found" });
+        }
+
+        if (
+          requestedEmployee.id !== loggedInUser.id &&
+          requestedEmployee.department_id !== loggedInUser.department_id
+        ) {
+          return res
+            .status(403)
+            .json({
+              success: false,
+              message: "Not allowed to view this employee history",
+            });
+        }
+      } else if (requestedEmployeeId !== loggedInUser.id) {
+        return res
+          .status(403)
+          .json({
+            success: false,
+            message: "Not allowed to view this employee history",
+          });
+      }
+    }
+
+    // Get employee info
+    const employee = await knex("employees")
+      .where({ id: requestedEmployeeId, company_id: companyId })
+      .first(
+        "id",
+        "first_name",
+        "last_name",
+        "employee_id",
+        "email",
+        "department_id",
+      );
+
+    if (!employee) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Employee not found" });
+    }
+
+    // Build query for location history
+    let historyQuery = knex("employee_live_locations as ell").where({
+      "ell.company_id": companyId,
+      "ell.employee_id": requestedEmployeeId,
+    });
+
+    if (startDate) {
+      historyQuery = historyQuery.where(
+        "ell.location_timestamp",
+        ">=",
+        new Date(startDate),
+      );
+    }
+
+    if (endDate) {
+      historyQuery = historyQuery.where(
+        "ell.location_timestamp",
+        "<=",
+        new Date(endDate),
+      );
+    }
+
+    const points = await historyQuery
+      .select(
+        "ell.id",
+        "ell.latitude",
+        "ell.longitude",
+        "ell.accuracy",
+        "ell.address",
+        "ell.location_timestamp",
+        "ell.device_info",
+      )
+      .orderBy("ell.location_timestamp", "asc")
+      .limit(5000);
+
+    // Get attendance for context
+    let attendanceQuery = knex("attendance as a").where({
+      "a.company_id": companyId,
+      "a.employee_id": requestedEmployeeId,
+    });
+
+    if (startDate) {
+      attendanceQuery = attendanceQuery.where(
+        "a.check_in",
+        ">=",
+        new Date(startDate),
+      );
+    }
+
+    if (endDate) {
+      attendanceQuery = attendanceQuery.where(
+        "a.check_in",
+        "<=",
+        new Date(endDate),
+      );
+    }
+
+    const attendance = await attendanceQuery
+      .select(
+        "a.check_in",
+        "a.check_out",
+        "a.check_in_location",
+        "a.check_out_location",
+      )
+      .orderBy("a.check_in", "desc")
+      .first();
+
+    if (format === "csv") {
+      // Generate CSV
+      let csv =
+        "Employee ID,Employee Name,Email,Department,Date,Time,Latitude,Longitude,Accuracy,Address,Device Info\n";
+
+      points.forEach((point) => {
+        const date = new Date(point.location_timestamp);
+        const dateStr = date.toLocaleDateString("en-IN");
+        const timeStr = date.toLocaleTimeString("en-IN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        const latitude = Number(point.latitude).toFixed(6);
+        const longitude = Number(point.longitude).toFixed(6);
+        const accuracy = point.accuracy
+          ? Number(point.accuracy).toFixed(2)
+          : "N/A";
+        const address = (point.address || "").replace(/"/g, '""');
+        const deviceInfo = (point.device_info || "").replace(/"/g, '""');
+
+        csv += `"${employee.employee_id}","${employee.first_name} ${employee.last_name}","${employee.email}","${employee.department_id}","${dateStr}","${timeStr}",${latitude},${longitude},${accuracy},"${address}","${deviceInfo}"\n`;
+      });
+
+      // Add summary
+      csv += "\n\nSummary:\n";
+      csv += `Total Points,${points.length}\n`;
+      csv += `Check-In,${attendance?.check_in || "N/A"}\n`;
+      csv += `Check-Out,${attendance?.check_out || "N/A"}\n`;
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment;filename="${employee.employee_id}_location_history_${new Date().toISOString().split("T")[0]}.csv"`,
+      );
+      return res.send(csv);
+    } else if (format === "json") {
+      // Return JSON format
+      res.json({
+        success: true,
+        employee: {
+          id: employee.id,
+          employee_id: employee.employee_id,
+          name: `${employee.first_name} ${employee.last_name}`,
+          email: employee.email,
+        },
+        locations: points,
+        summary: {
+          totalPoints: points.length,
+          startDate: startDate || null,
+          endDate: endDate || null,
+          checkIn: attendance?.check_in || null,
+          checkOut: attendance?.check_out || null,
+        },
+      });
+    } else {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid format. Use csv or json." });
+    }
+  } catch (error) {
+    console.error("Export location history error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to export location history",
     });
   }
 };
 
 // Helper functions
-
-
 
 module.exports = {
   getAttendanceStatus,
@@ -1704,6 +2109,7 @@ module.exports = {
   postLiveLocation,
   getLiveLocations,
   getLiveLocationHistory,
+  exportLocationHistory,
   //getEmployeeShift,
   //determineShiftTyp
 };
