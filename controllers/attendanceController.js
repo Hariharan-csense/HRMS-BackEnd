@@ -1306,11 +1306,11 @@ const postLiveLocation = async (req, res) => {
     const timestampValue = req.body?.timestamp
       ? new Date(req.body.timestamp)
       : new Date();
-    const locationTimestamp = Number.isNaN(timestampValue.getTime())
+    let locationTimestamp = Number.isNaN(timestampValue.getTime())
       ? new Date()
       : timestampValue;
 
-    const insertPayload = {
+    const buildInsertPayload = (timestamp) => ({
       employee_id: employeeId,
       company_id: companyId,
       latitude,
@@ -1318,20 +1318,37 @@ const postLiveLocation = async (req, res) => {
       accuracy: Number.isFinite(accuracy) ? accuracy : null,
       address: req.body?.address || null,
       location_data: JSON.stringify({
-        timestamp: locationTimestamp.toISOString(),
+        timestamp: timestamp.toISOString(),
         source: req.body?.source || "web",
       }),
       is_tracking: true,
       tracking_status: "active",
       device_info: req.body?.device_info || req.body?.deviceInfo || "web",
       session_id: req.body?.session_id || null,
-      location_timestamp: locationTimestamp,
+      location_timestamp: timestamp,
       last_updated: knex.fn.now(),
-    };
+    });
 
-    const inserted = await knex("employee_live_locations").insert(
-      insertPayload,
-    );
+    let inserted = null;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      try {
+        inserted = await knex("employee_live_locations").insert(
+          buildInsertPayload(locationTimestamp),
+        );
+        break;
+      } catch (insertError) {
+        const isDuplicateTimestamp =
+          insertError?.code === "ER_DUP_ENTRY" ||
+          insertError?.errno === 1062;
+
+        if (!isDuplicateTimestamp || attempt === 9) {
+          throw insertError;
+        }
+
+        locationTimestamp = new Date(locationTimestamp.getTime() + 1000);
+      }
+    }
+
     const insertedRaw = Array.isArray(inserted) ? inserted[0] : inserted;
     const insertedId =
       typeof insertedRaw === "object" ? insertedRaw.id : insertedRaw;
@@ -1417,8 +1434,46 @@ const getLiveLocations = async (req, res) => {
       )
       .orderBy("ell.location_timestamp", "desc");
 
+    const { start: todayStart, end: tomorrowStart } = getDayWindow();
+    const todayDate = formatDateOnly(todayStart);
+    const tomorrowDate = formatDateOnly(tomorrowStart);
+
+    const activeRegularRows = await knex("attendance")
+      .where({ company_id: companyId })
+      .where("check_in", ">=", todayStart)
+      .where("check_in", "<", tomorrowStart)
+      .whereNull("check_out")
+      .select("employee_id");
+
+    const activeFieldRows = await knex("client_attendance as ca")
+      .leftJoin("employees as e", "ca.employee_id", "e.id")
+      .where("e.company_id", companyId)
+      .where("ca.date", ">=", todayDate)
+      .where("ca.date", "<", tomorrowDate)
+      .whereNull("ca.check_out_time")
+      .select("ca.employee_id", "ca.id as field_attendance_id", "ca.client_id");
+
+    const activeRegularEmployeeIds = new Set(
+      activeRegularRows.map((row) => Number(row.employee_id)),
+    );
+    const activeFieldAttendanceByEmployee = new Map(
+      activeFieldRows.map((row) => [
+        Number(row.employee_id),
+        {
+          field_attendance_id: row.field_attendance_id,
+          client_id: row.client_id,
+        },
+      ]),
+    );
+
     const now = Date.now();
     const enrichedLocations = locations.map((location) => {
+      const employeeId = Number(location.employee_id);
+      const hasActiveRegularAttendance =
+        activeRegularEmployeeIds.has(employeeId);
+      const activeFieldAttendance =
+        activeFieldAttendanceByEmployee.get(employeeId) || null;
+      const hasActiveFieldAttendance = Boolean(activeFieldAttendance);
       const timestamp = location.location_timestamp
         ? new Date(location.location_timestamp)
         : null;
@@ -1429,7 +1484,9 @@ const getLiveLocations = async (req, res) => {
 
       let computedTrackingStatus =
         String(location.tracking_status || "").toLowerCase() || "offline";
-      if (minutesSinceUpdate !== null) {
+      if (!hasActiveRegularAttendance && !hasActiveFieldAttendance) {
+        computedTrackingStatus = "offline";
+      } else if (minutesSinceUpdate !== null) {
         if (minutesSinceUpdate <= 5) {
           computedTrackingStatus = "active";
         } else if (minutesSinceUpdate <= 15) {
@@ -1443,6 +1500,16 @@ const getLiveLocations = async (req, res) => {
         ...location,
         tracking_status: computedTrackingStatus,
         minutes_since_update: minutesSinceUpdate,
+        has_active_attendance: hasActiveRegularAttendance,
+        has_active_field_attendance: hasActiveFieldAttendance,
+        active_session_type: hasActiveFieldAttendance
+          ? "field_attendance"
+          : hasActiveRegularAttendance
+            ? "attendance"
+            : null,
+        field_attendance_id:
+          activeFieldAttendance?.field_attendance_id || null,
+        client_id: activeFieldAttendance?.client_id || null,
       };
     });
 
@@ -1592,23 +1659,57 @@ const getLiveLocationHistory = async (req, res) => {
       .orderBy("ell.location_timestamp", "asc")
       .limit(pointLimit);
 
-    const pointsWithAddresses = await Promise.all(
-      points.slice(0, 10).map(async (point) => {
-        if (point.address) return point;
-        try {
-          const reverseGeocoded = await reverseGeocodeGoogle({
-            latitude: Number(point.latitude),
-            longitude: Number(point.longitude),
-          });
-          return { ...point, address: reverseGeocoded?.address || null };
-        } catch (error) {
-          console.error("Reverse geocoding failed for point:", point.id, error);
-          return point;
-        }
-      }),
-    );
+    // Group points by coordinates to avoid redundant geocoding API calls
+    const coordinateMap = new Map();
+    const pointsNeedingGeocode = [];
 
-    const finalPoints = [...pointsWithAddresses, ...points.slice(10)];
+    points.forEach((point) => {
+      if (point.address) {
+        // Already has address, no need to geocode
+        return;
+      }
+      const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
+      if (!coordinateMap.has(coordKey)) {
+        coordinateMap.set(coordKey, []);
+        pointsNeedingGeocode.push(point);
+      }
+      coordinateMap.get(coordKey).push(point);
+    });
+
+    // Geocode only unique coordinates (with batch processing to avoid rate limiting)
+    const geocodedAddresses = new Map();
+    const batchSize = 5; // Process 5 at a time with small delay
+    
+    for (let i = 0; i < pointsNeedingGeocode.length; i += batchSize) {
+      const batch = pointsNeedingGeocode.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map(async (point) => {
+          const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
+          try {
+            const reverseGeocoded = await reverseGeocodeGoogle({
+              latitude: Number(point.latitude),
+              longitude: Number(point.longitude),
+            });
+            geocodedAddresses.set(coordKey, reverseGeocoded?.address || null);
+          } catch (error) {
+            console.error("Reverse geocoding failed for point:", point.id, error);
+            geocodedAddresses.set(coordKey, null);
+          }
+        }),
+      );
+      // Small delay between batches to avoid rate limiting
+      if (i + batchSize < pointsNeedingGeocode.length) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+
+    // Apply geocoded addresses to all points
+    const finalPoints = points.map((point) => {
+      if (point.address) return point;
+      const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
+      const address = geocodedAddresses.get(coordKey);
+      return { ...point, address: address || null };
+    });
 
     const attendanceRecord = await knex("attendance as a")
       .where({
@@ -1628,6 +1729,33 @@ const getLiveLocationHistory = async (req, res) => {
         "a.check_out_location",
         "a.hours_worked",
         "a.status",
+      );
+
+    const fieldAttendanceRecord = await knex("client_attendance as ca")
+      .leftJoin("employees as e", "ca.employee_id", "e.id")
+      .leftJoin("clients as c", "ca.client_id", "c.id")
+      .where({
+        "e.company_id": companyId,
+        "ca.employee_id": requestedEmployeeId,
+      })
+      .modify((qb) => {
+        if (startDate) qb.where("ca.check_in_time", ">=", new Date(startDate));
+        if (endDate) qb.where("ca.check_in_time", "<=", new Date(endDate));
+      })
+      .orderBy("ca.check_in_time", "desc")
+      .first(
+        "ca.id",
+        "ca.client_id",
+        "c.client_name",
+        "ca.check_in_time",
+        "ca.check_out_time",
+        "ca.check_in_latitude",
+        "ca.check_in_longitude",
+        "ca.check_in_location",
+        "ca.check_out_latitude",
+        "ca.check_out_longitude",
+        "ca.check_out_location",
+        "ca.duration_minutes",
       );
 
     const parseStoredLocation = (rawValue) => {
@@ -1825,9 +1953,15 @@ const getLiveLocationHistory = async (req, res) => {
         totalDistanceMeters: Number(totalDistanceMeters.toFixed(2)),
         tripDurationMinutes,
         startedAt:
-          startPoint?.location_timestamp || attendanceRecord?.check_in || null,
+          startPoint?.location_timestamp ||
+          attendanceRecord?.check_in ||
+          fieldAttendanceRecord?.check_in_time ||
+          null,
         endedAt:
-          endPoint?.location_timestamp || attendanceRecord?.check_out || null,
+          endPoint?.location_timestamp ||
+          attendanceRecord?.check_out ||
+          fieldAttendanceRecord?.check_out_time ||
+          null,
         stopCount: staySegments.length,
         stayRadiusMeters: normalizedStayRadiusMeters,
         minimumStayMinutes: normalizedMinimumStayMinutes,
@@ -1842,11 +1976,21 @@ const getLiveLocationHistory = async (req, res) => {
             parsedCheckInLocation?.latitude,
             parsedCheckInLocation?.longitude,
           ) ||
+          fieldAttendanceRecord?.check_in_location ||
+          formatCoordinateLabel(
+            fieldAttendanceRecord?.check_in_latitude,
+            fieldAttendanceRecord?.check_in_longitude,
+          ) ||
           null,
         endAddress:
           endPoint?.address ||
           parsedCheckOutLocation?.address ||
           formatCoordinateLabel(endPoint?.latitude, endPoint?.longitude) ||
+          fieldAttendanceRecord?.check_out_location ||
+          formatCoordinateLabel(
+            fieldAttendanceRecord?.check_out_latitude,
+            fieldAttendanceRecord?.check_out_longitude,
+          ) ||
           parsedCheckInLocation?.address ||
           formatCoordinateLabel(
             parsedCheckInLocation?.latitude,
@@ -1858,6 +2002,7 @@ const getLiveLocationHistory = async (req, res) => {
           ) ||
           null,
         attendance: attendanceRecord || null,
+        fieldAttendance: fieldAttendanceRecord || null,
       },
     });
   } catch (error) {
@@ -1993,6 +2138,56 @@ const exportLocationHistory = async (req, res) => {
       .orderBy("ell.location_timestamp", "asc")
       .limit(5000);
 
+    // Geocode points that don't have addresses
+    const coordinateMap = new Map();
+    const pointsNeedingGeocode = [];
+
+    points.forEach((point) => {
+      if (point.address) {
+        return;
+      }
+      const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
+      if (!coordinateMap.has(coordKey)) {
+        coordinateMap.set(coordKey, []);
+        pointsNeedingGeocode.push(point);
+      }
+      coordinateMap.get(coordKey).push(point);
+    });
+
+    // Geocode only unique coordinates (with batch processing to avoid rate limiting)
+    const geocodedAddresses = new Map();
+    const batchSize = 5;
+    
+    for (let i = 0; i < pointsNeedingGeocode.length; i += batchSize) {
+      const batch = pointsNeedingGeocode.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map(async (point) => {
+          const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
+          try {
+            const reverseGeocoded = await reverseGeocodeGoogle({
+              latitude: Number(point.latitude),
+              longitude: Number(point.longitude),
+            });
+            geocodedAddresses.set(coordKey, reverseGeocoded?.address || null);
+          } catch (error) {
+            console.error("Reverse geocoding failed for point:", point.id, error);
+            geocodedAddresses.set(coordKey, null);
+          }
+        }),
+      );
+      if (i + batchSize < pointsNeedingGeocode.length) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+
+    // Apply geocoded addresses to all points
+    const finalPoints = points.map((point) => {
+      if (point.address) return point;
+      const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
+      const address = geocodedAddresses.get(coordKey);
+      return { ...point, address: address || null };
+    });
+
     // Get attendance for context
     let attendanceQuery = knex("attendance as a").where({
       "a.company_id": companyId,
@@ -2028,15 +2223,22 @@ const exportLocationHistory = async (req, res) => {
     if (format === "csv") {
       // Generate CSV
       let csv =
-        "Employee ID,Employee Name,Email,Department,Date,Time,Latitude,Longitude,Accuracy,Address,Device Info\n";
+        "Employee ID,Employee Name,Email,Department,Date,Time,Location Address,Accuracy,Latitude,Longitude,Device Info\n";
 
-      points.forEach((point) => {
+      finalPoints.forEach((point) => {
         const date = new Date(point.location_timestamp);
-        const dateStr = date.toLocaleDateString("en-IN");
+        // Ultra-compact date format (DD/MM/YYYY) - exactly 10 chars to avoid "######" in sheets
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        const dateStr = `${day}/${month}/${year}`;
+        
+        // Compact time format (HH:MM:SS) for better spreadsheet compatibility
         const timeStr = date.toLocaleTimeString("en-IN", {
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
+          hour12: false,
         });
         const latitude = Number(point.latitude).toFixed(6);
         const longitude = Number(point.longitude).toFixed(6);
@@ -2046,14 +2248,39 @@ const exportLocationHistory = async (req, res) => {
         const address = (point.address || "").replace(/"/g, '""');
         const deviceInfo = (point.device_info || "").replace(/"/g, '""');
 
-        csv += `"${employee.employee_id}","${employee.first_name} ${employee.last_name}","${employee.email}","${employee.department_id}","${dateStr}","${timeStr}",${latitude},${longitude},${accuracy},"${address}","${deviceInfo}"\n`;
+        csv += `"${employee.employee_id}","${employee.first_name} ${employee.last_name}","${employee.email}","${employee.department_id}","'${dateStr}","${timeStr}","${address}",${accuracy},${latitude},${longitude},"${deviceInfo}"\n`;
       });
 
       // Add summary
       csv += "\n\nSummary:\n";
-      csv += `Total Points,${points.length}\n`;
-      csv += `Check-In,${attendance?.check_in || "N/A"}\n`;
-      csv += `Check-Out,${attendance?.check_out || "N/A"}\n`;
+      csv += `Total Points,${finalPoints.length}\n`;
+      
+      let checkInStr = "N/A";
+      if (attendance?.check_in) {
+        const checkInDate = new Date(attendance.check_in);
+        const checkInDay = String(checkInDate.getDate()).padStart(2, '0');
+        const checkInMonth = String(checkInDate.getMonth() + 1).padStart(2, '0');
+        const checkInYear = checkInDate.getFullYear();
+        const checkInHour = String(checkInDate.getHours()).padStart(2, '0');
+        const checkInMin = String(checkInDate.getMinutes()).padStart(2, '0');
+        const checkInSec = String(checkInDate.getSeconds()).padStart(2, '0');
+        checkInStr = `'${checkInDay}/${checkInMonth}/${checkInYear} ${checkInHour}:${checkInMin}:${checkInSec}`;
+      }
+      
+      let checkOutStr = "N/A";
+      if (attendance?.check_out) {
+        const checkOutDate = new Date(attendance.check_out);
+        const checkOutDay = String(checkOutDate.getDate()).padStart(2, '0');
+        const checkOutMonth = String(checkOutDate.getMonth() + 1).padStart(2, '0');
+        const checkOutYear = checkOutDate.getFullYear();
+        const checkOutHour = String(checkOutDate.getHours()).padStart(2, '0');
+        const checkOutMin = String(checkOutDate.getMinutes()).padStart(2, '0');
+        const checkOutSec = String(checkOutDate.getSeconds()).padStart(2, '0');
+        checkOutStr = `'${checkOutDay}/${checkOutMonth}/${checkOutYear} ${checkOutHour}:${checkOutMin}:${checkOutSec}`;
+      }
+      
+      csv += `Check-In,${checkInStr}\n`;
+      csv += `Check-Out,${checkOutStr}\n`;
 
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader(
@@ -2071,9 +2298,9 @@ const exportLocationHistory = async (req, res) => {
           name: `${employee.first_name} ${employee.last_name}`,
           email: employee.email,
         },
-        locations: points,
+        locations: finalPoints,
         summary: {
-          totalPoints: points.length,
+          totalPoints: finalPoints.length,
           startDate: startDate || null,
           endDate: endDate || null,
           checkIn: attendance?.check_in || null,

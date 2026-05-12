@@ -34,11 +34,14 @@ const resolveEmployeeProfile = async (req, companyId) => {
     if (byMappedId) return byMappedId;
   }
 
-  // Standard employee token path
-  const byId = await knex("employees")
-    .where({ id: Number(req.user?.id), company_id: companyId })
-    .first();
-  if (byId) return byId;
+  // Standard employee token path. Admin tokens use users.id, which can collide
+  // with employees.id, so do not treat an admin id as an employee id.
+  if (normalizeText(req.user?.type) === "employee") {
+    const byId = await knex("employees")
+      .where({ id: Number(req.user?.id), company_id: companyId })
+      .first();
+    if (byId) return byId;
+  }
 
   // Fallback for admin/user token path: map by email within same company
   if (req.user?.email) {
@@ -52,6 +55,11 @@ const resolveEmployeeProfile = async (req, companyId) => {
   }
 
   return null;
+};
+
+const resolveAuthenticatedEmployeeId = async (req, companyId) => {
+  const employee = await resolveEmployeeProfile(req, companyId);
+  return employee?.id || null;
 };
 
 const getEmployeesByRole = async (companyId, roleName) => {
@@ -87,6 +95,30 @@ const parseCsv = (value) =>
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+
+const normalizeTimeForCompare = (value) => {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return null;
+  return `${String(Number(match[1])).padStart(2, "0")}:${match[2]}:${match[3] || "00"}`;
+};
+
+const markPermissionAttendancePresent = async (permission) => {
+  if (!permission) return;
+
+  const fromTime = normalizeTimeForCompare(permission.permission_time_from);
+  const toTime = normalizeTimeForCompare(permission.permission_time_to);
+  if (!fromTime || !toTime) return;
+
+  await knex("attendance")
+    .where({
+      company_id: permission.company_id,
+      employee_id: permission.employee_id,
+      status: "late",
+    })
+    .whereRaw("DATE(check_in) = DATE(?)", [permission.permission_date])
+    .whereRaw("TIME(check_in) BETWEEN ? AND ?", [fromTime, toTime])
+    .update({ status: "present" });
+};
 
 const getSelectedApproverEmails = async (companyId, body = {}) => {
   const selectedEntries = parseCsv(body.reporting_manager_id);
@@ -582,6 +614,8 @@ const applyLeavePermission = async (req, res) => {
         .where({ id: newId })
         .first();
 
+      await markPermissionAttendancePresent(newPermission);
+
       // ===============================
       // ✅ MANAGER DESIGNATION
       // ===============================
@@ -853,6 +887,11 @@ const updateLeavePermissionStatus = async (req, res) => {
     if (!isAuthorized)
       return res.status(403).json({ message: "Not authorized" });
 
+    const approverEmployeeId = await resolveAuthenticatedEmployeeId(
+      req,
+      companyId,
+    );
+
     // ===============================
     // UPDATE LEAVE PERMISSION APPLICATION
     // ===============================
@@ -860,10 +899,14 @@ const updateLeavePermissionStatus = async (req, res) => {
       .where({ id })
       .update({
         status,
-        approved_by: req.user.id,
+        approved_by: approverEmployeeId,
         approved_at: knex.fn.now(),
         remarks: remarks || null,
       });
+
+    if (status === "approved") {
+      await markPermissionAttendancePresent(permission);
+    }
 
     // ===============================
     // SEND EMAIL TO EMPLOYEE

@@ -160,6 +160,27 @@ const getPayrollPeriod = (month, company) => {
   return { startDate, endDate, totalDays, startDay, endDay };
 };
 
+const getEffectivePayrollEndDate = (startDate, endDate) => {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+
+  if (today >= startDate && today < endDate) {
+    return today;
+  }
+
+  return endDate;
+};
+
+const getInclusiveDayCount = (startDate, endDate) => {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+
+  if (end < start) return 0;
+  return Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
+};
+
 const normalizeAttendanceStatus = (status) => {
   const s = String(status || '').toLowerCase().trim();
   if (s === 'half-day' || s === 'half_day') return 'half';
@@ -714,6 +735,8 @@ const processPayroll = async (req, res) => {
     // ===============================
     const [year, monthNum] = month.split('-').map(Number);
     const { startDate, endDate, totalDays } = getPayrollPeriod(month, company);
+    const effectiveEndDate = getEffectivePayrollEndDate(startDate, endDate);
+    const elapsedPayrollDays = getInclusiveDayCount(startDate, effectiveEndDate);
 
     // ===============================
     // MONTHLY GROSS
@@ -737,7 +760,7 @@ const processPayroll = async (req, res) => {
         employee_id: empId,
         company_id: companyId,
       })
-      .whereBetween('check_in', [startDate, endDate])
+      .whereBetween('check_in', [startDate, effectiveEndDate])
       .select(
         knex.raw("DATE(check_in) as day"),
         'status',
@@ -750,7 +773,7 @@ const processPayroll = async (req, res) => {
 
     const holidayRows = await knex('holidays')
       .where({ company_id: companyId })
-      .whereBetween('date', [formatDateKey(startDate), formatDateKey(endDate)])
+      .whereBetween('date', [formatDateKey(startDate), formatDateKey(effectiveEndDate)])
       .select(knex.raw("DATE_FORMAT(date, '%Y-%m-%d') as day"));
 
     const holidayDateSet = new Set(holidayRows.map((r) => r.day).filter(Boolean));
@@ -808,7 +831,7 @@ const processPayroll = async (req, res) => {
         company_id: companyId,
         status: 'approved'
       })
-      .andWhereRaw('from_date <= ? AND to_date >= ?', [endDate, startDate])
+      .andWhereRaw('from_date <= ? AND to_date >= ?', [effectiveEndDate, startDate])
       .select('from_date', 'to_date');
 
     const leaveDateSet = new Set();
@@ -817,7 +840,7 @@ const processPayroll = async (req, res) => {
       const to = new Date(l.to_date);
 
       const current = new Date(Math.max(from.getTime(), startDate.getTime()));
-      const end = new Date(Math.min(to.getTime(), endDate.getTime()));
+      const end = new Date(Math.min(to.getTime(), effectiveEndDate.getTime()));
       current.setHours(0, 0, 0, 0);
       end.setHours(0, 0, 0, 0);
 
@@ -838,7 +861,7 @@ const processPayroll = async (req, res) => {
     let workingDays = 0;
     const workingDayCursor = new Date(startDate);
     workingDayCursor.setHours(0, 0, 0, 0);
-    while (workingDayCursor <= endDate) {
+    while (workingDayCursor <= effectiveEndDate) {
       const key = formatDateKey(workingDayCursor);
       if (!isWeekend(workingDayCursor) && !holidayDateSet.has(key)) {
         workingDays++;
@@ -849,8 +872,9 @@ const processPayroll = async (req, res) => {
     const presentDays = presentDateSet.size;
     const halfDays = roundTo2(halfDayDateSet.size * 0.5);
     const creditedWorkingDays = roundTo2(presentDays + halfDays + approvedLeaveDays);
-    const lopDays = Math.max(0, roundTo2(workingDays - creditedWorkingDays));
-    const payableDays = roundTo2(totalDays - lopDays);
+    const absentWorkingDays = Math.max(0, roundTo2(workingDays - creditedWorkingDays));
+    const payableDays = Math.max(0, roundTo2(elapsedPayrollDays - absentWorkingDays));
+    const lopDays = Math.max(0, roundTo2(totalDays - payableDays));
     const dailyGross = totalDays > 0 ? monthlyGross / totalDays : 0;
     const lopAmount = roundTo2(dailyGross * lopDays);
 
@@ -869,7 +893,7 @@ const processPayroll = async (req, res) => {
     // ===============================
     const expenses = await knex('expenses')
       .where({ employee_id: empId, company_id: companyId, status: 'approved' })
-      .whereBetween('expense_date', [formatDateKey(startDate), formatDateKey(endDate)]);
+      .whereBetween('expense_date', [formatDateKey(startDate), formatDateKey(effectiveEndDate)]);
 
     const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
 

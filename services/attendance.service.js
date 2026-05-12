@@ -21,6 +21,38 @@ const getDayWindow = (date) => {
   return { start, end };
 };
 
+const formatDateOnly = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const formatTimeOnly = (date) => {
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${hours}:${minutes}:${seconds}`;
+};
+
+const getActivePermissionForPunch = async ({ companyId, employeeId, punchTime }) => {
+  const punchDate = formatDateOnly(punchTime);
+  const punchTimeOnly = formatTimeOnly(punchTime);
+
+  return knex('leave_permissions')
+    .where({
+      company_id: companyId,
+      employee_id: employeeId
+    })
+    .whereIn('status', ['pending', 'approved'])
+    .whereRaw('DATE(permission_date) = ?', [punchDate])
+    .where('permission_time_from', '<=', punchTimeOnly)
+    .where('permission_time_to', '>=', punchTimeOnly)
+    .orderByRaw("CASE WHEN status = 'approved' THEN 0 ELSE 1 END")
+    .orderBy('created_at', 'desc')
+    .first();
+};
+
 async function doCheckIn({
   employeeId,
   companyId,
@@ -88,7 +120,13 @@ async function doCheckIn({
 
   const checkInTime = effectivePunchTime;
   let attendanceStatus = 'present';
-  if (employeeShift?.start_time) {
+  const activePermission = await getActivePermissionForPunch({
+    companyId,
+    employeeId,
+    punchTime: checkInTime
+  });
+
+  if (!activePermission && employeeShift?.start_time) {
     const [startHour, startMin] = employeeShift.start_time
       .split(':')
       .slice(0, 2)

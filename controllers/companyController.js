@@ -2,7 +2,7 @@
 const path = require('path');
 const fs = require('fs');
 const knex = require('../db/db');
-const {generateAutoNumber}   = require('../utils/generateAutoNumber');
+const { generateAutoNumber } = require('../utils/generateAutoNumber');
 
 const uploadRoot = path.resolve(__dirname, '..', '..', 'uploads', 'company-logos');
 
@@ -225,7 +225,9 @@ const updateCompany = async (req, res) => {
     payrollEndDay,
     address,
     esslApiKey,
-    esslEnabled
+    esslEnabled,
+    removeLogo,
+    removeSignature
   } = req.body;
 
   let logoPath = null;
@@ -240,6 +242,8 @@ const updateCompany = async (req, res) => {
 
     const logoFile = getUploadedAsset(req, 'logo');
     const signatureFile = getUploadedAsset(req, 'signature');
+    const shouldRemoveLogo = String(removeLogo || '').toLowerCase() === 'true';
+    const shouldRemoveSignature = String(removeSignature || '').toLowerCase() === 'true';
 
     if (logoFile) {
       logoPath = moveUploadedAssetToCanonicalPath(logoFile, companyId, 'logo');
@@ -249,11 +253,11 @@ const updateCompany = async (req, res) => {
       signaturePath = moveUploadedAssetToCanonicalPath(signatureFile, companyId, 'signature');
     }
 
-    if (logoFile && company.logo && company.logo !== logoPath) {
+    if ((logoFile || shouldRemoveLogo) && company.logo && company.logo !== logoPath) {
       removeAssetFileIfExists(company.logo);
     }
 
-    if (signatureFile && company.signature && company.signature !== signaturePath) {
+    if ((signatureFile || shouldRemoveSignature) && company.signature && company.signature !== signaturePath) {
       removeAssetFileIfExists(company.signature);
     }
 
@@ -269,8 +273,8 @@ const updateCompany = async (req, res) => {
       essl_enabled: esslEnabled !== undefined
         ? String(esslEnabled).toLowerCase() === 'true' || esslEnabled === true
         : company.essl_enabled,
-      logo: logoPath || company.logo,
-      signature: signaturePath || company.signature,
+      logo: shouldRemoveLogo && !logoFile ? null : (logoPath || company.logo),
+      signature: shouldRemoveSignature && !signatureFile ? null : (signaturePath || company.signature),
       updated_at: knex.fn.now()
     };
     updatePayload = await withOptionalColumn('companies', updatePayload, 'payroll_start_day', clampPayrollDay(payrollStartDay, company.payroll_start_day || 1));

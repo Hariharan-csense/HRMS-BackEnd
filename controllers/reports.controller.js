@@ -45,6 +45,14 @@ const addDays = (dateKey, days) => {
   return toDateKey(date);
 };
 
+const isWeekendDateKey = (dateKey) => {
+  if (!dateKey) return false;
+  const date = new Date(`${dateKey}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return false;
+  const day = date.getDay();
+  return day === 0 || day === 6;
+};
+
 const clampDateRange = (fromDate, toDate, startDate, endDate) => {
   const from = toDateKey(fromDate);
   const to = toDateKey(toDate);
@@ -195,6 +203,23 @@ const getAttendanceReport = async (req, res) => {
 
       return query;
     };
+
+    let employeeQuery = knex('employees as e')
+      .leftJoin('departments as d', 'e.department_id', 'd.id')
+      .leftJoin('designations as desg', 'e.designation_id', 'desg.id')
+      .where('e.company_id', companyId)
+      .select(
+        'e.id as employeePkId',
+        'e.employee_id as employeeCode',
+        knex.raw("CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,'')) as employeeName"),
+        'e.mobile as phoneNumber',
+        'e.location_office as branch',
+        'd.name as department',
+        'desg.name as designation'
+      );
+
+    employeeQuery = employeeScope(employeeQuery);
+    const scopedEmployees = await employeeQuery;
 
     const leaveHasCompanyId = await knex.schema.hasColumn('leave_applications', 'company_id');
     let leaveQuery = knex('leave_applications as l')
@@ -395,6 +420,51 @@ const getAttendanceReport = async (req, res) => {
       rowsByEmployeeDate.set(key, permissionRow);
       rows.push(permissionRow);
     });
+
+    if (!status || normalizeStatus(status) === 'weekend') {
+      scopedEmployees.forEach((employee) => {
+        for (let date = reportStartDate; date <= reportEndDate; date = addDays(date, 1)) {
+          if (!isWeekendDateKey(date)) continue;
+
+          const key = rowKey(employee.employeePkId, date);
+          if (rowsByEmployeeDate.has(key)) continue;
+
+          const weekendRow = {
+            id: `weekend-${employee.employeePkId}-${date}`,
+            employeePkId: employee.employeePkId,
+            employeeCode: employee.employeeCode,
+            employeeName: employee.employeeName,
+            phoneNumber: employee.phoneNumber,
+            branch: employee.branch,
+            department: employee.department,
+            designation: employee.designation,
+            status: 'weekend',
+            date,
+            checkInTime: null,
+            checkOutTime: null,
+            hoursWorked: 0,
+            overtimeHours: 0,
+            deviceInfo: null,
+            autoFlag: null,
+            flagReason: 'Weekend',
+            check_in_location: null,
+            check_out_location: null,
+            leaveTaken: '',
+            leaveType: '',
+            leaveDays: '',
+            leaveReason: '',
+            permissionTaken: '',
+            permissionFromTime: '',
+            permissionToTime: '',
+            permissionDuration: '',
+            permissionReason: '',
+          };
+
+          rowsByEmployeeDate.set(key, weekendRow);
+          rows.push(weekendRow);
+        }
+      });
+    }
 
     rows.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
 
