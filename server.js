@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3000;
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  path: "/backeclsnd/socket.io",
+  path: "/backend/socket.io",
   cors: {
     origin: true,
     credentials: true,
@@ -54,8 +54,9 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 const rootUploadsPath = path.resolve(__dirname, "..", "uploads");
 const backendUploadsPath = path.resolve(__dirname, "uploads");
-app.get("/uploads/*", (req, res, next) => {
+const serveUploadedFile = (req, res, next) => {
   const relativeUploadPath = String(req.path || "")
+    .replace(/^\/backend\/uploads\/?/, "")
     .replace(/^\/uploads\/?/, "")
     .replace(/^\/+/, "");
 
@@ -76,7 +77,10 @@ app.get("/uploads/*", (req, res, next) => {
   }
 
   return next();
-});
+};
+app.get(["/uploads/*", "/backend/uploads/*"], serveUploadedFile);
+app.use("/backend/uploads", express.static(rootUploadsPath));
+app.use("/backend/uploads", express.static(backendUploadsPath));
 app.use("/uploads", express.static(rootUploadsPath));
 app.use("/uploads", express.static(backendUploadsPath));
 // Serve uploaded files (images, documents, etc.)
