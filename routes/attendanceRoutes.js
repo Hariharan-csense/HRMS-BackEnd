@@ -2,6 +2,8 @@ const express = require("express");
 const router = express.Router();
 const {
   getAttendanceStatus,
+  getAssignedAttendanceClients,
+  validateCheckInLocation,
   checkIn,
   checkOut,
   getAttendanceLogs,
@@ -28,6 +30,20 @@ router.get(
   protect,
   requirePermission("attendance", "view"),
   getAttendanceStatus,
+);
+
+router.get(
+  "/assigned-clients",
+  protect,
+  requirePermission("attendance", "view"),
+  getAssignedAttendanceClients,
+);
+
+router.post(
+  "/validate-check-in-location",
+  protect,
+  requirePermission("attendance", "create", { submodule: "capture" }),
+  validateCheckInLocation,
 );
 
 // Check-in/Check-out routes with file upload

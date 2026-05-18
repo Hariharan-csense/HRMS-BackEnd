@@ -14,9 +14,20 @@ exports.createLeaveType = async (req, res) => {
       description
     } = req.body;
 
-    if (!name || annual_limit === undefined) {
+    if (!name) {
       return res.status(400).json({
-        message: 'name and annual_limit are required'
+        message: 'name is required'
+      });
+    }
+
+    const normalizedAnnualLimit =
+      annual_limit === undefined || annual_limit === null || annual_limit === ''
+        ? 0
+        : Number(annual_limit);
+
+    if (!Number.isFinite(normalizedAnnualLimit) || normalizedAnnualLimit < 0) {
+      return res.status(400).json({
+        message: 'annual_limit must be a valid non-negative number'
       });
     }
 
@@ -40,7 +51,7 @@ exports.createLeaveType = async (req, res) => {
       leave_type_id: leaveTypeId,
       name,
       is_paid: is_paid ?? 1,
-      annual_limit,
+      annual_limit: normalizedAnnualLimit,
       carry_forward: carry_forward ?? 0,
       encashable: encashable ?? 0,
       description: description ?? null,

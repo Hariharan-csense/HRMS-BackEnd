@@ -5,6 +5,7 @@ const { hasAnyRole } = require("../middleware/authMiddleware");
 const { doCheckIn, doCheckOut } = require("../services/attendance.service");
 const { getEmployeeShift } = require("../utils/shift.util");
 const { reverseGeocodeGoogle } = require("../services/googleGeocode");
+const { applyEmployeeAssignmentFilter } = require("../utils/clientAssignments");
 
 // Resolve the real employees.id for the logged-in user.
 // - employee login: req.user.id already points to employees.id
@@ -151,6 +152,159 @@ const getAttendanceDateById = async (companyId, attendanceId) => {
   return row?.attendance_date || null;
 };
 
+const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
+  const toRad = (value) => (Number(value) * Math.PI) / 180;
+  const earthRadiusMeters = 6371000;
+  const dLat = toRad(lat2) - toRad(lat1);
+  const dLon = toRad(lon2) - toRad(lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const parseLocationFromRequest = (req) => {
+  let parsedLocation = null;
+  if (req.body?.location) {
+    try {
+      parsedLocation =
+        typeof req.body.location === "string"
+          ? JSON.parse(req.body.location)
+          : req.body.location;
+    } catch {
+      parsedLocation = null;
+    }
+  }
+
+  const latitude = Number(req.body?.latitude ?? parsedLocation?.latitude);
+  const longitude = Number(req.body?.longitude ?? parsedLocation?.longitude);
+
+  return {
+    latitude,
+    longitude,
+    isValid: Number.isFinite(latitude) && Number.isFinite(longitude),
+  };
+};
+
+const validateAssignedClientLocationForCheckIn = async ({
+  req,
+  companyId,
+  employeeId,
+}) => {
+  const selectedClientIdRaw = req.body?.clientId ?? req.body?.client_id;
+  const selectedClientId =
+    selectedClientIdRaw === undefined || selectedClientIdRaw === null
+      ? null
+      : Number(selectedClientIdRaw);
+
+  if (
+    selectedClientIdRaw !== undefined &&
+    selectedClientIdRaw !== null &&
+    !Number.isInteger(selectedClientId)
+  ) {
+    const error = new Error("Valid selected client is required for check-in");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const assignedClientsQuery = knex("clients")
+    .where("clients.company_id", companyId)
+    .select(
+      "clients.id",
+      "clients.client_name",
+      "clients.geo_latitude",
+      "clients.geo_longitude",
+      "clients.geo_radius",
+    );
+
+  await applyEmployeeAssignmentFilter(assignedClientsQuery, {
+    clientTable: "clients",
+    employeeId,
+  });
+
+  if (selectedClientId) {
+    assignedClientsQuery.where("clients.id", selectedClientId);
+  }
+
+  const assignedClients = await assignedClientsQuery;
+
+  if (!assignedClients.length) {
+    if (selectedClientId) {
+      const error = new Error("Selected client is not assigned to this user");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    return null;
+  }
+
+  if (!selectedClientId) {
+    // Work-from-home or non-client check-in flow: allow attendance without forcing
+    // the employee to be inside a specific assigned client geofence.
+    return null;
+  }
+
+  const clientsWithLocation = assignedClients.filter(
+    (client) =>
+      Number.isFinite(Number(client.geo_latitude)) &&
+      Number.isFinite(Number(client.geo_longitude)),
+  );
+
+  if (!clientsWithLocation.length) {
+    const error = new Error(
+      "Assigned client location is not configured. Please contact admin.",
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const employeeLocation = parseLocationFromRequest(req);
+  if (!employeeLocation.isValid) {
+    const error = new Error("Valid current location is required for check-in");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const clientDistances = clientsWithLocation
+    .map((client) => {
+      const distance = calculateDistanceMeters(
+        employeeLocation.latitude,
+        employeeLocation.longitude,
+        client.geo_latitude,
+        client.geo_longitude,
+      );
+      const radius = Number(client.geo_radius) || 50;
+
+      return {
+        clientId: client.id,
+        clientName: client.client_name,
+        distance: Math.round(distance),
+        radius,
+        withinFence: distance <= radius,
+      };
+    })
+    .sort((a, b) => a.distance - b.distance);
+
+  const matchedClient = clientDistances.find((client) => client.withinFence);
+  if (!matchedClient) {
+    const nearestClient = clientDistances[0];
+    const error = new Error(
+      selectedClientId && nearestClient
+        ? `You are outside ${nearestClient.clientName}'s location. You are ${nearestClient.distance}m away (Allowed: ${nearestClient.radius}m)`
+        : nearestClient
+          ? `You are outside assigned client locations. Nearest: ${nearestClient.clientName}, ${nearestClient.distance}m away (Allowed: ${nearestClient.radius}m)`
+          : "You are outside assigned client locations",
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return matchedClient;
+};
+
 // Check current attendance status
 const getAttendanceStatus = async (req, res) => {
   try {
@@ -188,6 +342,88 @@ const getAttendanceStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to fetch attendance status",
+    });
+  }
+};
+
+const getAssignedAttendanceClients = async (req, res) => {
+  try {
+    const companyId = Number(req.user?.company_id);
+    const employeeId = await resolveAttendanceEmployeeId(req);
+
+    if (!companyId || !employeeId) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing employee or company context",
+      });
+    }
+
+    const query = knex("clients")
+      .where("clients.company_id", companyId)
+      .select(
+        "clients.id",
+        "clients.client_id",
+        "clients.client_name",
+        "clients.address",
+        "clients.geo_latitude",
+        "clients.geo_longitude",
+        "clients.geo_radius",
+      );
+
+    await applyEmployeeAssignmentFilter(query, {
+      clientTable: "clients",
+      employeeId,
+    });
+
+    const clients = await query.orderBy("clients.client_name", "asc");
+
+    return res.json({
+      success: true,
+      data: clients,
+    });
+  } catch (error) {
+    console.error("Get assigned attendance clients error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch assigned clients",
+    });
+  }
+};
+
+const validateCheckInLocation = async (req, res) => {
+  try {
+    const companyId = Number(req.user?.company_id);
+    const employeeId = await resolveAttendanceEmployeeId(req);
+
+    if (!companyId || !employeeId) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing employee or company context",
+      });
+    }
+
+    const matchedClient = await validateAssignedClientLocationForCheckIn({
+      req,
+      companyId,
+      employeeId,
+    });
+
+    return res.json({
+      success: true,
+      requiresClientLocation: Boolean(matchedClient),
+      matchedClient,
+    });
+  } catch (err) {
+    if (err.statusCode && err.statusCode < 500) {
+      console.warn("Check-in location blocked:", err.message);
+    } else {
+      console.error("Check-in location validation error:", err);
+    }
+
+    return res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.statusCode ? err.message : "Failed to validate location",
+      error: err.message,
     });
   }
 };
@@ -415,6 +651,12 @@ const checkIn = async (req, res) => {
 
     console.log("Check-in called with:", { employeeId, companyId });
 
+    await validateAssignedClientLocationForCheckIn({
+      req,
+      companyId,
+      employeeId,
+    });
+
     // 3️⃣ Fetch shift if assigned. Do not block check-in when shift is missing
     // (e.g. admin users without shift assignment).
     const shift = await getEmployeeShift(employeeId, companyId);
@@ -439,11 +681,18 @@ const checkIn = async (req, res) => {
     // 5️⃣ Return success
     res.json({ success: true, attendance });
   } catch (err) {
-    console.error("Check-in error:", err);
+    if (err.statusCode && err.statusCode < 500) {
+      console.warn("Check-in blocked:", err.message);
+    } else {
+      console.error("Check-in error:", err);
+    }
     const isDuplicateCheckIn = err.message === "Already checked in today";
-    res.status(isDuplicateCheckIn ? 400 : 500).json({
+    res.status(err.statusCode || (isDuplicateCheckIn ? 400 : 500)).json({
       success: false,
-      message: isDuplicateCheckIn ? err.message : "Failed to check in",
+      message:
+        err.statusCode || isDuplicateCheckIn
+          ? err.message
+          : "Failed to check in",
       error: err.message,
     });
   }
@@ -1286,21 +1535,17 @@ const postLiveLocation = async (req, res) => {
       req.body?.accuracy != null ? Number(req.body.accuracy) : null;
 
     if (!companyId || !employeeId) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Missing employee or company context",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Missing employee or company context",
+      });
     }
 
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Valid latitude and longitude are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Valid latitude and longitude are required",
+      });
     }
 
     const timestampValue = req.body?.timestamp
@@ -1338,8 +1583,7 @@ const postLiveLocation = async (req, res) => {
         break;
       } catch (insertError) {
         const isDuplicateTimestamp =
-          insertError?.code === "ER_DUP_ENTRY" ||
-          insertError?.errno === 1062;
+          insertError?.code === "ER_DUP_ENTRY" || insertError?.errno === 1062;
 
         if (!isDuplicateTimestamp || attempt === 9) {
           throw insertError;
@@ -1507,8 +1751,7 @@ const getLiveLocations = async (req, res) => {
           : hasActiveRegularAttendance
             ? "attendance"
             : null,
-        field_attendance_id:
-          activeFieldAttendance?.field_attendance_id || null,
+        field_attendance_id: activeFieldAttendance?.field_attendance_id || null,
         client_id: activeFieldAttendance?.client_id || null,
       };
     });
@@ -1578,20 +1821,16 @@ const getLiveLocationHistory = async (req, res) => {
           requestedEmployee.id !== loggedInUser.id &&
           requestedEmployee.department_id !== loggedInUser.department_id
         ) {
-          return res
-            .status(403)
-            .json({
-              success: false,
-              message: "Not allowed to view this employee history",
-            });
-        }
-      } else if (requestedEmployeeId !== loggedInUser.id) {
-        return res
-          .status(403)
-          .json({
+          return res.status(403).json({
             success: false,
             message: "Not allowed to view this employee history",
           });
+        }
+      } else if (requestedEmployeeId !== loggedInUser.id) {
+        return res.status(403).json({
+          success: false,
+          message: "Not allowed to view this employee history",
+        });
       }
     }
 
@@ -1679,7 +1918,7 @@ const getLiveLocationHistory = async (req, res) => {
     // Geocode only unique coordinates (with batch processing to avoid rate limiting)
     const geocodedAddresses = new Map();
     const batchSize = 5; // Process 5 at a time with small delay
-    
+
     for (let i = 0; i < pointsNeedingGeocode.length; i += batchSize) {
       const batch = pointsNeedingGeocode.slice(i, i + batchSize);
       await Promise.all(
@@ -1692,7 +1931,11 @@ const getLiveLocationHistory = async (req, res) => {
             });
             geocodedAddresses.set(coordKey, reverseGeocoded?.address || null);
           } catch (error) {
-            console.error("Reverse geocoding failed for point:", point.id, error);
+            console.error(
+              "Reverse geocoding failed for point:",
+              point.id,
+              error,
+            );
             geocodedAddresses.set(coordKey, null);
           }
         }),
@@ -2068,20 +2311,16 @@ const exportLocationHistory = async (req, res) => {
           requestedEmployee.id !== loggedInUser.id &&
           requestedEmployee.department_id !== loggedInUser.department_id
         ) {
-          return res
-            .status(403)
-            .json({
-              success: false,
-              message: "Not allowed to view this employee history",
-            });
-        }
-      } else if (requestedEmployeeId !== loggedInUser.id) {
-        return res
-          .status(403)
-          .json({
+          return res.status(403).json({
             success: false,
             message: "Not allowed to view this employee history",
           });
+        }
+      } else if (requestedEmployeeId !== loggedInUser.id) {
+        return res.status(403).json({
+          success: false,
+          message: "Not allowed to view this employee history",
+        });
       }
     }
 
@@ -2157,7 +2396,7 @@ const exportLocationHistory = async (req, res) => {
     // Geocode only unique coordinates (with batch processing to avoid rate limiting)
     const geocodedAddresses = new Map();
     const batchSize = 5;
-    
+
     for (let i = 0; i < pointsNeedingGeocode.length; i += batchSize) {
       const batch = pointsNeedingGeocode.slice(i, i + batchSize);
       await Promise.all(
@@ -2170,7 +2409,11 @@ const exportLocationHistory = async (req, res) => {
             });
             geocodedAddresses.set(coordKey, reverseGeocoded?.address || null);
           } catch (error) {
-            console.error("Reverse geocoding failed for point:", point.id, error);
+            console.error(
+              "Reverse geocoding failed for point:",
+              point.id,
+              error,
+            );
             geocodedAddresses.set(coordKey, null);
           }
         }),
@@ -2228,11 +2471,11 @@ const exportLocationHistory = async (req, res) => {
       finalPoints.forEach((point) => {
         const date = new Date(point.location_timestamp);
         // Ultra-compact date format (DD/MM/YYYY) - exactly 10 chars to avoid "######" in sheets
-        const day = String(date.getDate()).padStart(2, '0');
-        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, "0");
+        const month = String(date.getMonth() + 1).padStart(2, "0");
         const year = date.getFullYear();
         const dateStr = `${day}/${month}/${year}`;
-        
+
         // Compact time format (HH:MM:SS) for better spreadsheet compatibility
         const timeStr = date.toLocaleTimeString("en-IN", {
           hour: "2-digit",
@@ -2254,31 +2497,37 @@ const exportLocationHistory = async (req, res) => {
       // Add summary
       csv += "\n\nSummary:\n";
       csv += `Total Points,${finalPoints.length}\n`;
-      
+
       let checkInStr = "N/A";
       if (attendance?.check_in) {
         const checkInDate = new Date(attendance.check_in);
-        const checkInDay = String(checkInDate.getDate()).padStart(2, '0');
-        const checkInMonth = String(checkInDate.getMonth() + 1).padStart(2, '0');
+        const checkInDay = String(checkInDate.getDate()).padStart(2, "0");
+        const checkInMonth = String(checkInDate.getMonth() + 1).padStart(
+          2,
+          "0",
+        );
         const checkInYear = checkInDate.getFullYear();
-        const checkInHour = String(checkInDate.getHours()).padStart(2, '0');
-        const checkInMin = String(checkInDate.getMinutes()).padStart(2, '0');
-        const checkInSec = String(checkInDate.getSeconds()).padStart(2, '0');
+        const checkInHour = String(checkInDate.getHours()).padStart(2, "0");
+        const checkInMin = String(checkInDate.getMinutes()).padStart(2, "0");
+        const checkInSec = String(checkInDate.getSeconds()).padStart(2, "0");
         checkInStr = `'${checkInDay}/${checkInMonth}/${checkInYear} ${checkInHour}:${checkInMin}:${checkInSec}`;
       }
-      
+
       let checkOutStr = "N/A";
       if (attendance?.check_out) {
         const checkOutDate = new Date(attendance.check_out);
-        const checkOutDay = String(checkOutDate.getDate()).padStart(2, '0');
-        const checkOutMonth = String(checkOutDate.getMonth() + 1).padStart(2, '0');
+        const checkOutDay = String(checkOutDate.getDate()).padStart(2, "0");
+        const checkOutMonth = String(checkOutDate.getMonth() + 1).padStart(
+          2,
+          "0",
+        );
         const checkOutYear = checkOutDate.getFullYear();
-        const checkOutHour = String(checkOutDate.getHours()).padStart(2, '0');
-        const checkOutMin = String(checkOutDate.getMinutes()).padStart(2, '0');
-        const checkOutSec = String(checkOutDate.getSeconds()).padStart(2, '0');
+        const checkOutHour = String(checkOutDate.getHours()).padStart(2, "0");
+        const checkOutMin = String(checkOutDate.getMinutes()).padStart(2, "0");
+        const checkOutSec = String(checkOutDate.getSeconds()).padStart(2, "0");
         checkOutStr = `'${checkOutDay}/${checkOutMonth}/${checkOutYear} ${checkOutHour}:${checkOutMin}:${checkOutSec}`;
       }
-      
+
       csv += `Check-In,${checkInStr}\n`;
       csv += `Check-Out,${checkOutStr}\n`;
 
@@ -2325,6 +2574,8 @@ const exportLocationHistory = async (req, res) => {
 
 module.exports = {
   getAttendanceStatus,
+  getAssignedAttendanceClients,
+  validateCheckInLocation,
   checkIn,
   checkOut,
   getAttendanceLogs,

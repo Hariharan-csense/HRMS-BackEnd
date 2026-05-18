@@ -52,11 +52,22 @@ const setSubmodulePermissions = (modules, moduleKey, submoduleKey, actions) => {
 
 const EMPLOYEE_DEFAULTS = [
   { module: "dashboard", actions: ["view"] },
-  { module: "employees", submodule: "profile", actions: ["view", "create", "update", "delete"] },
-  { module: "client_attendance", actions: ["view", "create", "update", "delete"] },
+  {
+    module: "employees",
+    submodule: "profile",
+    actions: ["view", "create", "update", "delete"],
+  },
+  {
+    module: "client_attendance",
+    actions: ["view", "create", "update", "delete"],
+  },
   { module: "my_clients", actions: ["view", "create", "update", "delete"] },
   { module: "attendance", actions: ["view", "create", "update"] },
-  { module: "attendance", submodule: "capture", actions: ["view", "create", "update", "delete"] },
+  {
+    module: "attendance",
+    submodule: "capture",
+    actions: ["view", "create", "update", "delete"],
+  },
   { module: "attendance", submodule: "log", actions: ["view"] },
   {
     module: "attendance",
@@ -64,15 +75,32 @@ const EMPLOYEE_DEFAULTS = [
     actions: ["view", "create", "update", "delete", "approve", "reject"],
   },
   { module: "leave", actions: ["view", "create", "update", "delete"] },
-  { module: "leave", submodule: "apply", actions: ["view", "create", "update"] },
+  {
+    module: "leave",
+    submodule: "apply",
+    actions: ["view", "create", "update"],
+  },
   { module: "leave", submodule: "balance", actions: ["view"] },
   { module: "leave", submodule: "leave_types", actions: ["view"] },
   { module: "leave", submodule: "permission", actions: ["view", "create"] },
+  { module: "payroll", submodule: "payslips", actions: ["view"] },
   { module: "expenses", actions: ["view", "create", "update", "delete"] },
-  { module: "expenses", submodule: "claims", actions: ["view", "create", "update", "delete"] },
+  {
+    module: "expenses",
+    submodule: "claims",
+    actions: ["view", "create", "update", "delete"],
+  },
   { module: "pulse_surveys", actions: ["view", "create", "update", "delete"] },
-  { module: "pulse_surveys", submodule: "my_surveys", actions: ["view", "create", "update", "delete"] },
-  { module: "pulse_surveys", submodule: "feedback", actions: ["view", "create", "update", "delete"] },
+  {
+    module: "pulse_surveys",
+    submodule: "my_surveys",
+    actions: ["view", "create", "update", "delete"],
+  },
+  {
+    module: "pulse_surveys",
+    submodule: "feedback",
+    actions: ["view", "create", "update", "delete"],
+  },
 ];
 
 const buildEmployeeDefaultModules = () => {
@@ -92,7 +120,9 @@ const buildEmployeeDefaultModules = () => {
 const buildFullAccessModules = () => createCatalogModules(enabledPermissions());
 
 const getDefaultModulesForRoleName = (roleName) => {
-  const normalizedRoleName = String(roleName || "").trim().toLowerCase();
+  const normalizedRoleName = String(roleName || "")
+    .trim()
+    .toLowerCase();
 
   if (normalizedRoleName === "employee") {
     return buildEmployeeDefaultModules();
