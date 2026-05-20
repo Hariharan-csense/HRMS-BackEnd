@@ -359,6 +359,22 @@ const getTicketsByOrganization = async (req, res) => {
 // @access  Super Admin only
 const getOrganizationStats = async (req, res) => {
   try {
+    const planColumns = await knex('subscription_plans').columnInfo();
+    const subscriptionColumns = await knex('company_subscriptions').columnInfo();
+    const planPriceExpr = planColumns.monthly_price
+      ? 'sp.monthly_price'
+      : planColumns.price
+        ? 'sp.price'
+        : '0';
+    const subscriptionMaxUsersSelect = subscriptionColumns.max_users
+      ? ', max_users'
+      : '';
+    const planMaxUsersExpr = subscriptionColumns.max_users
+      ? 'cs.max_users'
+      : planColumns.max_users
+        ? 'sp.max_users'
+        : '0';
+
     // Get all organizations with their subscription details using a simpler approach
     const organizationsQuery = `
       SELECT 
@@ -372,12 +388,12 @@ const getOrganizationStats = async (req, res) => {
         cs.end_date,
         cs.trial_end_date,
         sp.name as plan_name,
-        sp.price as plan_price,
-        sp.max_users as plan_max_users,
+        ${planPriceExpr} as plan_price,
+        ${planMaxUsersExpr} as plan_max_users,
         COALESCE(emp_counts.user_count, 0) as user_count
       FROM companies c
       LEFT JOIN (
-        SELECT DISTINCT company_id, plan_id, status, billing_cycle, start_date, end_date, trial_end_date, id,
+        SELECT DISTINCT company_id, plan_id, status, billing_cycle, start_date, end_date, trial_end_date, id${subscriptionMaxUsersSelect},
                ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY created_at DESC) as rn
         FROM company_subscriptions 
         WHERE status IN ('trial', 'active')

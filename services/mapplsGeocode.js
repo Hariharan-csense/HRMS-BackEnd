@@ -160,7 +160,7 @@ const reverseGeocodeMappls = async ({ latitude, longitude, signal, domain } = {}
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     const error = new Error(`Mappls reverse geocode failed (${response.status})`);
-    error.code = "MAPPLS_HTTP_ERROR";
+    error.code = response.status === 401 ? "MAPPLS_AUTH_ERROR" : "MAPPLS_HTTP_ERROR";
     error.status = response.status;
     error.body = body;
     error.domainUsed = effectiveDomain || "";

@@ -13,6 +13,17 @@ const {
   upgradeSubscription,
   createUpgradeOrder,
   verifyUpgradePayment,
+  getAddons,
+  getAvailableAddons,
+  createAddon,
+  updateAddon,
+  deleteAddon,
+  createAddonOrder,
+  verifyAddonPayment,
+  assignAddonToCompany,
+  removeCompanyAddon,
+  getAddonUserAssignments,
+  updateAddonUserAssignments,
   getPaymentHistory,
   checkSubscriptionStatus
 } = require('../controllers/subscriptionController');
@@ -30,6 +41,13 @@ router.get('/test', (req, res) => {
 // Apply authentication middleware to all other routes
 router.use(protect);
 
+// Company admin add-on purchase routes
+router.get('/addons/available', requirePermission("subscription", "view"), getAvailableAddons);
+router.post('/addons/create-order', requirePermission("subscription", "update"), createAddonOrder);
+router.post('/addons/verify-payment', requirePermission("subscription", "update"), verifyAddonPayment);
+router.get('/addons/assignments', requirePermission("subscription", "view"), getAddonUserAssignments);
+router.put('/addons/assignments/:subscriptionAddonId/users', requirePermission("subscription", "update"), updateAddonUserAssignments);
+
 // SuperAdmin-only plan management routes
 router.get('/plans/all', superAdminOnly, requirePermission("subscription_plans", "view"), getAllPlans);
 router.post('/plans', superAdminOnly, requirePermission("subscription_plans", "create"), createPlan);
@@ -37,6 +55,13 @@ router.put('/plans/:id', superAdminOnly, requirePermission("subscription_plans",
 router.patch('/plans/:id', superAdminOnly, requirePermission("subscription_plans", "update"), patchPlan);
 router.delete('/plans/:id', superAdminOnly, requirePermission("subscription_plans", "delete"), deletePlan);
 
+// SuperAdmin-only add-on package management routes
+router.get('/addons', superAdminOnly, requirePermission("subscription_plans", "view"), getAddons);
+router.post('/addons', superAdminOnly, requirePermission("subscription_plans", "create"), createAddon);
+router.put('/addons/:id', superAdminOnly, requirePermission("subscription_plans", "update"), updateAddon);
+router.delete('/addons/:id', superAdminOnly, requirePermission("subscription_plans", "delete"), deleteAddon);
+router.post('/addons/assign', superAdminOnly, requirePermission("subscription_plans", "update"), assignAddonToCompany);
+router.delete('/addons/assignments/:assignmentId', superAdminOnly, requirePermission("subscription_plans", "update"), removeCompanyAddon);
 
 // SuperAdmin-only subscription management routes
 router.get('/all', superAdminOnly, requirePermission("subscription_plans", "view"), getAllSubscriptions);

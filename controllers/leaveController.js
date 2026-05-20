@@ -25,6 +25,39 @@ const resolveWorkflowRole = (user = {}) => {
   return 'employee';
 };
 
+const resolveEmployeeProfile = async (req, companyId) => {
+  if (req.user?.employee_id) {
+    const byMappedId = await knex('employees')
+      .where({ id: Number(req.user.employee_id), company_id: companyId })
+      .first();
+    if (byMappedId) return byMappedId;
+  }
+
+  if (normalizeWorkflowText(req.user?.type) === 'employee') {
+    const byId = await knex('employees')
+      .where({ id: Number(req.user?.id), company_id: companyId })
+      .first();
+    if (byId) return byId;
+  }
+
+  if (req.user?.email) {
+    const byEmail = await knex('employees')
+      .where('company_id', companyId)
+      .whereRaw('LOWER(email) = ?', [
+        String(req.user.email).toLowerCase().trim(),
+      ])
+      .first();
+    if (byEmail) return byEmail;
+  }
+
+  const fallbackById = await knex('employees')
+    .where({ id: Number(req.user?.id), company_id: companyId })
+    .first();
+  if (fallbackById) return fallbackById;
+
+  return null;
+};
+
 const parseCsv = (value) =>
   String(value || '')
     .split(',')
@@ -335,31 +368,20 @@ const applyLeave = async (req, res) => {
       return res.status(400).json({ message: 'You are not assigned to any company' });
     }
 
-    const employeeId = req.user.id;
     const userRole = req.user.role; // 🔥 FROM TOKEN
 
     try {
       // ===============================
       // GET EMPLOYEE DETAILS
       // ===============================
-      const employee = await knex('employees')
-        .where({ id: employeeId, company_id: companyId })
-        .select(
-          'id',
-          'first_name',
-          'last_name',
-          'email',
-          'department_id',
-          'designation_id',
-          'employment_type'
-        )
-        .first();
+      const employee = await resolveEmployeeProfile(req, companyId);
 
       if (!employee) {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(404).json({ message: 'Employee not found or access denied' });
       }
 
+      const employeeId = employee.id;
       const employeeName = `${employee.first_name} ${employee.last_name || ''}`.trim();
 
       let { leave_type_id } = req.body;

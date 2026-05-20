@@ -5,7 +5,84 @@ const { hasAnyRole } = require("../middleware/authMiddleware");
 const { doCheckIn, doCheckOut } = require("../services/attendance.service");
 const { getEmployeeShift } = require("../utils/shift.util");
 const { reverseGeocodeGoogle } = require("../services/googleGeocode");
+const { reverseGeocodeMappls } = require("../services/mapplsGeocode");
 const { applyEmployeeAssignmentFilter } = require("../utils/clientAssignments");
+
+const liveGeocodeHealth = {
+  googleDisabled: false,
+  mapplsDisabled: false,
+  logged: new Set(),
+};
+
+const warnLiveGeocodeOnce = (key, ...args) => {
+  if (liveGeocodeHealth.logged.has(key)) return;
+  liveGeocodeHealth.logged.add(key);
+  console.warn(...args);
+};
+
+const getPreferredGeocodeProvider = () => {
+  const provider = String(process.env.GEOCODE_PROVIDER || "auto")
+    .trim()
+    .toLowerCase();
+  return ["google", "mappls", "auto"].includes(provider) ? provider : "auto";
+};
+
+const reverseGeocodeForLiveTracking = async ({ latitude, longitude }) => {
+  const provider = getPreferredGeocodeProvider();
+
+  if (provider !== "mappls" && !liveGeocodeHealth.googleDisabled) {
+    try {
+      return await reverseGeocodeGoogle({ latitude, longitude });
+    } catch (googleError) {
+      if (
+        ["GOOGLE_NOT_CONFIGURED", "GOOGLE_KEY_RESTRICTED"].includes(
+          googleError?.code,
+        )
+      ) {
+        liveGeocodeHealth.googleDisabled = true;
+        warnLiveGeocodeOnce(
+          "google-disabled",
+          googleError.message,
+          "Google live-tracking geocode disabled until backend restart.",
+        );
+      } else {
+        warnLiveGeocodeOnce(
+          `google-${googleError?.code || googleError?.statusText || "failed"}`,
+          "Google reverse geocode failed:",
+          googleError?.message || googleError,
+        );
+      }
+    }
+  }
+
+  if (provider !== "google" && !liveGeocodeHealth.mapplsDisabled) {
+    try {
+      return await reverseGeocodeMappls({ latitude, longitude });
+    } catch (mapplsError) {
+      if (
+        ["MAPPLS_NOT_CONFIGURED", "MAPPLS_AUTH_ERROR"].includes(
+          mapplsError?.code,
+        )
+      ) {
+        liveGeocodeHealth.mapplsDisabled = true;
+        warnLiveGeocodeOnce(
+          "mappls-disabled",
+          mapplsError?.code === "MAPPLS_AUTH_ERROR"
+            ? "Mappls reverse geocode failed (401). Mappls live-tracking geocode disabled until backend restart. Check MAPPLS_ACCESS_TOKEN."
+            : "Mappls live-tracking geocode not configured.",
+        );
+      } else {
+        warnLiveGeocodeOnce(
+          `mappls-${mapplsError?.code || mapplsError?.status || "failed"}`,
+          "Mappls reverse geocode failed:",
+          mapplsError?.message || mapplsError,
+        );
+      }
+    }
+  }
+
+  return null;
+};
 
 // Resolve the real employees.id for the logged-in user.
 // - employee login: req.user.id already points to employees.id
@@ -14,6 +91,13 @@ const resolveAttendanceEmployeeId = async (req) => {
   const companyId = Number(req.user?.company_id);
   if (!companyId) {
     throw new Error("Company not assigned to user");
+  }
+
+  if (req.user?.employee_id) {
+    const employee = await knex("employees")
+      .where({ id: Number(req.user.employee_id), company_id: companyId })
+      .first();
+    if (employee) return Number(employee.id);
   }
 
   // Employee token path (already employees.id)
@@ -309,6 +393,16 @@ const validateAssignedClientLocationForCheckIn = async ({
 const getAttendanceStatus = async (req, res) => {
   try {
     const companyId = Number(req.user.company_id);
+    if (!companyId && hasAnyRole(req.user, ["superadmin"])) {
+      return res.json({
+        success: true,
+        isCheckedIn: false,
+        hasCheckedInToday: false,
+        todayRecords: [],
+        message: "Super admin is not assigned to a company",
+      });
+    }
+
     const employeeId = await resolveAttendanceEmployeeId(req);
 
     const { start: todayStart, end: tomorrowStart } = getDayWindow();
@@ -1925,17 +2019,13 @@ const getLiveLocationHistory = async (req, res) => {
         batch.map(async (point) => {
           const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
           try {
-            const reverseGeocoded = await reverseGeocodeGoogle({
+            const reverseGeocoded = await reverseGeocodeForLiveTracking({
               latitude: Number(point.latitude),
               longitude: Number(point.longitude),
             });
             geocodedAddresses.set(coordKey, reverseGeocoded?.address || null);
           } catch (error) {
-            console.error(
-              "Reverse geocoding failed for point:",
-              point.id,
-              error,
-            );
+            console.warn("Reverse geocoding failed for point:", point.id);
             geocodedAddresses.set(coordKey, null);
           }
         }),
@@ -2260,7 +2350,9 @@ const getLiveLocationHistory = async (req, res) => {
 const exportLocationHistory = async (req, res) => {
   try {
     const companyId = Number(req.user?.company_id);
-    const requestedEmployeeId = Number(req.params?.employeeId);
+    const rawEmployeeId = String(req.params?.employeeId || "").trim();
+    const isAllEmployeesExport = rawEmployeeId.toLowerCase() === "all";
+    const requestedEmployeeId = Number(rawEmployeeId);
     const { startDate, endDate, format = "csv" } = req.query;
 
     if (!companyId) {
@@ -2269,7 +2361,7 @@ const exportLocationHistory = async (req, res) => {
         .json({ success: false, message: "Company not assigned to user" });
     }
 
-    if (!Number.isFinite(requestedEmployeeId)) {
+    if (!isAllEmployeesExport && !Number.isFinite(requestedEmployeeId)) {
       return res
         .status(400)
         .json({ success: false, message: "Valid employee id is required" });
@@ -2297,17 +2389,24 @@ const exportLocationHistory = async (req, res) => {
       }
 
       if (hasAnyRole(loggedInUser, ["manager"])) {
-        const requestedEmployee = await knex("employees")
-          .where({ id: requestedEmployeeId, company_id: companyId })
-          .first();
+        if (isAllEmployeesExport) {
+          loggedInUser.exportDepartmentOnly = true;
+        }
 
-        if (!requestedEmployee) {
+        const requestedEmployee = isAllEmployeesExport
+          ? null
+          : await knex("employees")
+              .where({ id: requestedEmployeeId, company_id: companyId })
+              .first();
+
+        if (!isAllEmployeesExport && !requestedEmployee) {
           return res
             .status(404)
             .json({ success: false, message: "Employee not found" });
         }
 
         if (
+          !isAllEmployeesExport &&
           requestedEmployee.id !== loggedInUser.id &&
           requestedEmployee.department_id !== loggedInUser.department_id
         ) {
@@ -2316,12 +2415,113 @@ const exportLocationHistory = async (req, res) => {
             message: "Not allowed to view this employee history",
           });
         }
-      } else if (requestedEmployeeId !== loggedInUser.id) {
+      } else if (isAllEmployeesExport || requestedEmployeeId !== loggedInUser.id) {
         return res.status(403).json({
           success: false,
           message: "Not allowed to view this employee history",
         });
       }
+    }
+
+    if (isAllEmployeesExport) {
+      let historyQuery = knex("employee_live_locations as ell")
+        .leftJoin("employees as e", "ell.employee_id", "e.id")
+        .leftJoin("departments as d", "e.department_id", "d.id")
+        .where("ell.company_id", companyId)
+        .where("e.company_id", companyId);
+
+      if (loggedInUser?.exportDepartmentOnly) {
+        historyQuery = historyQuery.where(
+          "e.department_id",
+          loggedInUser.department_id,
+        );
+      }
+
+      if (startDate) {
+        historyQuery = historyQuery.where(
+          "ell.location_timestamp",
+          ">=",
+          new Date(startDate),
+        );
+      }
+
+      if (endDate) {
+        historyQuery = historyQuery.where(
+          "ell.location_timestamp",
+          "<=",
+          new Date(endDate),
+        );
+      }
+
+      const points = await historyQuery
+        .select(
+          "ell.latitude",
+          "ell.longitude",
+          "ell.accuracy",
+          "ell.address",
+          "ell.location_timestamp",
+          "ell.device_info",
+          "e.employee_id",
+          "e.first_name",
+          "e.last_name",
+          "e.email",
+          "d.name as department_name",
+        )
+        .orderBy("ell.location_timestamp", "asc")
+        .limit(20000);
+
+      if (format === "csv") {
+        let csv =
+          "Employee ID,Employee Name,Email,Department,Date,Time,Location Address,Accuracy,Latitude,Longitude,Device Info\n";
+
+        points.forEach((point) => {
+          const date = new Date(point.location_timestamp);
+          const day = String(date.getDate()).padStart(2, "0");
+          const month = String(date.getMonth() + 1).padStart(2, "0");
+          const year = date.getFullYear();
+          const dateStr = `${day}/${month}/${year}`;
+          const timeStr = date.toLocaleTimeString("en-IN", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          });
+          const latitude = Number(point.latitude).toFixed(6);
+          const longitude = Number(point.longitude).toFixed(6);
+          const accuracy = point.accuracy
+            ? Number(point.accuracy).toFixed(2)
+            : "N/A";
+          const address = (point.address || "").replace(/"/g, '""');
+          const deviceInfo = (point.device_info || "").replace(/"/g, '""');
+          const employeeName = `${point.first_name || ""} ${point.last_name || ""}`.trim();
+
+          csv += `"${point.employee_id || ""}","${employeeName}","${point.email || ""}","${point.department_name || ""}","'${dateStr}","${timeStr}","${address}",${accuracy},${latitude},${longitude},"${deviceInfo}"\n`;
+        });
+
+        csv += "\n\nSummary:\n";
+        csv += `Total Points,${points.length}\n`;
+
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment;filename="all_employees_location_history_${new Date().toISOString().split("T")[0]}.csv"`,
+        );
+        return res.send(csv);
+      } else if (format === "json") {
+        return res.json({
+          success: true,
+          locations: points,
+          summary: {
+            totalPoints: points.length,
+            startDate: startDate || null,
+            endDate: endDate || null,
+          },
+        });
+      }
+
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid format. Use csv or json." });
     }
 
     // Get employee info
@@ -2403,17 +2603,13 @@ const exportLocationHistory = async (req, res) => {
         batch.map(async (point) => {
           const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
           try {
-            const reverseGeocoded = await reverseGeocodeGoogle({
+            const reverseGeocoded = await reverseGeocodeForLiveTracking({
               latitude: Number(point.latitude),
               longitude: Number(point.longitude),
             });
             geocodedAddresses.set(coordKey, reverseGeocoded?.address || null);
           } catch (error) {
-            console.error(
-              "Reverse geocoding failed for point:",
-              point.id,
-              error,
-            );
+            console.warn("Reverse geocoding failed for point:", point.id);
             geocodedAddresses.set(coordKey, null);
           }
         }),

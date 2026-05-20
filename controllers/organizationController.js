@@ -1,6 +1,33 @@
 const db = require('../db/db');
 const { v4: uuidv4 } = require('uuid');
 
+const isSuperAdminUser = (user = {}) =>
+  String(user.role || '').toLowerCase() === 'superadmin';
+
+const deleteOrganizationDataForSuperAdmin = async (organizationId) => {
+  await db.transaction(async (trx) => {
+    await trx.raw('SET FOREIGN_KEY_CHECKS = 0');
+
+    try {
+      const companyTables = await trx('information_schema.columns')
+        .select('table_name')
+        .whereRaw('table_schema = DATABASE()')
+        .where('column_name', 'company_id')
+        .groupBy('table_name');
+
+      for (const row of companyTables) {
+        const tableName = row.table_name || row.TABLE_NAME;
+        if (!tableName || tableName === 'companies') continue;
+        await trx(tableName).where('company_id', organizationId).del();
+      }
+
+      await trx('companies').where({ id: organizationId }).del();
+    } finally {
+      await trx.raw('SET FOREIGN_KEY_CHECKS = 1');
+    }
+  });
+};
+
 // Get all organizations (companies)
 const getOrganizations = async (req, res) => {
   try {
@@ -16,7 +43,7 @@ const getOrganizations = async (req, res) => {
     // For super admin, get all companies with subscription info and user counts
     // For regular users, get only their company
     let organizations;
-    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
+    if (isSuperAdminUser(req.user)) {
       console.log('Fetching all companies for superadmin');
       organizations = await db('companies')
         .leftJoin('company_subscriptions', 'companies.id', 'company_subscriptions.company_id')
@@ -163,7 +190,7 @@ const getOrganizationById = async (req, res) => {
     });
     
     let organization;
-    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
+    if (isSuperAdminUser(req.user)) {
       organization = await db('companies').where({ id }).first();
     } else {
       organization = await db('companies')
@@ -229,7 +256,7 @@ const updateOrganization = async (req, res) => {
     });
     
     let organization;
-    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
+    if (isSuperAdminUser(req.user)) {
       organization = await db('companies').where({ id }).first();
     } else {
       organization = await db('companies')
@@ -249,7 +276,7 @@ const updateOrganization = async (req, res) => {
       updated_at: new Date()
     };
     
-    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
+    if (isSuperAdminUser(req.user)) {
       await db('companies').where({ id }).update(updateData);
     } else {
       await db('companies')
@@ -283,27 +310,30 @@ const deleteOrganization = async (req, res) => {
       organizationId: id
     });
     
-    // First check if there are any users associated with this company
-    let users;
-    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
-      users = await db('users').where({ company_id: id }).first();
-    } else {
-      users = await db('users')
-        .where({ company_id: id, company_id })
-        .first();
-    }
-      
-    if (users) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Cannot delete organization with associated users' 
-      });
-    }
-    
     let deleted;
-    if (String(req.user.role || '').toLowerCase() === 'superadmin') {
-      deleted = await db('companies').where({ id }).del();
+    if (isSuperAdminUser(req.user)) {
+      const organization = await db('companies').where({ id }).first();
+      if (!organization) {
+        return res.status(404).json({
+          success: false,
+          error: 'Organization not found'
+        });
+      }
+
+      await deleteOrganizationDataForSuperAdmin(id);
+      deleted = 1;
     } else {
+      const users = await db('users')
+        .where({ company_id })
+        .first();
+
+      if (users) {
+        return res.status(400).json({
+          success: false,
+          error: 'Cannot delete organization with associated users'
+        });
+      }
+
       deleted = await db('companies')
         .where({ id, company_id })
         .del();

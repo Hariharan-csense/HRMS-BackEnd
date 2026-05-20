@@ -1,5 +1,9 @@
 const knex = require("../db/db");
 const { hasPermission, parseModulesFromDb } = require("../utils/rbac");
+const {
+  companyHasActiveAddonModule,
+  employeeHasAddonModuleAssignment,
+} = require("../utils/subscriptionAddons");
 
 const isSuperAdmin = (user) => {
   const roles = Array.isArray(user?.roles) ? user.roles : [];
@@ -14,6 +18,26 @@ const isCeo = (user) => {
 };
 
 const isTopAuthority = (user) => isSuperAdmin(user) || isCeo(user);
+
+const isCompanyAdmin = (user) => {
+  const roleNames = getRoleNamesFromUser(user);
+  return roleNames.includes("admin") || roleNames.includes("ceo");
+};
+
+const hasAddonAccess = async (user, moduleKey) => {
+  if (!user?.company_id) return false;
+  const hasCompanyAddon = await companyHasActiveAddonModule(user.company_id, moduleKey);
+  if (!hasCompanyAddon) return false;
+
+  // Admin/CEO can manage/monitor purchased add-on modules for the company.
+  if (isCompanyAdmin(user)) return true;
+
+  return employeeHasAddonModuleAssignment(
+    user.company_id,
+    user.employee_id || user.id,
+    moduleKey
+  );
+};
 
 const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
   const roleNames = getRoleNamesFromUser(user);
@@ -107,6 +131,7 @@ const requirePermission = (moduleKey, action, options = {}) => {
     try {
       const context = await resolveRbacContext(req);
       if (context.isTopAuthority) return next();
+      if (await hasAddonAccess(req.user, moduleKey)) return next();
       if (hasDefaultAdminAccess(req.user, moduleKey, options.submodule)) return next();
 
       // Allow all authenticated employees to respond to pulse surveys even if the role
@@ -149,6 +174,9 @@ const requireAnyPermission = (permissions = []) => {
     try {
       const context = await resolveRbacContext(req);
       if (context.isTopAuthority) return next();
+      for (const requiredPermission of permissions) {
+        if (await hasAddonAccess(req.user, requiredPermission.module)) return next();
+      }
 
       const allowed = context.effectiveRoles.some((roleRecord) =>
         permissions.some((requiredPermission) =>

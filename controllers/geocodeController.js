@@ -7,8 +7,40 @@ const isAdminUser = (user) => {
   return roleNames.has("admin") || roleNames.has("superadmin");
 };
 
+const geocodeWarnings = new Set();
+
+const warnOnce = (key, ...args) => {
+  if (geocodeWarnings.has(key)) return;
+  geocodeWarnings.add(key);
+  console.warn(...args);
+};
+
+const buildCoordinateFallback = (latitude, longitude) =>
+  `${Number(latitude).toFixed(6)}, ${Number(longitude).toFixed(6)}`;
+
+const sendCoordinateFallback = (res, latitude, longitude, extra = {}) =>
+  res.json({
+    success: true,
+    address: buildCoordinateFallback(latitude, longitude),
+    provider: "coordinates",
+    fallback: true,
+    ...extra,
+  });
+
+const getPreferredGeocodeProvider = () => {
+  const provider = String(process.env.GEOCODE_PROVIDER || "auto")
+    .trim()
+    .toLowerCase();
+  return ["google", "mappls", "auto"].includes(provider) ? provider : "auto";
+};
+
 const getGoogleKeySuffix = () => {
-  const key = String(process.env.GOOGLE_MAPS_API_KEY || "").trim();
+  const key = String(
+    process.env.GOOGLE_GEOCODING_API_KEY ||
+      process.env.GOOGLE_SERVER_API_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      "",
+  ).trim();
   if (!key) return "";
   return key.slice(-6);
 };
@@ -34,7 +66,9 @@ const reverseGeocode = async (req, res) => {
     const domain = originHeader || req.hostname;
 
     const debugEnabled = req.query.debug === "1" && isAdminUser(req.user);
-    const forceProvider = String(req.query.provider || "").toLowerCase().trim(); // "google" | "mappls"
+    const envProvider = getPreferredGeocodeProvider();
+    const requestedProvider = String(req.query.provider || "").toLowerCase().trim();
+    const forceProvider = requestedProvider || (envProvider === "auto" ? "" : envProvider); // "google" | "mappls"
     const allowFallback = String(req.query.fallback || "").toLowerCase().trim() === "1";
     let result = null;
     let provider = null;
@@ -51,7 +85,11 @@ const reverseGeocode = async (req, res) => {
         provider = result?.source === "places" ? "google_places" : "google_geocode";
       } catch (googleError) {
         if (googleError?.code !== "GOOGLE_NOT_CONFIGURED") {
-          console.warn("Google reverse geocode failed:", googleError?.message || googleError);
+          warnOnce(
+            `google-${googleError?.code || googleError?.statusText || "failed"}`,
+            "Google reverse geocode failed:",
+            googleError?.message || googleError,
+          );
         }
         if (debugEnabled) {
           googleFailure = {
@@ -67,7 +105,14 @@ const reverseGeocode = async (req, res) => {
     }
 
     // 2) Fallback to Mappls (optional; disabled by default when Google key exists but fails)
-    const googleKeyPresent = Boolean(String(process.env.GOOGLE_MAPS_API_KEY || "").trim());
+    const googleKeyPresent = Boolean(
+      String(
+        process.env.GOOGLE_GEOCODING_API_KEY ||
+          process.env.GOOGLE_SERVER_API_KEY ||
+          process.env.GOOGLE_MAPS_API_KEY ||
+          "",
+      ).trim(),
+    );
     const shouldTryMappls =
       (!result &&
         (forceProvider === "mappls" ||
@@ -84,10 +129,12 @@ const reverseGeocode = async (req, res) => {
         });
         provider = "mappls";
       } catch (mapplsError) {
-        console.error("Reverse geocoding failed:", mapplsError);
-        return res.status(502).json({
-          success: false,
-          message: "Reverse geocoding failed",
+        warnOnce(
+          `mappls-${mapplsError?.code || mapplsError?.status || "failed"}`,
+          "Mappls reverse geocode failed:",
+          mapplsError?.message || mapplsError,
+        );
+        return sendCoordinateFallback(res, latitude, longitude, {
           ...(debugEnabled
             ? {
                 googleFailure,
@@ -101,10 +148,9 @@ const reverseGeocode = async (req, res) => {
     }
 
     if (!result) {
-      // No provider succeeded (or Mappls fallback intentionally skipped)
-      return res.status(502).json({
-        success: false,
-        message: "Reverse geocoding failed",
+      // No provider succeeded (or Mappls fallback intentionally skipped).
+      // Keep UI/network flow healthy and return coordinates as a readable fallback.
+      return sendCoordinateFallback(res, latitude, longitude, {
         ...(debugEnabled
           ? {
               googleFailure,
@@ -124,16 +170,10 @@ const reverseGeocode = async (req, res) => {
   } catch (error) {
     const debugEnabled = req.query.debug === "1" && isAdminUser(req.user);
     if (error?.code === "MAPPLS_NOT_CONFIGURED") {
-      return res.status(501).json({
-        success: false,
-        message: "Mappls reverse geocoding not configured",
-      });
+      return sendCoordinateFallback(res, latitude, longitude);
     }
     if (error?.code === "GOOGLE_NOT_CONFIGURED") {
-      return res.status(501).json({
-        success: false,
-        message: "Google reverse geocoding not configured",
-      });
+      return sendCoordinateFallback(res, latitude, longitude);
     }
 
     if (String(error?.name || "").toLowerCase() === "aborterror") {
@@ -143,10 +183,12 @@ const reverseGeocode = async (req, res) => {
       });
     }
 
-    console.error("Reverse geocoding failed:", error);
-    return res.status(502).json({
-      success: false,
-      message: "Reverse geocoding failed",
+    warnOnce(
+      `reverse-${error?.code || error?.status || "failed"}`,
+      "Reverse geocoding failed:",
+      error?.message || error,
+    );
+    return sendCoordinateFallback(res, latitude, longitude, {
       ...(debugEnabled
         ? {
             mapplsStatus: error?.status,

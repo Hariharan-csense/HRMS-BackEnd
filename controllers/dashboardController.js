@@ -87,6 +87,24 @@ const getAdminDashboardData = async (req, res) => {
     const totalAttendanceToday = attendanceTodayRaw.length;
     const flaggedToday = attendanceTodayRaw.filter(a => a.auto_flag === 1).length;
 
+    const presentTodayEmployees = await knex('attendance as a')
+      .leftJoin('employees as e', 'a.employee_id', 'e.id')
+      .leftJoin('departments as d', 'e.department_id', 'd.id')
+      .where('a.company_id', companyId)
+      .whereRaw('DATE(a.check_in) = ?', [today])
+      .whereRaw("LOWER(TRIM(a.status)) IN ('present','late')")
+      .select(
+        'e.id',
+        'e.employee_id',
+        'e.first_name',
+        'e.last_name',
+        'e.email',
+        'd.name as department',
+        'a.status',
+        'a.check_in'
+      )
+      .orderBy('a.check_in', 'asc');
+
     const presentYesterdayResult = await knex('attendance')
       .where({ company_id: companyId })
       .whereRaw('DATE(check_in) = ?', [yesterdayStr])
@@ -101,6 +119,25 @@ const getAdminDashboardData = async (req, res) => {
       .countDistinct('employee_id as count')
       .first()
       .then(r => Number(r?.count || 0));
+
+    const onLeaveEmployees = await knex('leave_applications as la')
+      .leftJoin('employees as e', 'la.employee_id', 'e.id')
+      .leftJoin('departments as d', 'e.department_id', 'd.id')
+      .where('la.company_id', companyId)
+      .where('la.status', 'approved')
+      .whereRaw(`? BETWEEN la.from_date AND la.to_date`, [today])
+      .select(
+        'e.id',
+        'e.employee_id',
+        'e.first_name',
+        'e.last_name',
+        'e.email',
+        'd.name as department',
+        'la.leave_type_name',
+        'la.from_date',
+        'la.to_date'
+      )
+      .orderBy('e.first_name', 'asc');
 
     const pendingApprovals = await knex('leave_applications')
       .where({ company_id: companyId, status: 'pending' })
@@ -457,6 +494,25 @@ const getAdminDashboardData = async (req, res) => {
       recentJoinings,
       upcomingBirthdays,
       upcomingHolidays,
+      presentTodayEmployees: presentTodayEmployees.map(emp => ({
+        id: emp.id,
+        employeeId: emp.employee_id,
+        name: `${emp.first_name || ''} ${emp.last_name || ''}`.trim() || 'Unnamed Employee',
+        email: emp.email || '',
+        department: emp.department || 'Unassigned',
+        status: emp.status || 'present',
+        checkIn: emp.check_in || null,
+      })),
+      onLeaveEmployees: onLeaveEmployees.map(emp => ({
+        id: emp.id,
+        employeeId: emp.employee_id,
+        name: `${emp.first_name || ''} ${emp.last_name || ''}`.trim() || 'Unnamed Employee',
+        email: emp.email || '',
+        department: emp.department || 'Unassigned',
+        leaveType: emp.leave_type_name || 'Leave',
+        fromDate: emp.from_date || null,
+        toDate: emp.to_date || null,
+      })),
       teamHealth,
     };
 

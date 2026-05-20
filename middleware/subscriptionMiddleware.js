@@ -31,10 +31,10 @@ const checkUserCreationSubscription = async (req, res, next) => {
       .first();
 
     if (!subscription) {
-      return res.status(403).json({
-        message: 'No active subscription found. Please subscribe to continue.',
-        requires_subscription: true
-      });
+      req.subscription = null;
+      req.userCount = 0;
+      req.maxUsers = 0;
+      return next();
     }
 
     // Check if trial has expired

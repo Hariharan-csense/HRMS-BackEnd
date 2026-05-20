@@ -71,6 +71,123 @@ const normalizeValueForComparison = (config, value) => {
   return normalized ? normalized : null;
 };
 
+const normalizeModuleKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+const textIncludesLiveTracking = (value) => {
+  const text = String(value || "").toLowerCase();
+  return (
+    (text.includes("live") && text.includes("tracking")) ||
+    text.includes("tracking_management") ||
+    text.includes("tracking management")
+  );
+};
+
+const getLiveTrackingSeatLimit = async (companyId) => {
+  const subscription = await knex("company_subscriptions")
+    .leftJoin(
+      "subscription_plans",
+      "company_subscriptions.plan_id",
+      "subscription_plans.id",
+    )
+    .where("company_subscriptions.company_id", companyId)
+    .whereIn("company_subscriptions.status", ["trial", "active"])
+    .orderBy("company_subscriptions.created_at", "desc")
+    .select(
+      "company_subscriptions.id",
+      "company_subscriptions.status",
+      "company_subscriptions.trial_end_date",
+      "subscription_plans.name as plan_name",
+      "subscription_plans.description as plan_description",
+    )
+    .first();
+
+  if (!subscription) return 0;
+
+  const basePlanText = `${subscription.plan_name || ""} ${subscription.plan_description || ""}`;
+  const basePlanHasLiveTracking =
+    textIncludesLiveTracking(basePlanText) ||
+    /standard|professional|pro|advanced|advance|enterprise|premium/i.test(
+      String(subscription.plan_name || ""),
+    );
+
+  if (basePlanHasLiveTracking) return null;
+
+  const hasCompanyAddons = await knex.schema.hasTable(
+    "company_subscription_addons",
+  );
+  const hasAddons = await knex.schema.hasTable("subscription_addons");
+  if (!hasCompanyAddons || !hasAddons) return 0;
+
+  const addonColumns = await knex("subscription_addons").columnInfo();
+  const moduleKeySelect = addonColumns.module_key
+    ? "subscription_addons.module_key"
+    : knex.raw("NULL as module_key");
+
+  const addonRows = await knex("company_subscription_addons")
+    .join(
+      "subscription_addons",
+      "company_subscription_addons.addon_id",
+      "subscription_addons.id",
+    )
+    .where("company_subscription_addons.subscription_id", subscription.id)
+    .where("subscription_addons.is_active", true)
+    .select(
+      "company_subscription_addons.users_count",
+      "subscription_addons.name",
+      "subscription_addons.description",
+      moduleKeySelect,
+    );
+
+  return addonRows.reduce((total, addon) => {
+    const moduleKey = normalizeModuleKey(addon.module_key);
+    const addonText = `${addon.name || ""} ${addon.description || ""}`;
+    if (
+      moduleKey === "live_tracking" ||
+      moduleKey === "tracking_management" ||
+      textIncludesLiveTracking(addonText)
+    ) {
+      return total + Number(addon.users_count || 0);
+    }
+    return total;
+  }, 0);
+};
+
+const assertLiveTrackingSeatLimit = async ({
+  companyId,
+  targetEmployeeId = null,
+  wantsTracking,
+}) => {
+  if (!wantsTracking) return null;
+
+  const seatLimit = await getLiveTrackingSeatLimit(companyId);
+  if (seatLimit === null) return null;
+
+  if (seatLimit <= 0) {
+    return "Live tracking is not available in this subscription. Please buy a live tracking add-on or upgrade the plan.";
+  }
+
+  const enabledQuery = knex("employees")
+    .where({ company_id: companyId, location_tracking_enabled: 1 });
+
+  if (targetEmployeeId) {
+    enabledQuery.whereNot({ id: targetEmployeeId });
+  }
+
+  const enabledCountRow = await enabledQuery.count("* as count").first();
+  const enabledCount = parseInt(enabledCountRow.count, 10) || 0;
+
+  if (enabledCount >= seatLimit) {
+    return `Live tracking seat limit reached. This subscription allows ${seatLimit} tracking users.`;
+  }
+
+  return null;
+};
+
 const findEmployeeDuplicateMessage = async ({
   companyId,
   excludeEmployeeId = null,
@@ -83,7 +200,10 @@ const findEmployeeDuplicateMessage = async ({
       continue;
     }
 
-    const normalizedValue = normalizeValueForComparison(config, values[config.key]);
+    const normalizedValue = normalizeValueForComparison(
+      config,
+      values[config.key],
+    );
     if (!normalizedValue) continue;
 
     const existingEmployee = await knex("employees")
@@ -183,7 +303,9 @@ const checkEmployeeDuplicate = async (req, res) => {
 };
 
 const getEmployeeDuplicateErrorMessage = (error) => {
-  const rawMessage = String(error?.sqlMessage || error?.message || "").toLowerCase();
+  const rawMessage = String(
+    error?.sqlMessage || error?.message || "",
+  ).toLowerCase();
 
   if (
     error?.code !== "ER_DUP_ENTRY" &&
@@ -297,6 +419,7 @@ const addEmployee = async (req, res) => {
     shift_id = null,
     department_id,
     designation_id,
+    branch_id,
     location_office,
     status = "Active",
     salary = 0,
@@ -311,14 +434,6 @@ const addEmployee = async (req, res) => {
     role = "employee",
     location_tracking_enabled = 0,
   } = req.body;
-
-  if (!employee_id || !first_name || !last_name || !email || !doj) {
-    cleanupFiles(req.files);
-    return res.status(400).json({
-      message:
-        "Employee ID, First Name, Last Name, Email and Date of Joining are required",
-    });
-  }
 
   try {
     const depId = department_id ? parseInt(department_id) : null;
@@ -374,6 +489,24 @@ const addEmployee = async (req, res) => {
       finalShiftId = null;
     }
 
+    let finalBranchId = null;
+    if (branch_id) {
+      const branch = await knex("branches")
+        .where({ id: branch_id, company_id: companyId })
+        .first();
+
+      if (!branch) {
+        cleanupFiles(req.files);
+        return res.status(400).json({
+          message: "Invalid branch selected",
+        });
+      }
+
+      finalBranchId = branch.id;
+    } else {
+      finalBranchId = null;
+    }
+
     const normalizedLocationTrackingEnabled =
       location_tracking_enabled === 1 ||
       location_tracking_enabled === "1" ||
@@ -400,6 +533,16 @@ const addEmployee = async (req, res) => {
           .json({ message: "Employee not found or access denied" });
       }
 
+      const trackingSeatError = await assertLiveTrackingSeatLimit({
+        companyId,
+        targetEmployeeId: id,
+        wantsTracking: normalizedLocationTrackingEnabled === 1,
+      });
+      if (trackingSeatError) {
+        cleanupFiles(req.files);
+        return res.status(403).json({ message: trackingSeatError });
+      }
+
       await knex("employees")
         .where({ id, company_id: companyId })
         .update({
@@ -421,6 +564,7 @@ const addEmployee = async (req, res) => {
           shift_id: finalShiftId, // ✅ SAFE
           department_id: depId,
           designation_id: desigId,
+          branch_id: finalBranchId,
           location_office: location_office || null,
           status,
           salary: Number(salary) || 0,
@@ -440,6 +584,15 @@ const addEmployee = async (req, res) => {
     // CREATE EMPLOYEE
     // ======================
     else {
+      const trackingSeatError = await assertLiveTrackingSeatLimit({
+        companyId,
+        wantsTracking: normalizedLocationTrackingEnabled === 1,
+      });
+      if (trackingSeatError) {
+        cleanupFiles(req.files);
+        return res.status(403).json({ message: trackingSeatError });
+      }
+
       const employeeDuplicateMessage = await findEmployeeDuplicateMessage({
         companyId,
         values: {
@@ -476,8 +629,6 @@ const addEmployee = async (req, res) => {
         "!";
       const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
-       
-
       const [newId] = await knex("employees").insert({
         company_id: companyId,
         employee_id: employee_id.trim().toUpperCase(),
@@ -505,6 +656,7 @@ const addEmployee = async (req, res) => {
         pan: pan || null,
         uan: uan || null,
         esic: esic || null,
+        branch_id: finalBranchId,
         password: hashedPassword,
         role: normalizedRole,
         location_tracking_enabled: normalizedLocationTrackingEnabled,
@@ -688,10 +840,12 @@ const getEmployees = async (req, res) => {
     let baseQuery = knex("employees as e")
       .leftJoin("departments as d", "e.department_id", "d.id")
       .leftJoin("designations as des", "e.designation_id", "des.id")
+      .leftJoin("branches as b", "e.branch_id", "b.id")
       .select(
         "e.*",
         "d.name as department_name",
         "des.name as designation_name",
+        "b.name as branch_name",
       )
       .where("e.company_id", companyId);
 
@@ -769,6 +923,7 @@ const getEmployeeById = async (req, res) => {
     const employee = await knex("employees")
       .leftJoin("departments", "employees.department_id", "departments.id")
       .leftJoin("designations", "employees.designation_id", "designations.id")
+      .leftJoin("branches", "employees.branch_id", "branches.id")
       .leftJoin(
         "employee_bank_details",
         "employees.id",
@@ -780,6 +935,7 @@ const getEmployeeById = async (req, res) => {
         "employees.*",
         "departments.name as department_name",
         "designations.name as designation_name",
+        "branches.name as branch_name",
         "employee_bank_details.account_holder_name",
         "employee_bank_details.bank_name",
         "employee_bank_details.account_number",
@@ -809,6 +965,7 @@ const getEmployeeById = async (req, res) => {
       success: true,
       employee: {
         ...employee,
+        branch: employee.branch_name || null,
         photo_url: photo ? photo.file_url : null,
         documents,
       },
@@ -1030,6 +1187,7 @@ const updateEmployee = async (req, res) => {
     employment_type,
     department_id,
     designation_id,
+    branch_id,
     location_office,
     status,
     salary,
@@ -1074,7 +1232,8 @@ const updateEmployee = async (req, res) => {
       updateData.email = email.trim().toLowerCase();
     }
     if (mobile !== undefined) updateData.mobile = mobile || null;
-    if (office_phone !== undefined) updateData.office_phone = office_phone || null;
+    if (office_phone !== undefined)
+      updateData.office_phone = office_phone || null;
     if (office_email !== undefined) {
       updateData.office_email = office_email
         ? office_email.trim().toLowerCase()
@@ -1093,6 +1252,8 @@ const updateEmployee = async (req, res) => {
       updateData.designation_id = designation_id
         ? parseInt(designation_id)
         : null;
+    if (branch_id !== undefined)
+      updateData.branch_id = branch_id ? parseInt(branch_id) : null;
     if (location_office !== undefined)
       updateData.location_office = location_office || null;
     if (status !== undefined) updateData.status = status;
@@ -1134,6 +1295,37 @@ const updateEmployee = async (req, res) => {
       updateData.role = normalizedRole;
     }
 
+    if (branch_id !== undefined) {
+      if (branch_id) {
+        const branch = await knex("branches")
+          .where({ id: branch_id, company_id: companyId })
+          .first();
+
+        if (!branch) {
+          cleanupFiles(req.files);
+          return res.status(400).json({
+            message: "Invalid branch selected",
+          });
+        }
+
+        updateData.branch_id = branch.id;
+      } else {
+        updateData.branch_id = null;
+      }
+    }
+
+    if (updateData.location_tracking_enabled === 1) {
+      const trackingSeatError = await assertLiveTrackingSeatLimit({
+        companyId,
+        targetEmployeeId: id,
+        wantsTracking: true,
+      });
+      if (trackingSeatError) {
+        cleanupFiles(req.files);
+        return res.status(403).json({ message: trackingSeatError });
+      }
+    }
+
     const employeeDuplicateMessage = await findEmployeeDuplicateMessage({
       companyId,
       excludeEmployeeId: id,
@@ -1142,7 +1334,8 @@ const updateEmployee = async (req, res) => {
           updateData.employee_id !== undefined
             ? updateData.employee_id
             : employee.employee_id,
-        email: updateData.email !== undefined ? updateData.email : employee.email,
+        email:
+          updateData.email !== undefined ? updateData.email : employee.email,
         mobile:
           updateData.mobile !== undefined ? updateData.mobile : employee.mobile,
         office_phone:
@@ -1158,7 +1351,9 @@ const updateEmployee = async (req, res) => {
             ? updateData.emergency_contact_phone
             : employee.emergency_contact_phone,
         aadhaar:
-          updateData.aadhaar !== undefined ? updateData.aadhaar : employee.aadhaar,
+          updateData.aadhaar !== undefined
+            ? updateData.aadhaar
+            : employee.aadhaar,
         pan: updateData.pan !== undefined ? updateData.pan : employee.pan,
       },
     });

@@ -2,6 +2,10 @@ const db = require('../db/db');
 const moment = require('moment');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
+const {
+  getAddonModuleAliases,
+  normalizeModuleKey: normalizeAddonModuleKey,
+} = require('../utils/subscriptionAddons');
 
 const getBillingDuration = (billingCycle) => {
   const cycle = String(billingCycle || '').toLowerCase();
@@ -48,6 +52,86 @@ const getTierPrice = (record, usersCount, billingCycle = 'monthly') => {
 const getEndDateForPlan = (startDate, billingCycle) => {
   const { count, unit } = getBillingDuration(billingCycle);
   return moment(startDate).add(count, unit).toDate();
+};
+
+const normalizeModuleKey = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+const inferAddonModuleKey = (addon = {}) => {
+  const text = `${addon.module_key || ''} ${addon.name || ''} ${addon.description || ''}`.toLowerCase();
+  if (
+    (text.includes('live') && text.includes('tracking')) ||
+    text.includes('tracking_management') ||
+    text.includes('tracking management')
+  ) return 'live_tracking';
+  if (text.includes('client') && text.includes('attendance')) return 'client_attendance';
+  if (text.includes('expense')) return 'expenses';
+  if (text.includes('ticket')) return 'tickets';
+  if (text.includes('asset')) return 'assets';
+  if (text.includes('payroll')) return 'payroll';
+  if (text.includes('rms') || text.includes('recruitment') || text.includes('hr management')) return 'hr_management';
+  if (text.includes('exit') || text.includes('offboarding')) return 'exit';
+  return normalizeModuleKey(addon.module_key || addon.name);
+};
+
+const getAddonPriceForUsers = (addon, usersCount) => {
+  const count = Number(usersCount || 0);
+  if (count <= 25) return Number(addon.price_upto25 || 0);
+  if (count <= 50) return Number(addon.price_upto50 || addon.price_upto25 || 0);
+  return Number(addon.price_above50 || addon.price_upto50 || addon.price_upto25 || 0);
+};
+
+const getSubscriptionAddons = async (subscriptionId, trx = db) => {
+  if (!subscriptionId) return [];
+
+  const hasCompanyAddons = await trx.schema.hasTable('company_subscription_addons');
+  const hasAddons = await trx.schema.hasTable('subscription_addons');
+  if (!hasCompanyAddons || !hasAddons) return [];
+
+  const addonColumns = await trx('subscription_addons').columnInfo();
+  const moduleKeySelect = addonColumns.module_key
+    ? 'subscription_addons.module_key'
+    : trx.raw('NULL as module_key');
+
+  const rows = await trx('company_subscription_addons')
+    .join('subscription_addons', 'company_subscription_addons.addon_id', 'subscription_addons.id')
+    .where('company_subscription_addons.subscription_id', subscriptionId)
+    .where('subscription_addons.is_active', true)
+    .select(
+      'company_subscription_addons.id',
+      'company_subscription_addons.addon_id',
+      'company_subscription_addons.users_count',
+      'company_subscription_addons.billing_cycle',
+      'company_subscription_addons.price_per_user',
+      'company_subscription_addons.total_price',
+      'subscription_addons.name',
+      'subscription_addons.description',
+      moduleKeySelect
+    )
+    .orderBy('subscription_addons.name', 'asc');
+
+  let assignmentRows = [];
+  const hasAssignments = await trx.schema.hasTable('company_addon_user_assignments');
+  if (hasAssignments && rows.length > 0) {
+    assignmentRows = await trx('company_addon_user_assignments')
+      .whereIn('subscription_addon_id', rows.map((row) => row.id))
+      .select('subscription_addon_id', 'employee_id');
+  }
+
+  return rows.map((addon) => ({
+    ...addon,
+    module_key: inferAddonModuleKey(addon),
+    users_count: Number(addon.users_count || 0),
+    price_per_user: Number(addon.price_per_user || 0),
+    total_price: Number(addon.total_price || 0),
+    assigned_employee_ids: assignmentRows
+      .filter((assignment) => Number(assignment.subscription_addon_id) === Number(addon.id))
+      .map((assignment) => Number(assignment.employee_id))
+  }));
 };
 
 const razorpay = process.env.RAZORPAY_KEY_ID && 
@@ -679,6 +763,836 @@ const getAllSubscriptions = async (req, res) => {
   }
 };
 
+const getAddons = async (req, res) => {
+  try {
+    const hasAddons = await db.schema.hasTable('subscription_addons');
+    if (!hasAddons) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const addonColumns = await db('subscription_addons').columnInfo();
+    const moduleKeySelect = addonColumns.module_key ? 'module_key' : db.raw('NULL as module_key');
+
+    const addons = await db('subscription_addons')
+      .select(
+        'id',
+        'name',
+        'description',
+        moduleKeySelect,
+        'price_upto25',
+        'price_upto50',
+        'price_above50',
+        'is_active',
+        'created_at',
+        'updated_at'
+      )
+      .orderBy('created_at', 'desc');
+
+    res.json({
+      success: true,
+      data: addons.map((addon) => ({
+        ...addon,
+        module_key: inferAddonModuleKey(addon),
+        price_upto25: Number(addon.price_upto25 || 0),
+        price_upto50: Number(addon.price_upto50 || 0),
+        price_above50: Number(addon.price_above50 || 0)
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching subscription add-ons:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch subscription add-ons'
+    });
+  }
+};
+
+const getAvailableAddons = async (req, res) => {
+  try {
+    const hasAddons = await db.schema.hasTable('subscription_addons');
+    if (!hasAddons) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const addonColumns = await db('subscription_addons').columnInfo();
+    const moduleKeySelect = addonColumns.module_key ? 'module_key' : db.raw('NULL as module_key');
+
+    const addons = await db('subscription_addons')
+      .where('is_active', true)
+      .select(
+        'id',
+        'name',
+        'description',
+        moduleKeySelect,
+        'price_upto25',
+        'price_upto50',
+        'price_above50',
+        'is_active'
+      )
+      .orderBy('name', 'asc');
+
+    res.json({
+      success: true,
+      data: addons.map((addon) => ({
+        ...addon,
+        module_key: inferAddonModuleKey(addon),
+        price_upto25: Number(addon.price_upto25 || 0),
+        price_upto50: Number(addon.price_upto50 || 0),
+        price_above50: Number(addon.price_above50 || 0)
+      }))
+    });
+  } catch (error) {
+    console.error('Error fetching available add-ons:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch available add-ons'
+    });
+  }
+};
+
+const createAddon = async (req, res) => {
+  try {
+    const {
+      name,
+      description,
+      module_key,
+      price_upto25,
+      price_upto50,
+      price_above50,
+      is_active = true
+    } = req.body;
+
+    if (!name || !module_key || price_upto25 === undefined || price_upto50 === undefined || price_above50 === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: name, module_key, price_upto25, price_upto50, price_above50'
+      });
+    }
+
+    const addonColumns = await db('subscription_addons').columnInfo();
+    const addonData = {
+      name,
+      description,
+      price_upto25: Number(price_upto25),
+      price_upto50: Number(price_upto50),
+      price_above50: Number(price_above50),
+      is_active,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+
+    if (addonColumns.module_key) {
+      addonData.module_key = normalizeModuleKey(module_key);
+    }
+
+    const [addonId] = await db('subscription_addons').insert(addonData);
+
+    res.status(201).json({
+      success: true,
+      message: 'Add-on package created successfully',
+      data: { id: addonId }
+    });
+  } catch (error) {
+    console.error('Error creating subscription add-on:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create add-on package'
+    });
+  }
+};
+
+const updateAddon = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existingAddon = await db('subscription_addons').where('id', id).first();
+    if (!existingAddon) {
+      return res.status(404).json({
+        success: false,
+        message: 'Add-on package not found'
+      });
+    }
+
+    const addonColumns = await db('subscription_addons').columnInfo();
+    const updateData = {
+      name: req.body.name,
+      description: req.body.description,
+      price_upto25: Number(req.body.price_upto25),
+      price_upto50: Number(req.body.price_upto50),
+      price_above50: Number(req.body.price_above50),
+      is_active: Boolean(req.body.is_active),
+      updated_at: new Date()
+    };
+
+    if (addonColumns.module_key) {
+      updateData.module_key = normalizeModuleKey(req.body.module_key);
+    }
+
+    await db('subscription_addons').where('id', id).update(updateData);
+
+    res.json({
+      success: true,
+      message: 'Add-on package updated successfully'
+    });
+  } catch (error) {
+    console.error('Error updating subscription add-on:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update add-on package'
+    });
+  }
+};
+
+const deleteAddon = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existingAddon = await db('subscription_addons').where('id', id).first();
+    if (!existingAddon) {
+      return res.status(404).json({
+        success: false,
+        message: 'Add-on package not found'
+      });
+    }
+
+    const activeAssignment = await db('company_subscription_addons')
+      .where('addon_id', id)
+      .first();
+
+    if (activeAssignment) {
+      await db('subscription_addons')
+        .where('id', id)
+        .update({ is_active: false, updated_at: new Date() });
+
+      return res.json({
+        success: true,
+        message: 'Add-on is assigned to a subscription, so it was deactivated instead of deleted.',
+        deactivated: true
+      });
+    }
+
+    await db('subscription_addons').where('id', id).del();
+    res.json({
+      success: true,
+      message: 'Add-on package deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting subscription add-on:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete add-on package'
+    });
+  }
+};
+
+const assignAddonToCompany = async (req, res) => {
+  const trx = await db.transaction();
+
+  try {
+    const { company_id, addon_id, users_count, billing_cycle = 'monthly' } = req.body;
+    const selectedUsers = resolveSelectedUsers(users_count);
+    const normalizedCycle = normalizeBillingCycle(billing_cycle);
+
+    if (!company_id || !addon_id) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'company_id and addon_id are required'
+      });
+    }
+
+    const company = await trx('companies').where('id', company_id).first();
+    if (!company) {
+      await trx.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Organization not found'
+      });
+    }
+
+    const addon = await trx('subscription_addons').where('id', addon_id).first();
+    if (!addon) {
+      await trx.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Add-on package not found'
+      });
+    }
+
+    const subscription = await trx('company_subscriptions')
+      .where('company_id', company_id)
+      .whereIn('status', ['trial', 'active'])
+      .orderBy('created_at', 'desc')
+      .first();
+
+    if (!subscription) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Organization needs an active base subscription before assigning add-ons'
+      });
+    }
+
+    const pricePerUser = getAddonPriceForUsers(addon, selectedUsers);
+    const totalPrice = roundMoney(pricePerUser * selectedUsers * (normalizedCycle === 'yearly' ? 12 : 1));
+
+    const existingAssignment = await trx('company_subscription_addons')
+      .where({
+        subscription_id: subscription.id,
+        addon_id
+      })
+      .first();
+
+    if (existingAssignment) {
+      await trx('company_subscription_addons')
+        .where('id', existingAssignment.id)
+        .update({
+          users_count: selectedUsers,
+          billing_cycle: normalizedCycle,
+          price_per_user: pricePerUser,
+          total_price: totalPrice,
+          updated_at: new Date()
+        });
+    } else {
+      await trx('company_subscription_addons').insert({
+        subscription_id: subscription.id,
+        addon_id,
+        users_count: selectedUsers,
+        billing_cycle: normalizedCycle,
+        price_per_user: pricePerUser,
+        total_price: totalPrice,
+        created_at: new Date(),
+        updated_at: new Date()
+      });
+    }
+
+    const previousAddonTotal = existingAssignment ? Number(existingAssignment.total_price || 0) : 0;
+    const currentPaidAmount = Number(subscription.paid_amount || 0);
+    await trx('company_subscriptions')
+      .where('id', subscription.id)
+      .update({
+        paid_amount: roundMoney(currentPaidAmount - previousAddonTotal + totalPrice),
+        updated_at: new Date()
+      });
+
+    await trx.commit();
+
+    res.json({
+      success: true,
+      message: 'Add-on assigned to organization successfully',
+      data: {
+        subscription_id: subscription.id,
+        addon_id,
+        users_count: selectedUsers,
+        billing_cycle: normalizedCycle,
+        price_per_user: pricePerUser,
+        total_price: totalPrice
+      }
+    });
+  } catch (error) {
+    console.error('Error assigning subscription add-on:', error);
+    try { await trx.rollback(); } catch (e) {}
+    res.status(500).json({
+      success: false,
+      message: 'Failed to assign add-on to organization'
+    });
+  }
+};
+
+const createAddonOrder = async (req, res) => {
+  try {
+    if (!razorpay) {
+      return res.status(500).json({
+        success: false,
+        message: 'Razorpay is not configured. Please add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to .env file.'
+      });
+    }
+
+    const companyId = req.user && req.user.company_id ? req.user.company_id : null;
+    const { addon_id, users_count, billing_cycle } = req.body;
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company context not found'
+      });
+    }
+
+    if (!addon_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'addon_id is required'
+      });
+    }
+
+    const subscription = await db('company_subscriptions')
+      .where('company_id', companyId)
+      .whereIn('status', ['trial', 'active'])
+      .orderBy('created_at', 'desc')
+      .first();
+
+    if (!subscription) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please start or buy a base subscription before buying add-ons'
+      });
+    }
+
+    const addon = await db('subscription_addons')
+      .where({ id: addon_id, is_active: true })
+      .first();
+
+    if (!addon) {
+      return res.status(404).json({
+        success: false,
+        message: 'Add-on package not found'
+      });
+    }
+
+    const selectedUsers = resolveSelectedUsers(users_count);
+    const normalizedCycle = normalizeBillingCycle(billing_cycle);
+    const pricePerUser = getAddonPriceForUsers(addon, selectedUsers);
+    const totalPrice = roundMoney(pricePerUser * selectedUsers * (normalizedCycle === 'yearly' ? 12 : 1));
+
+    const amountPaise = Math.round(totalPrice * 100);
+    if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid add-on amount'
+      });
+    }
+
+    const order = await razorpay.orders.create({
+      amount: amountPaise,
+      currency: 'INR',
+      receipt: `sub_addon_${companyId}_${addon_id}_${Date.now()}`,
+      notes: {
+        company_id: String(companyId),
+        subscription_id: String(subscription.id),
+        addon_id: String(addon_id)
+      }
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        order_id: order.id,
+        amount: order.amount,
+        currency: order.currency,
+        key_id: process.env.RAZORPAY_KEY_ID,
+        addon: {
+          id: addon.id,
+          name: addon.name,
+          module_key: inferAddonModuleKey(addon),
+          users_count: selectedUsers,
+          billing_cycle: normalizedCycle,
+          price_per_user: pricePerUser,
+          total_price: totalPrice
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error creating add-on order:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to create add-on payment order'
+    });
+  }
+};
+
+const verifyAddonPayment = async (req, res) => {
+  const trx = await db.transaction();
+
+  try {
+    if (!razorpay) {
+      await trx.rollback();
+      return res.status(500).json({
+        success: false,
+        message: 'Razorpay is not configured on server'
+      });
+    }
+
+    const companyId = req.user && req.user.company_id ? req.user.company_id : null;
+    const {
+      addon_id,
+      users_count,
+      billing_cycle,
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature
+    } = req.body;
+
+    if (!companyId) {
+      await trx.rollback();
+      return res.status(400).json({ success: false, message: 'Company context not found' });
+    }
+
+    if (!addon_id || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required payment verification fields'
+      });
+    }
+
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (expectedSignature !== razorpay_signature) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Payment verification failed'
+      });
+    }
+
+    const subscription = await trx('company_subscriptions')
+      .where('company_id', companyId)
+      .whereIn('status', ['trial', 'active'])
+      .orderBy('created_at', 'desc')
+      .first();
+
+    if (!subscription) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Active subscription not found'
+      });
+    }
+
+    const addon = await trx('subscription_addons')
+      .where({ id: addon_id, is_active: true })
+      .first();
+
+    if (!addon) {
+      await trx.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Add-on package not found'
+      });
+    }
+
+    const selectedUsers = resolveSelectedUsers(users_count);
+    const normalizedCycle = normalizeBillingCycle(billing_cycle);
+    const pricePerUser = getAddonPriceForUsers(addon, selectedUsers);
+    const totalPrice = roundMoney(pricePerUser * selectedUsers * (normalizedCycle === 'yearly' ? 12 : 1));
+
+    const existingAssignment = await trx('company_subscription_addons')
+      .where({
+        subscription_id: subscription.id,
+        addon_id
+      })
+      .first();
+
+    if (existingAssignment) {
+      await trx('company_subscription_addons')
+        .where('id', existingAssignment.id)
+        .update({
+          users_count: selectedUsers,
+          billing_cycle: normalizedCycle,
+          price_per_user: pricePerUser,
+          total_price: totalPrice,
+          updated_at: new Date()
+        });
+    } else {
+      await trx('company_subscription_addons').insert({
+        subscription_id: subscription.id,
+        addon_id,
+        users_count: selectedUsers,
+        billing_cycle: normalizedCycle,
+        price_per_user: pricePerUser,
+        total_price: totalPrice,
+        created_at: new Date(),
+        updated_at: new Date()
+      });
+    }
+
+    const previousAddonTotal = existingAssignment ? Number(existingAssignment.total_price || 0) : 0;
+    await trx('company_subscriptions')
+      .where('id', subscription.id)
+      .update({
+        paid_amount: roundMoney(Number(subscription.paid_amount || 0) - previousAddonTotal + totalPrice),
+        last_payment_date: new Date(),
+        payment_details: JSON.stringify({
+          provider: 'razorpay',
+          razorpay_order_id,
+          razorpay_payment_id,
+          purchase_type: 'addon'
+        }),
+        updated_at: new Date()
+      });
+
+    await trx('subscription_payments').insert({
+      company_id: companyId,
+      subscription_id: subscription.id,
+      amount: totalPrice,
+      payment_method: 'upi',
+      transaction_id: razorpay_payment_id,
+      payment_reference: razorpay_order_id,
+      status: 'completed',
+      payment_date: new Date(),
+      notes: JSON.stringify({
+        provider: 'razorpay',
+        purchase_type: 'addon',
+        addon_id,
+        addon_name: addon.name,
+        users_count: selectedUsers,
+        razorpay_signature
+      })
+    });
+
+    await trx.commit();
+
+    return res.json({
+      success: true,
+      message: 'Add-on purchased successfully',
+      data: {
+        addon_id,
+        addon_name: addon.name,
+        users_count: selectedUsers,
+        amount_paid: totalPrice
+      }
+    });
+  } catch (error) {
+    console.error('Error verifying add-on payment:', error);
+    try { await trx.rollback(); } catch (e) {}
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to verify add-on payment'
+    });
+  }
+};
+
+const removeCompanyAddon = async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    const existingAssignment = await db('company_subscription_addons')
+      .where('id', assignmentId)
+      .first();
+
+    if (!existingAssignment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Assigned add-on not found'
+      });
+    }
+
+    await db('company_subscription_addons').where('id', assignmentId).del();
+
+    res.json({
+      success: true,
+      message: 'Add-on removed from organization successfully'
+    });
+  } catch (error) {
+    console.error('Error removing company add-on:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to remove add-on from organization'
+    });
+  }
+};
+
+const getAddonUserAssignments = async (req, res) => {
+  try {
+    const companyId = req.user && req.user.company_id ? req.user.company_id : null;
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company context not found'
+      });
+    }
+
+    const subscription = await db('company_subscriptions')
+      .where('company_id', companyId)
+      .whereIn('status', ['trial', 'active'])
+      .orderBy('created_at', 'desc')
+      .first();
+
+    if (!subscription) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const activeAddons = await getSubscriptionAddons(subscription.id);
+    const hasAssignments = await db.schema.hasTable('company_addon_user_assignments');
+    if (!hasAssignments) {
+      return res.json({
+        success: true,
+        data: activeAddons.map((addon) => ({
+          ...addon,
+          assignments: []
+        }))
+      });
+    }
+
+    const assignments = await db('company_addon_user_assignments')
+      .leftJoin('employees', 'company_addon_user_assignments.employee_id', 'employees.id')
+      .where('company_addon_user_assignments.company_id', companyId)
+      .select(
+        'company_addon_user_assignments.id',
+        'company_addon_user_assignments.subscription_addon_id',
+        'company_addon_user_assignments.addon_id',
+        'company_addon_user_assignments.employee_id',
+        'company_addon_user_assignments.module_key',
+        'employees.first_name',
+        'employees.last_name',
+        'employees.employee_id as employee_code',
+        'employees.email'
+      );
+
+    const data = activeAddons.map((addon) => ({
+      ...addon,
+      assignments: assignments
+        .filter((assignment) => Number(assignment.subscription_addon_id) === Number(addon.id))
+        .map((assignment) => ({
+          id: assignment.id,
+          employee_id: assignment.employee_id,
+          employee_code: assignment.employee_code,
+          name: `${assignment.first_name || ''} ${assignment.last_name || ''}`.trim(),
+          email: assignment.email,
+          module_key: assignment.module_key
+        }))
+    }));
+
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error fetching add-on user assignments:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch add-on user assignments'
+    });
+  }
+};
+
+const updateAddonUserAssignments = async (req, res) => {
+  const trx = await db.transaction();
+
+  try {
+    const companyId = req.user && req.user.company_id ? req.user.company_id : null;
+    const { subscriptionAddonId } = req.params;
+    const employeeIds = Array.isArray(req.body.employee_ids)
+      ? req.body.employee_ids.map((id) => Number(id)).filter(Boolean)
+      : [];
+
+    if (!companyId) {
+      await trx.rollback();
+      return res.status(400).json({ success: false, message: 'Company context not found' });
+    }
+
+    const subscription = await trx('company_subscriptions')
+      .where('company_id', companyId)
+      .whereIn('status', ['trial', 'active'])
+      .orderBy('created_at', 'desc')
+      .first();
+
+    if (!subscription) {
+      await trx.rollback();
+      return res.status(400).json({ success: false, message: 'Active subscription not found' });
+    }
+
+    const subscriptionAddon = await trx('company_subscription_addons')
+      .join('subscription_addons', 'company_subscription_addons.addon_id', 'subscription_addons.id')
+      .where('company_subscription_addons.id', subscriptionAddonId)
+      .where('company_subscription_addons.subscription_id', subscription.id)
+      .select(
+        'company_subscription_addons.id',
+        'company_subscription_addons.addon_id',
+        'company_subscription_addons.users_count',
+        'subscription_addons.name',
+        'subscription_addons.description',
+        'subscription_addons.module_key'
+      )
+      .first();
+
+    if (!subscriptionAddon) {
+      await trx.rollback();
+      return res.status(404).json({ success: false, message: 'Add-on subscription not found' });
+    }
+
+    const seatLimit = Number(subscriptionAddon.users_count || 0);
+    if (employeeIds.length > seatLimit) {
+      await trx.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `This add-on allows only ${seatLimit} assigned users`
+      });
+    }
+
+    if (employeeIds.length > 0) {
+      const employeeCount = await trx('employees')
+        .where('company_id', companyId)
+        .whereIn('id', employeeIds)
+        .count('* as count')
+        .first();
+
+      if ((parseInt(employeeCount.count, 10) || 0) !== employeeIds.length) {
+        await trx.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'One or more selected employees are invalid'
+        });
+      }
+    }
+
+    const moduleKeys = [...getAddonModuleAliases(subscriptionAddon)];
+    const primaryModuleKey = moduleKeys.includes('live_tracking')
+      ? 'live_tracking'
+      : normalizeAddonModuleKey(subscriptionAddon.module_key || moduleKeys[0] || subscriptionAddon.name);
+
+    await trx('company_addon_user_assignments')
+      .where({
+        company_id: companyId,
+        subscription_addon_id: subscriptionAddon.id
+      })
+      .del();
+
+    if (employeeIds.length > 0) {
+      await trx('company_addon_user_assignments').insert(
+        employeeIds.map((employeeId) => ({
+          company_id: companyId,
+          subscription_addon_id: subscriptionAddon.id,
+          addon_id: subscriptionAddon.addon_id,
+          employee_id: employeeId,
+          module_key: primaryModuleKey,
+          created_at: new Date(),
+          updated_at: new Date()
+        }))
+      );
+    }
+
+    if (moduleKeys.includes('live_tracking')) {
+      await trx('employees')
+        .where('company_id', companyId)
+        .update({ location_tracking_enabled: 0 });
+
+      if (employeeIds.length > 0) {
+        await trx('employees')
+          .where('company_id', companyId)
+          .whereIn('id', employeeIds)
+          .update({ location_tracking_enabled: 1 });
+      }
+    }
+
+    await trx.commit();
+
+    return res.json({
+      success: true,
+      message: 'Add-on users updated successfully',
+      data: {
+        subscription_addon_id: Number(subscriptionAddon.id),
+        assigned_users: employeeIds.length,
+        max_users: seatLimit
+      }
+    });
+  } catch (error) {
+    console.error('Error updating add-on user assignments:', error);
+    try { await trx.rollback(); } catch (e) {}
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update add-on users'
+    });
+  }
+};
+
 // Get company's current subscription
 const getCompanySubscription = async (req, res) => {
   try {
@@ -737,6 +1651,7 @@ const getCompanySubscription = async (req, res) => {
       success: true,
       data: {
         ...subscription,
+        addons: await getSubscriptionAddons(subscription.id),
         days_remaining: Math.max(0, daysRemaining),
         is_trial_active: isTrialActive,
         trial_days_remaining: trialEndMoment ? Math.max(0, trialEndMoment.diff(today, 'days')) : 0,
@@ -1137,6 +2052,17 @@ module.exports = {
   upgradeSubscription,
   createUpgradeOrder,
   verifyUpgradePayment,
+  getAddons,
+  getAvailableAddons,
+  createAddon,
+  updateAddon,
+  deleteAddon,
+  createAddonOrder,
+  verifyAddonPayment,
+  assignAddonToCompany,
+  removeCompanyAddon,
+  getAddonUserAssignments,
+  updateAddonUserAssignments,
   getPaymentHistory,
   checkSubscriptionStatus,
   updateStorageUsage,

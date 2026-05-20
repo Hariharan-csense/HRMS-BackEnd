@@ -120,10 +120,15 @@ const reverseGeocodeViaPlaces = async ({ lat, lng, apiKey, signal }) => {
 const reverseGeocodeGoogle = async ({ latitude, longitude, signal } = {}) => {
   // IMPORTANT: Server-side calls must use a server-restricted key (IP-based or unrestricted),
   // not a browser (HTTP referrer) restricted key.
-  const apiKey = String(process.env.GOOGLE_MAPS_API_KEY || "").trim();
+  const apiKey = String(
+    process.env.GOOGLE_GEOCODING_API_KEY ||
+      process.env.GOOGLE_SERVER_API_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      "",
+  ).trim();
 
   if (!apiKey) {
-    const error = new Error("GOOGLE_MAPS_API_KEY not configured");
+    const error = new Error("Google server geocoding key not configured");
     error.code = "GOOGLE_NOT_CONFIGURED";
     throw error;
   }
@@ -142,7 +147,7 @@ const reverseGeocodeGoogle = async ({ latitude, longitude, signal } = {}) => {
   try {
     placesResult = await reverseGeocodeViaPlaces({ lat, lng, apiKey, signal });
   } catch (error) {
-    // Most common: REQUEST_DENIED (Places API not enabled) or ZERO_RESULTS.
+    // Most common: REQUEST_DENIED (Places API not enabled/key restricted) or ZERO_RESULTS.
     // We'll fallback to Geocoding below.
     placesFailure = {
       code: error?.code,
@@ -152,7 +157,21 @@ const reverseGeocodeGoogle = async ({ latitude, longitude, signal } = {}) => {
     };
   }
 
-  const geocodeResult = await reverseGeocodeViaGeocoding({ lat, lng, apiKey, signal });
+  let geocodeResult = null;
+  try {
+    geocodeResult = await reverseGeocodeViaGeocoding({ lat, lng, apiKey, signal });
+  } catch (error) {
+    const rawMessage = String(error?.raw?.error_message || "");
+    if (
+      error?.statusText === "REQUEST_DENIED" &&
+      /referer restrictions/i.test(rawMessage)
+    ) {
+      error.code = "GOOGLE_KEY_RESTRICTED";
+      error.message =
+        "Google server geocoding key is restricted by HTTP referrer. Use GOOGLE_GEOCODING_API_KEY or GOOGLE_SERVER_API_KEY with IP/server restrictions for backend calls.";
+    }
+    throw error;
+  }
   const postalCode = pickPostalCode(geocodeResult.raw);
 
   if (placesResult?.address) {
