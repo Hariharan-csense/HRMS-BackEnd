@@ -80,8 +80,8 @@ const inferAddonModuleKey = (addon = {}) => {
 
 const getAddonPriceForUsers = (addon, usersCount) => {
   const count = Number(usersCount || 0);
-  if (count <= 25) return Number(addon.price_upto25 || 0);
-  if (count <= 50) return Number(addon.price_upto50 || addon.price_upto25 || 0);
+  if (count <= 5) return Number(addon.price_upto25 || 0);
+  if (count <= 10) return Number(addon.price_upto50 || addon.price_upto25 || 0);
   return Number(addon.price_above50 || addon.price_upto50 || addon.price_upto25 || 0);
 };
 
@@ -793,6 +793,9 @@ const getAddons = async (req, res) => {
       data: addons.map((addon) => ({
         ...addon,
         module_key: inferAddonModuleKey(addon),
+        price_upto5: Number(addon.price_upto25 || 0),
+        price_upto10: Number(addon.price_upto50 || 0),
+        price_upto15: Number(addon.price_above50 || 0),
         price_upto25: Number(addon.price_upto25 || 0),
         price_upto50: Number(addon.price_upto50 || 0),
         price_above50: Number(addon.price_above50 || 0)
@@ -836,6 +839,9 @@ const getAvailableAddons = async (req, res) => {
       data: addons.map((addon) => ({
         ...addon,
         module_key: inferAddonModuleKey(addon),
+        price_upto5: Number(addon.price_upto25 || 0),
+        price_upto10: Number(addon.price_upto50 || 0),
+        price_upto15: Number(addon.price_above50 || 0),
         price_upto25: Number(addon.price_upto25 || 0),
         price_upto50: Number(addon.price_upto50 || 0),
         price_above50: Number(addon.price_above50 || 0)
@@ -856,16 +862,17 @@ const createAddon = async (req, res) => {
       name,
       description,
       module_key,
-      price_upto25,
-      price_upto50,
-      price_above50,
       is_active = true
     } = req.body;
 
-    if (!name || !module_key || price_upto25 === undefined || price_upto50 === undefined || price_above50 === undefined) {
+    const priceUpto5 = req.body.price_upto5 ?? req.body.price_upto25;
+    const priceUpto10 = req.body.price_upto10 ?? req.body.price_upto50;
+    const priceUpto15 = req.body.price_upto15 ?? req.body.price_above15 ?? req.body.price_above50;
+
+    if (!name || !module_key || priceUpto5 === undefined || priceUpto10 === undefined || priceUpto15 === undefined) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: name, module_key, price_upto25, price_upto50, price_above50'
+        message: 'Missing required fields: name, module_key, price_upto5, price_upto10, price_upto15'
       });
     }
 
@@ -873,9 +880,9 @@ const createAddon = async (req, res) => {
     const addonData = {
       name,
       description,
-      price_upto25: Number(price_upto25),
-      price_upto50: Number(price_upto50),
-      price_above50: Number(price_above50),
+      price_upto25: Number(priceUpto5),
+      price_upto50: Number(priceUpto10),
+      price_above50: Number(priceUpto15),
       is_active,
       created_at: new Date(),
       updated_at: new Date()
@@ -913,12 +920,23 @@ const updateAddon = async (req, res) => {
     }
 
     const addonColumns = await db('subscription_addons').columnInfo();
+    const priceUpto5 = req.body.price_upto5 ?? req.body.price_upto25;
+    const priceUpto10 = req.body.price_upto10 ?? req.body.price_upto50;
+    const priceUpto15 = req.body.price_upto15 ?? req.body.price_above15 ?? req.body.price_above50;
+
+    if (priceUpto5 === undefined || priceUpto10 === undefined || priceUpto15 === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: price_upto5, price_upto10, price_upto15'
+      });
+    }
+
     const updateData = {
       name: req.body.name,
       description: req.body.description,
-      price_upto25: Number(req.body.price_upto25),
-      price_upto50: Number(req.body.price_upto50),
-      price_above50: Number(req.body.price_above50),
+      price_upto25: Number(priceUpto5),
+      price_upto50: Number(priceUpto10),
+      price_above50: Number(priceUpto15),
       is_active: Boolean(req.body.is_active),
       updated_at: new Date()
     };

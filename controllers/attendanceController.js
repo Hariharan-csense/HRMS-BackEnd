@@ -125,7 +125,10 @@ const resolveAttendanceEmployeeId = async (req) => {
     .first();
   if (fallbackEmployee) return Number(fallbackEmployee.id);
 
-  throw new Error("Employee profile not found for this account");
+  const error = new Error("Employee profile not found for this account");
+  error.code = "ATTENDANCE_EMPLOYEE_PROFILE_NOT_FOUND";
+  error.statusCode = 404;
+  throw error;
 };
 
 const getDayWindow = (date = new Date()) => {
@@ -432,6 +435,17 @@ const getAttendanceStatus = async (req, res) => {
       todayRecords: todayAttendance || [],
     });
   } catch (error) {
+    if (error.code === "ATTENDANCE_EMPLOYEE_PROFILE_NOT_FOUND") {
+      return res.json({
+        success: true,
+        isCheckedIn: false,
+        hasCheckedInToday: false,
+        todayRecords: [],
+        attendanceUnavailable: true,
+        message: error.message,
+      });
+    }
+
     console.error("Error fetching attendance status:", error);
     res.status(500).json({
       success: false,
