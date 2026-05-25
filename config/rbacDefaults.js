@@ -68,6 +68,11 @@ const EMPLOYEE_DEFAULTS = [
     submodule: "capture",
     actions: ["view", "create", "update", "delete"],
   },
+  {
+    module: "attendance",
+    submodule: "facial_recognition",
+    actions: ["view", "create"],
+  },
   { module: "attendance", submodule: "log", actions: ["view"] },
   {
     module: "attendance",

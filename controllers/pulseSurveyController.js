@@ -1,4 +1,6 @@
 const db = require("../db/db");
+const { transporter } = require("../utils/mailer");
+const { sendPushToUsers } = require("../services/pushNotificationService");
 
 const requireAuthType = (req, res) => {
   if (!req.user) {
@@ -34,7 +36,14 @@ const buildRecipientsQuery = async ({
   selectedDepartment,
   selectedDesignation,
 }) => {
-  const query = db("employees").select("employees.id").where("employees.company_id", companyId);
+  const query = db("employees")
+    .select(
+      "employees.id",
+      "employees.first_name",
+      "employees.last_name",
+      "employees.email",
+    )
+    .where("employees.company_id", companyId);
 
   if (recipientType === "employee" && selectedEmployeeIds.length > 0) {
     const ids = selectedEmployeeIds.filter(isNumeric).map((x) => Number(x));
@@ -83,6 +92,140 @@ const buildRecipientsQuery = async ({
   }
 
   return query;
+};
+
+const getEmployeeName = (employee) =>
+  `${employee.first_name || ""} ${employee.last_name || ""}`.trim() ||
+  employee.email ||
+  "Employee";
+
+const SURVEY_LOGIN_URL = "https://hrms.procease.co/login";
+
+const buildSurveyUrl = (surveyId) => {
+  return SURVEY_LOGIN_URL;
+};
+
+const escapeHtml = (value) =>
+  String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const sendSurveyEmail = async ({ employee, surveyId, title, message }) => {
+  const email = String(employee.email || "").trim();
+  if (!email) {
+    return { skipped: true, reason: "missing_email" };
+  }
+
+  const employeeName = getEmployeeName(employee);
+  const surveyUrl = buildSurveyUrl(surveyId);
+  const safeTitle = String(title).trim();
+  const safeMessage = String(message || "").trim();
+  const htmlEmployeeName = escapeHtml(employeeName);
+  const htmlTitle = escapeHtml(safeTitle);
+  const htmlMessage = escapeHtml(safeMessage).replace(/\n/g, "<br>");
+  const htmlSurveyUrl = escapeHtml(surveyUrl);
+
+  await transporter.sendMail({
+    from: `"HRMS System" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
+    to: email,
+    subject: `New Pulse Survey: ${safeTitle}`,
+    text: [
+      `Hi ${employeeName},`,
+      "",
+      "A new pulse survey has been assigned to you.",
+      "",
+      `Survey: ${safeTitle}`,
+      safeMessage ? `Message: ${safeMessage}` : "",
+      `Open HRMS: ${surveyUrl}`,
+      "",
+      "Please submit your response in HRMS.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    html: `
+      <div style="font-family:Segoe UI,Arial,sans-serif;line-height:1.5;color:#111827;">
+        <p>Hi ${htmlEmployeeName},</p>
+        <p>A new pulse survey has been assigned to you.</p>
+        <h2 style="font-size:18px;margin:16px 0 8px;">${htmlTitle}</h2>
+        ${safeMessage ? `<p>${htmlMessage}</p>` : ""}
+        <p>
+          <a href="${htmlSurveyUrl}" style="display:inline-block;background:#059669;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;">
+            Open HRMS
+          </a>
+        </p>
+        <p style="font-size:12px;color:#6b7280;">This is a system-generated email from HRMS.</p>
+      </div>
+    `,
+  });
+
+  return { sent: true };
+};
+
+const sendSurveyEmails = async ({ recipients, surveyId, title, message }) => {
+  const summary = { sent: 0, skipped: 0, failed: 0 };
+  const concurrency = 10;
+
+  for (let i = 0; i < recipients.length; i += concurrency) {
+    const batch = recipients.slice(i, i + concurrency);
+    // eslint-disable-next-line no-await-in-loop
+    const results = await Promise.allSettled(
+      batch.map((employee) => sendSurveyEmail({ employee, surveyId, title, message })),
+    );
+
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        if (result.value?.skipped) summary.skipped += 1;
+        else summary.sent += 1;
+        return;
+      }
+
+      summary.failed += 1;
+      console.error("Pulse survey email failed:", {
+        surveyId,
+        employeeId: batch[index]?.id,
+        email: batch[index]?.email,
+        error: result.reason?.message || result.reason,
+      });
+    });
+  }
+
+  return summary;
+};
+
+const createSurveyNotifications = async ({ recipients, surveyId, title, message, companyId }) => {
+  if (!recipients.length) return 0;
+
+  const now = new Date();
+  const actionUrl = `/pulse-surveys/respond/${surveyId}`;
+  const rows = recipients.map((employee) => ({
+    user_id: String(employee.id),
+    title: "New Pulse Survey",
+    description: String(message || title || "Please complete your new survey.").slice(0, 1000),
+    type: "info",
+    module_id: "pulse_surveys",
+    action_url: actionUrl,
+    read: false,
+    created_at: now,
+  }));
+
+  const chunkSize = 500;
+  let created = 0;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    // eslint-disable-next-line no-await-in-loop
+    await db("notifications").insert(rows.slice(i, i + chunkSize));
+    created += rows.slice(i, i + chunkSize).length;
+  }
+
+  console.log("Pulse survey notifications created:", {
+    surveyId,
+    companyId,
+    created,
+  });
+
+  return created;
 };
 
 // Admin: create and send
@@ -152,6 +295,57 @@ const createPulseSurvey = async (req, res) => {
       await db("pulse_survey_recipients").insert(rows.slice(i, i + chunkSize));
     }
 
+    let notificationsCreated = 0;
+    let emailSummary = { sent: 0, skipped: 0, failed: 0 };
+
+    try {
+      notificationsCreated = await createSurveyNotifications({
+        recipients,
+        surveyId,
+        title,
+        message,
+        companyId,
+      });
+    } catch (notificationError) {
+      console.error("Pulse survey notification create failed:", {
+        surveyId,
+        error: notificationError?.message || notificationError,
+      });
+    }
+
+    const pushSummaryPromise = sendPushToUsers({
+      userIds: recipients.map((employee) => employee.id),
+      title: "New Pulse Survey",
+      body: String(message || title || "Please complete your new survey.").slice(0, 1000),
+      data: {
+        surveyId,
+        moduleId: "pulse_surveys",
+        actionUrl: buildSurveyUrl(surveyId),
+      },
+    }).catch((pushError) => {
+      console.error("Pulse survey push failed:", {
+        surveyId,
+        error: pushError?.message || pushError,
+      });
+      return { sent: 0, failed: 0, skipped: recipients.length };
+    });
+
+    try {
+      emailSummary = await sendSurveyEmails({
+        recipients,
+        surveyId,
+        title,
+        message,
+      });
+    } catch (emailError) {
+      console.error("Pulse survey email dispatch failed:", {
+        surveyId,
+        error: emailError?.message || emailError,
+      });
+    }
+
+    const pushSummary = await pushSummaryPromise;
+
     return res.status(201).json({
       id: surveyId,
       title: String(title).trim(),
@@ -159,6 +353,9 @@ const createPulseSurvey = async (req, res) => {
       recipientType,
       allowAnonymous: Boolean(allowAnonymous),
       totalSent: recipients.length,
+      notificationsCreated,
+      push: pushSummary,
+      emails: emailSummary,
       createdAt: new Date().toISOString(),
     });
   } catch (error) {

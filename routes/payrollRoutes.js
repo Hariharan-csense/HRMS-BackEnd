@@ -10,6 +10,7 @@ const {
   getEmployeePayslips,
   updateSalaryStructure,
   deleteSalaryStructure,
+  deletePayrollProcessing,
   deletePayslip,
 } = require('../controllers/payrollController');
 const { protect } = require('../middleware/authMiddleware');
@@ -27,6 +28,9 @@ router.post('/process', protect, requirePermission("payroll", "create", { submod
 
 // Update payroll status
 router.put('/processing/:id/status', protect, requirePermission("payroll", "update", { submodule: "processing" }), updatePayrollStatus);
+
+// Delete payroll processing record
+router.delete('/processing/:id', protect, requirePermission("payroll", "delete", { submodule: "processing" }), deletePayrollProcessing);
 
 // Get payroll records
 router.get('/', protect, requirePermission("payroll", "view"), getPayrollRecords);

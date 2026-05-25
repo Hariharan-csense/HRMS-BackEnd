@@ -326,9 +326,13 @@ const getAttendanceReport = async (req, res) => {
           existing.leaveType = leave.leaveType || '';
           existing.leaveDays = leave.leaveDays || '';
           existing.leaveReason = leave.leaveReason || leave.leaveRemarks || '';
-          if (!existing.status || existing.status === 'absent') {
-            existing.status = 'leave';
-          }
+          existing.checkInTime = null;
+          existing.checkOutTime = null;
+          existing.check_in_location = null;
+          existing.check_out_location = null;
+          existing.hoursWorked = 0;
+          existing.overtimeHours = 0;
+          existing.status = 'leave';
           continue;
         }
 

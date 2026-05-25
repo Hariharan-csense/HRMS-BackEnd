@@ -31,6 +31,40 @@ const formatPayrollMonth = (month) => {
   });
 };
 
+const clampDayForMonth = (year, monthIndex, day) => {
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+  return Math.min(lastDay, Math.max(1, Number(day) || 1));
+};
+
+const getPayrollPeriod = (month, company) => {
+  const [year, monthNum] = String(month || '').split('-').map(Number);
+  if (!year || !monthNum) return { startDate: null, endDate: null };
+
+  const selectedMonthIndex = monthNum - 1;
+  const startDay = Math.min(31, Math.max(1, Number(company?.payroll_start_day) || 1));
+  const endDay = Math.min(31, Math.max(1, Number(company?.payroll_end_day) || 31));
+  const startMonthIndex = startDay > endDay ? selectedMonthIndex - 1 : selectedMonthIndex;
+  const endMonthIndex = selectedMonthIndex;
+  return {
+    startDate: new Date(year, startMonthIndex, clampDayForMonth(year, startMonthIndex, startDay)),
+    endDate: new Date(year, endMonthIndex, clampDayForMonth(year, endMonthIndex, endDay))
+  };
+};
+
+const formatDisplayDate = (date) => {
+  if (!date) return '';
+  return new Date(date).toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
+};
+
+const formatPayrollPeriodLabel = (startDate, endDate) => {
+  if (!startDate || !endDate) return '';
+  return `${formatDisplayDate(startDate)} to ${formatDisplayDate(endDate)}`;
+};
+
 const numberToWords = (value) => {
   const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
   const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
@@ -124,6 +158,12 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
         .first()
     : null;
 
+  const branch = employee?.branch_id
+    ? await knex('branches')
+        .where({ id: employee.branch_id, company_id: companyId })
+        .first()
+    : null;
+
   const bankDetails = await knex('employee_bank_details')
     .where({ employee_id: employee.id, company_id: companyId })
     .first();
@@ -160,6 +200,7 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
   const annualDeductions = roundTo2(toNumber(payrollData?.annual_deductions, monthlyDeductions * 12));
   const annualNet = roundTo2(toNumber(payrollData?.annual_net, monthlyNet * 12));
   const displayMonth = formatPayrollMonth(payrollData?.month);
+  const { startDate, endDate } = getPayrollPeriod(payrollData?.month, company);
 
   const companyLogo = assetPathToBase64(company.logo_url || company.logo);
   const companySignature = assetPathToBase64(company.signature_url || company.signature);
@@ -177,10 +218,12 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
     company_signature: companySignature,
     company_address: company.address,
     display_month: displayMonth,
+    payroll_period: formatPayrollPeriodLabel(startDate, endDate),
     employee_code: employee.employee_id || '',
     employee_name: `${employee.first_name} ${employee.last_name || ''}`.trim(),
     department_name: department?.name || '-',
     designation_name: designation?.name || '-',
+    branch_name: branch?.name || employee.location_office || '-',
     esi_number: employee.esic || '',
     uan_number: employee.uan || '',
     bank_name: bankDetails?.bank_name || '',

@@ -359,6 +359,39 @@ const cleanupFiles = (files) => {
   }
 };
 
+const hasUploadedPhoto = (files) => {
+  if (!files) return false;
+  const photoFiles = files.photo;
+  return Array.isArray(photoFiles) ? photoFiles.length > 0 : Boolean(photoFiles);
+};
+
+const employeeHasStoredPhoto = async (employeeId) => {
+  const columns = await knex("employee_documents").columnInfo();
+  const hasType = Object.prototype.hasOwnProperty.call(columns, "type");
+  const hasFieldname = Object.prototype.hasOwnProperty.call(
+    columns,
+    "fieldname",
+  );
+
+  const photo = await knex("employee_documents")
+    .where({ employee_id: employeeId })
+    .modify((queryBuilder) => {
+      if (hasType && hasFieldname) {
+        queryBuilder.whereRaw("LOWER(COALESCE(type, fieldname, '')) = ?", [
+          "photo",
+        ]);
+      } else if (hasType) {
+        queryBuilder.whereRaw("LOWER(type) = ?", ["photo"]);
+      } else if (hasFieldname) {
+        queryBuilder.whereRaw("LOWER(fieldname) = ?", ["photo"]);
+      }
+    })
+    .whereNotNull("file_path")
+    .first();
+
+  return Boolean(photo);
+};
+
 const buildEmployeeDocumentRows = async (files, employeeId, companyId) => {
   if (!files || files.length === 0) return [];
 
@@ -517,6 +550,7 @@ const addEmployee = async (req, res) => {
 
     let employeeId;
     let message;
+    const uploadedPhoto = hasUploadedPhoto(req.files);
 
     // ======================
     // UPDATE EMPLOYEE
@@ -531,6 +565,13 @@ const addEmployee = async (req, res) => {
         return res
           .status(404)
           .json({ message: "Employee not found or access denied" });
+      }
+
+      if (!uploadedPhoto && !(await employeeHasStoredPhoto(id))) {
+        cleanupFiles(req.files);
+        return res.status(400).json({
+          message: "Employee photo is required for facial recognition",
+        });
       }
 
       const trackingSeatError = await assertLiveTrackingSeatLimit({
@@ -584,6 +625,13 @@ const addEmployee = async (req, res) => {
     // CREATE EMPLOYEE
     // ======================
     else {
+      if (!uploadedPhoto) {
+        cleanupFiles(req.files);
+        return res.status(400).json({
+          message: "Employee photo is required for facial recognition",
+        });
+      }
+
       const trackingSeatError = await assertLiveTrackingSeatLimit({
         companyId,
         wantsTracking: normalizedLocationTrackingEnabled === 1,
@@ -1371,6 +1419,13 @@ const updateEmployee = async (req, res) => {
 
     if (!hasEmployeeUpdates && !hasBankUpdates && !hasFiles) {
       return res.status(400).json({ message: "No data provided to update" });
+    }
+
+    if (!hasUploadedPhoto(req.files) && !(await employeeHasStoredPhoto(id))) {
+      cleanupFiles(req.files);
+      return res.status(400).json({
+        message: "Employee photo is required for facial recognition",
+      });
     }
 
     // Update employee record if there are changes

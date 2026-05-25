@@ -6,6 +6,7 @@ const fs = require("fs");
 const http = require("http");
 const { Server } = require("socket.io");
 const { setIo } = require("./socket");
+const { initializeFirebaseAdmin } = require("./services/firebaseAdmin");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -20,6 +21,7 @@ const io = new Server(server, {
 });
 
 setIo(io);
+initializeFirebaseAdmin();
 
 io.on("connection", (socket) => {
   socket.on("join:company", (companyId) => {
@@ -184,6 +186,8 @@ app.use("/backend/api/surveys", surveyRoutes);
 app.use("/backend/api/pulse-surveys", pulseSurveyRoutes);
 app.use("/backend/api/geocode", geocodeRoutes);
 app.use("/backend/api", esslRoutes);
+
+
 
 // Root route
 app.get("/", (req, res) => {

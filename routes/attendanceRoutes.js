@@ -6,6 +6,7 @@ const {
   validateCheckInLocation,
   checkIn,
   checkOut,
+  facialRecognitionAttendance,
   getAttendanceLogs,
   getAttendanceByEmployeeAndMonth,
   createOverride,
@@ -60,6 +61,16 @@ router.post(
   requirePermission("attendance", "create", { submodule: "capture" }),
   uploadAttendanceImage("image"),
   checkOut,
+);
+
+router.post(
+  "/facial-recognition",
+  protect,
+  requirePermission("attendance", "create", {
+    submodule: "facial_recognition",
+  }),
+  uploadAttendanceImage("image"),
+  facialRecognitionAttendance,
 );
 
 // Get attendance logs with filters

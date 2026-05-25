@@ -1,4 +1,9 @@
 const knex = require('../db/db');
+const {
+  registerPushToken,
+  deactivatePushToken,
+  sendPushToUsers,
+} = require('../services/pushNotificationService');
 
 const isMySqlClient = () => {
   const clientName = String(knex?.client?.config?.client || knex?.client?.dialect || "").toLowerCase();
@@ -96,9 +101,62 @@ const createNotification = async (req, res) => {
         actionUrl: notification.action_url
       }
     });
+
+    sendPushToUsers({
+      userIds: [notification.user_id],
+      title: notification.title,
+      body: notification.description,
+      data: {
+        notificationId: notification.id,
+        moduleId: notification.module_id || '',
+        actionUrl: notification.action_url || '',
+      },
+    }).catch((pushError) => {
+      console.error('Notification push failed:', pushError);
+    });
   } catch (error) {
     console.error('Error creating notification:', error);
     res.status(500).json({ message: 'Failed to create notification' });
+  }
+};
+
+const registerNotificationToken = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const companyId = req.user?.company_id || null;
+    const { token, platform = 'web' } = req.body || {};
+
+    if (!userId) {
+      return res.status(401).json({ message: 'User not authenticated' });
+    }
+
+    if (!token) {
+      return res.status(400).json({ message: 'FCM token is required' });
+    }
+
+    const id = await registerPushToken({
+      userId,
+      companyId,
+      token,
+      platform,
+      userAgent: req.get('user-agent') || '',
+    });
+
+    return res.status(201).json({ success: true, id });
+  } catch (error) {
+    console.error('Error registering push token:', error);
+    return res.status(500).json({ message: 'Failed to register push token' });
+  }
+};
+
+const unregisterNotificationToken = async (req, res) => {
+  try {
+    const { token } = req.body || {};
+    await deactivatePushToken(token);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('Error unregistering push token:', error);
+    return res.status(500).json({ message: 'Failed to unregister push token' });
   }
 };
 
@@ -194,6 +252,8 @@ const deleteNotification = async (req, res) => {
 module.exports = {
   getNotifications,
   createNotification,
+  registerNotificationToken,
+  unregisterNotificationToken,
   markNotificationAsRead,
   markAllNotificationsAsRead,
   deleteNotification
