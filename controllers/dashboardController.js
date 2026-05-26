@@ -145,6 +145,21 @@ const getAdminDashboardData = async (req, res) => {
       .first()
       .then(r => Number(r?.count || 0));
 
+    const pendingApprovalItemsRaw = await knex('leave_applications as la')
+      .leftJoin('employees as e', 'la.employee_id', 'e.id')
+      .where('la.company_id', companyId)
+      .where('la.status', 'pending')
+      .select(
+        'la.id',
+        'la.leave_type_name',
+        'la.created_at',
+        'e.employee_id',
+        'e.first_name',
+        'e.last_name'
+      )
+      .orderBy('la.created_at', 'desc')
+      .limit(20);
+
     const leaveUtilization = await knex('leave_balances')
       .where({ company_id: companyId })
       .select(
@@ -512,6 +527,16 @@ const getAdminDashboardData = async (req, res) => {
         leaveType: emp.leave_type_name || 'Leave',
         fromDate: emp.from_date || null,
         toDate: emp.to_date || null,
+      })),
+      pendingApprovals: pendingApprovalItemsRaw.map((item) => ({
+        id: item.id,
+        name: `${item.first_name || ''} ${item.last_name || ''}`.trim() || 'Unnamed Employee',
+        type: item.leave_type_name
+          ? `${item.leave_type_name} leave request`
+          : 'Leave request',
+        category: 'leave',
+        employeeId: item.employee_id || '',
+        createdAt: item.created_at || null,
       })),
       teamHealth,
     };

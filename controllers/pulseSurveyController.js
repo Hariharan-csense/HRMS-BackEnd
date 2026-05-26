@@ -105,6 +105,8 @@ const buildSurveyUrl = (surveyId) => {
   return SURVEY_LOGIN_URL;
 };
 
+const buildSurveyPushPath = (surveyId) => `/pulse-surveys/respond/${surveyId}`;
+
 const escapeHtml = (value) =>
   String(value || "")
     .replace(/&/g, "&amp;")
@@ -320,7 +322,7 @@ const createPulseSurvey = async (req, res) => {
       data: {
         surveyId,
         moduleId: "pulse_surveys",
-        actionUrl: buildSurveyUrl(surveyId),
+        actionUrl: buildSurveyPushPath(surveyId),
       },
     }).catch((pushError) => {
       console.error("Pulse survey push failed:", {
@@ -345,6 +347,12 @@ const createPulseSurvey = async (req, res) => {
     }
 
     const pushSummary = await pushSummaryPromise;
+    const pushSkipReasons = [
+      ...(Array.isArray(pushSummary?.skipReasons) ? pushSummary.skipReasons : []),
+      ...(Array.isArray(pushSummary?.errors)
+        ? pushSummary.errors.map((entry) => entry?.reason).filter(Boolean)
+        : []),
+    ].filter((reason, index, list) => list.indexOf(reason) === index);
 
     return res.status(201).json({
       id: surveyId,
@@ -354,7 +362,10 @@ const createPulseSurvey = async (req, res) => {
       allowAnonymous: Boolean(allowAnonymous),
       totalSent: recipients.length,
       notificationsCreated,
-      push: pushSummary,
+      push: {
+        ...pushSummary,
+        skipReasons: pushSkipReasons,
+      },
       emails: emailSummary,
       createdAt: new Date().toISOString(),
     });

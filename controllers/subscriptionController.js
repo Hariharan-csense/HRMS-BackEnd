@@ -35,6 +35,45 @@ const getPlanYearlyPriceField = (columns = {}) => (columns.yearly_price ? 'yearl
 const getPlanStorageField = (columns = {}) => (columns.storage_gb ? 'storage_gb' : null);
 const getPlanMaxUsersField = (columns = {}) => (columns.max_users ? 'max_users' : null);
 
+const isFreePlanName = (planName) => {
+  const normalized = String(planName || '')
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
+  if (!normalized) return false;
+  if (normalized.includes('freeplan') || normalized.includes('freepackage')) return true;
+  return normalized.includes('free') && !normalized.includes('trial');
+};
+
+const resolvePlanPricingFields = (planName, { price, yearly_price, trial_days } = {}) => {
+  if (isFreePlanName(planName)) {
+    return { price: 0, yearly_price: 0, trial_days: 0 };
+  }
+
+  return {
+    price: price === undefined || price === null || price === '' ? undefined : Number(price),
+    yearly_price:
+      yearly_price === undefined || yearly_price === null || yearly_price === ''
+        ? undefined
+        : Number(yearly_price),
+    trial_days:
+      trial_days === undefined || trial_days === null || trial_days === ''
+        ? undefined
+        : Number(trial_days),
+  };
+};
+
+const parseOptionalNumber = (value) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const resolvePlanStorageGb = (planName, storage_gb) => {
+  const parsed = parseOptionalNumber(storage_gb);
+  if (parsed !== undefined) return parsed;
+  return isFreePlanName(planName) ? 0 : 1;
+};
+
 const resolveSelectedUsers = (usersCount) => {
   const parsed = Number(usersCount || 1);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
@@ -505,17 +544,26 @@ const createPlan = async (req, res) => {
       is_active = true
     } = req.body;
 
-    // Validate required fields
+    if (!String(name || '').trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Plan name is required',
+      });
+    }
+
+    const resolvedPricing = resolvePlanPricingFields(name, { price, yearly_price, trial_days });
+    const isFreePlan = isFreePlanName(name);
+
     if (
-      !name ||
-      price === undefined ||
-      yearly_price === undefined ||
-      !trial_days
+      !isFreePlan &&
+      (resolvedPricing.price === undefined ||
+        resolvedPricing.yearly_price === undefined ||
+        resolvedPricing.trial_days === undefined)
     ) {
       console.log('Validation failed - missing fields');
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: name, price, yearly_price, trial_days'
+        message: 'Missing required fields: name, price, yearly_price, trial_days',
       });
     }
 
@@ -526,23 +574,35 @@ const createPlan = async (req, res) => {
     const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
     const yearlyPriceField = getPlanYearlyPriceField(planColumns);
 
-    console.log('Creating plan with data:', { name, description, price, yearly_price, storage_gb, trial_days, is_active });
-
-    const planData = {
+    console.log('Creating plan with data:', {
       name,
       description,
-      trial_days,
-      is_active
+      price: resolvedPricing.price,
+      yearly_price: resolvedPricing.yearly_price,
+      storage_gb,
+      trial_days: resolvedPricing.trial_days,
+      is_active,
+    });
+
+    const planData = {
+      name: String(name).trim(),
+      description,
+      trial_days: resolvedPricing.trial_days,
+      is_active,
     };
 
-    planData[monthlyPriceField] = price;
+    planData[monthlyPriceField] = resolvedPricing.price;
     if (yearlyPriceField) {
-      planData[yearlyPriceField] = yearly_price;
+      planData[yearlyPriceField] = resolvedPricing.yearly_price;
     }
 
-    // Only add storage_gb if the column exists
-    if (hasStorageColumn && storage_gb !== undefined) {
-      planData.storage_gb = storage_gb;
+    if (hasStorageColumn) {
+      planData.storage_gb = resolvePlanStorageGb(name, storage_gb);
+    }
+
+    const maxUsersField = getPlanMaxUsersField(planColumns);
+    if (maxUsersField && planData[maxUsersField] === undefined) {
+      planData[maxUsersField] = isFreePlan ? 0 : parseOptionalNumber(req.body.max_users) ?? 25;
     }
 
     const [planId] = await db('subscription_plans').insert(planData);
@@ -605,27 +665,53 @@ const updatePlan = async (req, res) => {
     const yearlyPriceField = getPlanYearlyPriceField(planColumns);
     const hasStorageColumn = await checkStorageColumnExists();
 
-    const resolvedPrice =
-      price !== undefined
+    const planName = String(name || existingPlan.name || '').trim();
+    const resolvedPricing = resolvePlanPricingFields(planName, { price, yearly_price, trial_days });
+    const isFreePlan = isFreePlanName(planName);
+
+    const resolvedPrice = isFreePlan
+      ? 0
+      : price !== undefined
         ? price
         : (existingPlan[monthlyPriceField] ?? existingPlan.price);
 
+    const resolvedYearlyPrice = isFreePlan
+      ? 0
+      : yearly_price !== undefined
+        ? yearly_price
+        : yearlyPriceField
+          ? existingPlan[yearlyPriceField]
+          : undefined;
+
+    const resolvedTrialDays = isFreePlan
+      ? 0
+      : trial_days !== undefined && trial_days !== null
+        ? trial_days
+        : existingPlan.trial_days;
+
     const updateData = {
-      name,
+      name: planName,
       description,
-      trial_days,
+      trial_days: resolvedTrialDays,
       is_active,
-      updated_at: new Date()
+      updated_at: new Date(),
     };
 
     updateData[monthlyPriceField] = resolvedPrice;
-    if (yearlyPriceField && yearly_price !== undefined) {
-      updateData[yearlyPriceField] = yearly_price;
+    if (yearlyPriceField && resolvedYearlyPrice !== undefined) {
+      updateData[yearlyPriceField] = resolvedYearlyPrice;
     }
 
-    // Only add storage_gb if the column exists and value is provided
-    if (hasStorageColumn && storage_gb !== undefined) {
-      updateData.storage_gb = storage_gb;
+    if (hasStorageColumn) {
+      updateData.storage_gb =
+        storage_gb !== undefined
+          ? resolvePlanStorageGb(planName, storage_gb)
+          : resolvePlanStorageGb(planName, existingPlan.storage_gb);
+    }
+
+    const maxUsersField = getPlanMaxUsersField(planColumns);
+    if (maxUsersField && req.body.max_users !== undefined) {
+      updateData[maxUsersField] = parseOptionalNumber(req.body.max_users) ?? existingPlan[maxUsersField];
     }
 
     await db('subscription_plans').where('id', id).update(updateData);

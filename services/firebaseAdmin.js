@@ -12,9 +12,10 @@ const getServiceAccount = () => {
   const configuredPath = String(process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "").trim();
   const candidatePaths = [
     configuredPath ? path.resolve(configuredPath) : null,
+    path.resolve(__dirname, "..", "procease-hrms-firebase-adminsdk-fbsvc-d7f2b7edd1.json"),
+    path.resolve(__dirname, "..", "procease-hrms-firebase-adminsdk-fbsvc-8662aa3750.json"),
     path.resolve(__dirname, "..", "firebase-adminsdk.json"),
     path.resolve(__dirname, "..", "firebase-service-account.json"),
-    path.resolve(__dirname, "..", "procease-hrms-firebase-adminsdk-fbsvc-8662aa3750.json"),
   ].filter(Boolean);
 
   const serviceAccountPath = candidatePaths.find((candidate) =>

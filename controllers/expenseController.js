@@ -6,11 +6,47 @@ const { generateAutoNumber } = require('../utils/generateAutoNumber');
 const scanReceipt = require('../utils/scanReceipt');
 const moment = require('moment');
 const { sendExpenseStatusNotification } = require('../utils/sendExpenseStatusMail');
+const { hasAnyRole } = require('../middleware/authMiddleware');
 const {
   applyEmployeeAssignmentFilter,
   getAssignedClientCountForEmployee,
   isClientAssignedToEmployee,
 } = require('../utils/clientAssignments');
+
+const isPrivilegedExpenseRole = (user) =>
+  hasAnyRole(user, ['admin', 'finance', 'ceo', 'superadmin']);
+
+const resolveExpenseEmployeeProfile = async (req, companyId) => {
+  const mappedId = Number(req.user?.employee_id);
+  if (Number.isFinite(mappedId) && mappedId > 0) {
+    const byMappedId = await knex('employees')
+      .where({ id: mappedId, company_id: companyId })
+      .first();
+    if (byMappedId) return byMappedId;
+  }
+
+  if (String(req.user?.type || '').toLowerCase() === 'employee') {
+    const byId = await knex('employees')
+      .where({ id: Number(req.user?.id), company_id: companyId })
+      .first();
+    if (byId) return byId;
+  }
+
+  if (req.user?.email) {
+    const byEmail = await knex('employees')
+      .where({ company_id: companyId })
+      .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+      .first();
+    if (byEmail) return byEmail;
+  }
+
+  return null;
+};
+
+const resolveExpenseEmployeeId = async (req, companyId) => {
+  const profile = await resolveExpenseEmployeeProfile(req, companyId);
+  return profile ? Number(profile.id) : null;
+};
 
 const normalizeExpenseCategory = (raw) => {
   if (!raw) return null;
@@ -229,8 +265,18 @@ const hasExpensesClientIdColumn = async () => {
 const submitExpense = async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const employeeId = req.user.id;
-    const employeeName = req.user.name || '';
+    const employeeProfile = await resolveExpenseEmployeeProfile(req, companyId);
+    if (!employeeProfile) {
+      return res.status(400).json({
+        message:
+          'No employee profile is linked to this account. Link the admin email to an employee record to submit expense claims.',
+      });
+    }
+    const employeeId = Number(employeeProfile.id);
+    const employeeName =
+      `${employeeProfile.first_name || ''} ${employeeProfile.last_name || ''}`.trim() ||
+      req.user.name ||
+      '';
     const userType = req.user.type;
 
     let { category, amount, expense_date, description, client_id } = req.body;
@@ -404,15 +450,25 @@ const submitExpense = async (req, res) => {
 
 const submitExpensesBulk = async (req, res) => {
   const companyId = req.user.company_id;
-  const employeeId = req.user.id;
-  const employeeName = req.user.name || '';
-  const userType = req.user.type;
 
   if (!companyId) {
     return res.status(400).json({ message: 'You are not assigned to any company' });
   }
 
   try {
+    const employeeProfile = await resolveExpenseEmployeeProfile(req, companyId);
+    if (!employeeProfile) {
+      return res.status(400).json({
+        message:
+          'No employee profile is linked to this account. Link the admin email to an employee record to submit expense claims.',
+      });
+    }
+    const employeeId = Number(employeeProfile.id);
+    const employeeName =
+      `${employeeProfile.first_name || ''} ${employeeProfile.last_name || ''}`.trim() ||
+      req.user.name ||
+      '';
+    const userType = req.user.type;
     const clientId = req.body.client_id ? Number(req.body.client_id) : null;
     // if (!clientId || Number.isNaN(clientId)) {
     //   return res.status(400).json({ message: 'Assigned client is required' });
@@ -543,7 +599,7 @@ const getExpenses = async (req, res) => {
     let expenses;
 
     // 🔐 ADMIN + FINANCE → All expenses
-    if (['admin', 'finance', 'ceo', 'superadmin'].includes(String(req.user.role || '').toLowerCase())) {
+    if (isPrivilegedExpenseRole(req.user)) {
       let query = knex('expenses as e')
         .join('employees as emp', 'e.employee_id', 'emp.id');
 
@@ -576,6 +632,11 @@ const getExpenses = async (req, res) => {
     }
     // 🔒 ALL OTHERS → Only self
     else {
+      const employeeId = await resolveExpenseEmployeeId(req, companyId);
+      if (!employeeId) {
+        return res.json({ success: true, count: 0, expenses: [] });
+      }
+
       let query = knex('expenses as e');
 
       if (includeClient) {
@@ -602,7 +663,7 @@ const getExpenses = async (req, res) => {
           'e.updated_at'
         )
         .where({
-          'e.employee_id': req.user.id,
+          'e.employee_id': employeeId,
           'e.company_id': companyId
         })
         .orderBy('e.created_at', 'desc');
@@ -660,10 +721,11 @@ const updateExpenseStatus = async (req, res) => {
       return res.status(404).json({ message: 'Expense not found or access denied' });
     }
 
-    const isAdminOrFinance = ['admin', 'finance', 'ceo', 'superadmin'].includes(
-      String(req.user.role || '').toLowerCase()
-    );
-    const isOwner = Number(expense.employee_id) === Number(req.user.id);
+    const isAdminOrFinance = isPrivilegedExpenseRole(req.user);
+    const actorEmployeeId = await resolveExpenseEmployeeId(req, companyId);
+    const isOwner = actorEmployeeId
+      ? Number(expense.employee_id) === actorEmployeeId
+      : false;
 
     if (status && ['Approved', 'Rejected'].includes(status)) {
       await knex('expenses')
@@ -714,7 +776,7 @@ const updateExpenseStatus = async (req, res) => {
         if (rowClientId) {
           const client = await assertClientIsAllowed({
             companyId,
-            employeeId: req.user.id,
+            employeeId: actorEmployeeId || req.user.id,
             userType: req.user.type,
             clientId: rowClientId
           });
@@ -834,8 +896,11 @@ const deleteExpense = async (req, res) => {
       return res.status(404).json({ message: 'Expense not found or access denied' });
     }
 
-    const isAdminOrFinance = ['admin', 'finance', 'ceo', 'superadmin'].includes(String(req.user.role || '').toLowerCase());
-    const isOwner = Number(expense.employee_id) === Number(req.user.id);
+    const isAdminOrFinance = isPrivilegedExpenseRole(req.user);
+    const actorEmployeeId = await resolveExpenseEmployeeId(req, companyId);
+    const isOwner = actorEmployeeId
+      ? Number(expense.employee_id) === actorEmployeeId
+      : false;
 
     if (!isAdminOrFinance && !isOwner) {
       return res.status(403).json({ message: 'You are not allowed to delete this expense' });
@@ -1136,10 +1201,14 @@ const getAssignedClientsForClaims = async (req, res) => {
 const getExpenseDraft = async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const employeeId = req.user.id;
 
     if (!companyId) {
       return res.status(400).json({ success: false, message: 'You are not assigned to any company' });
+    }
+
+    const employeeId = await resolveExpenseEmployeeId(req, companyId);
+    if (!employeeId) {
+      return res.json({ success: true, drafts: [] });
     }
 
     await ensureExpenseDraftsTable();
@@ -1187,11 +1256,19 @@ const getExpenseDraft = async (req, res) => {
 const saveExpenseDraft = async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const employeeId = req.user.id;
     const userType = req.user.type;
 
     if (!companyId) {
       return res.status(400).json({ success: false, message: 'You are not assigned to any company' });
+    }
+
+    const employeeId = await resolveExpenseEmployeeId(req, companyId);
+    if (!employeeId) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'No employee profile is linked to this account. Link the admin email to an employee record to save expense drafts.',
+      });
     }
 
     await ensureExpenseDraftsTable();
@@ -1295,10 +1372,14 @@ const saveExpenseDraft = async (req, res) => {
 const deleteExpenseDraft = async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    const employeeId = req.user.id;
 
     if (!companyId) {
       return res.status(400).json({ success: false, message: 'You are not assigned to any company' });
+    }
+
+    const employeeId = await resolveExpenseEmployeeId(req, companyId);
+    if (!employeeId) {
+      return res.json({ success: true, message: 'Draft cleared' });
     }
 
     await ensureExpenseDraftsTable();

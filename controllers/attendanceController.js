@@ -4,7 +4,10 @@ const { getIo } = require("../socket");
 const { hasAnyRole } = require("../middleware/authMiddleware");
 const { doCheckIn, doCheckOut } = require("../services/attendance.service");
 const { getEmployeeShift } = require("../utils/shift.util");
-const { findEmployeeByFace } = require("../utils/faceRecognition");
+const {
+  findEmployeeByDescriptor,
+  findEmployeeByFace,
+} = require("../utils/faceRecognition");
 const { reverseGeocodeGoogle } = require("../services/googleGeocode");
 const { reverseGeocodeMappls } = require("../services/mapplsGeocode");
 const { applyEmployeeAssignmentFilter } = require("../utils/clientAssignments");
@@ -961,6 +964,107 @@ const facialRecognitionAttendance = async (req, res) => {
       console.warn("Facial attendance blocked:", err.message);
     } else {
       console.error("Facial attendance error:", err);
+    }
+
+    const duplicateOrMissing =
+      err.message === "Already checked in today" ||
+      err.message === "No active check-in";
+
+    return res.status(err.statusCode || (duplicateOrMissing ? 400 : 500)).json({
+      success: false,
+      message:
+        err.statusCode || duplicateOrMissing
+          ? err.message
+          : "Failed to process facial attendance",
+      error: err.message,
+    });
+  }
+};
+
+const facialRecognitionDescriptorAttendance = async (req, res) => {
+  try {
+    const companyId = Number(req.user?.company_id);
+    const requestedAction = String(req.body?.action || "auto")
+      .trim()
+      .toLowerCase();
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: "Company not assigned to user",
+      });
+    }
+
+    if (!["auto", "check-in", "check-out"].includes(requestedAction)) {
+      return res.status(400).json({
+        success: false,
+        message: "Action must be auto, check-in, or check-out",
+      });
+    }
+
+    const match = await findEmployeeByDescriptor(
+      companyId,
+      req.body?.descriptor,
+    );
+    const employeeId = Number(match.employee.id);
+    const action =
+      requestedAction === "auto"
+        ? await resolveFacialAttendanceAction({ companyId, employeeId })
+        : requestedAction;
+    const location = parseOptionalLocation(req.body.location);
+    const deviceInfo = "Browser Face API";
+
+    let attendance = null;
+    if (action === "check-in") {
+      const shift = await getEmployeeShift(employeeId, companyId);
+      attendance = await doCheckIn({
+        employeeId,
+        companyId,
+        imageData: null,
+        location,
+        deviceInfo,
+        shiftId: shift?.id || null,
+        shiftType: "regular",
+      });
+    } else {
+      await doCheckOut({
+        employeeId,
+        companyId,
+        imageData: null,
+        location,
+        deviceInfo,
+      });
+    }
+
+    return res.json({
+      success: true,
+      message:
+        action === "check-in"
+          ? "Employee checked in successfully"
+          : "Employee checked out successfully",
+      action,
+      employee: {
+        id: match.employee.id,
+        employee_id: match.employee.employee_id,
+        first_name: match.employee.first_name,
+        last_name: match.employee.last_name,
+        email: match.employee.email,
+        status: match.employee.status,
+      },
+      faceMatch: {
+        confidence: match.confidence,
+        distance: match.distance,
+        threshold: match.threshold,
+        comparedEmployees: match.comparedEmployees,
+        skippedEmployees: match.skippedEmployees,
+      },
+      attendance,
+    });
+  } catch (err) {
+    if (err.statusCode && err.statusCode < 500) {
+      console.warn("Browser facial attendance blocked:", err.message);
+    } else {
+      console.error("Browser facial attendance error:", err);
     }
 
     const duplicateOrMissing =
@@ -2944,6 +3048,7 @@ module.exports = {
   checkIn,
   checkOut,
   facialRecognitionAttendance,
+  facialRecognitionDescriptorAttendance,
   getAttendanceLogs,
   getAttendanceByEmployeeAndMonth,
   createOverride,

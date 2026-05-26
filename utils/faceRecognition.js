@@ -18,6 +18,8 @@ const modelsDir = process.env.FACE_MODEL_DIR
 
 let modelsLoaded = false;
 let modelLoadError = null;
+const descriptorCache = new Map();
+let hasFaceTemplatesTableCache = null;
 
 const loadModels = async () => {
   if (modelsLoaded) return;
@@ -33,6 +35,14 @@ const loadModels = async () => {
     console.log("Face recognition models loaded successfully");
     modelsLoaded = true;
     modelLoadError = null;
+
+    if (process.env.FACE_DESCRIPTOR_PREWARM !== "0") {
+      setTimeout(() => {
+        warmAllEmployeeDescriptors().catch((error) => {
+          console.warn("Face descriptor warm-up failed:", error.message);
+        });
+      }, 1000);
+    }
   } catch (error) {
     modelLoadError = error;
     console.error("Error loading face models:", error.message);
@@ -40,7 +50,23 @@ const loadModels = async () => {
   }
 };
 
-loadModels();
+if (process.env.FACE_LOAD_MODELS_ON_STARTUP === "1") {
+  loadModels();
+}
+
+const calculateEuclideanDistance = (descriptorA, descriptorB) => {
+  if (!descriptorA || !descriptorB || descriptorA.length !== descriptorB.length) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  let sum = 0;
+  for (let index = 0; index < descriptorA.length; index += 1) {
+    const diff = Number(descriptorA[index]) - Number(descriptorB[index]);
+    sum += diff * diff;
+  }
+
+  return Math.sqrt(sum);
+};
 
 const assertModelsLoaded = async () => {
   if (!modelsLoaded) {
@@ -118,6 +144,168 @@ const detectFaceDescriptor = async (imagePath, label = "image") => {
   throw error;
 };
 
+const getFileCacheKey = (filePath) => {
+  const stats = fs.statSync(filePath);
+  return `${filePath}:${stats.size}:${stats.mtimeMs}`;
+};
+
+const hasFaceTemplatesTable = async () => {
+  if (hasFaceTemplatesTableCache === null) {
+    hasFaceTemplatesTableCache = await knex.schema.hasTable("face_templates");
+  }
+
+  return hasFaceTemplatesTableCache;
+};
+
+const parseStoredDescriptor = (templateHash, expectedCacheKey) => {
+  try {
+    const payload = JSON.parse(templateHash);
+    if (
+      payload?.version !== 1 ||
+      (expectedCacheKey && payload?.file_key !== expectedCacheKey) ||
+      !Array.isArray(payload?.descriptor)
+    ) {
+      return null;
+    }
+
+    return Float32Array.from(payload.descriptor.map(Number));
+  } catch {
+    return null;
+  }
+};
+
+const getPersistedEmployeeDescriptor = async (employeeId, cacheKey) => {
+  if (!(await hasFaceTemplatesTable())) return null;
+
+  const row = await knex("face_templates")
+    .where({ employee_id: employeeId, is_active: true })
+    .orderBy("updated_at", "desc")
+    .first();
+
+  if (!row?.template_hash) return null;
+  return parseStoredDescriptor(row.template_hash, cacheKey);
+};
+
+const getCompanyPersistedDescriptors = async (companyId) => {
+  if (!(await hasFaceTemplatesTable())) return [];
+
+  const rows = await knex("face_templates as ft")
+    .innerJoin("employees as e", "ft.employee_id", "e.id")
+    .where("e.company_id", companyId)
+    .where("ft.is_active", true)
+    .select(
+      "ft.template_hash",
+      "e.id",
+      "e.employee_id",
+      "e.first_name",
+      "e.last_name",
+      "e.email",
+      "e.department_id",
+      "e.designation_id",
+      "e.status",
+    );
+
+  return rows
+    .map((row) => {
+      const descriptor = parseStoredDescriptor(row.template_hash, null);
+      if (!descriptor) return null;
+
+      return {
+        employee: {
+          id: row.id,
+          employee_id: row.employee_id,
+          first_name: row.first_name,
+          last_name: row.last_name,
+          email: row.email,
+          department_id: row.department_id,
+          designation_id: row.designation_id,
+          status: row.status,
+        },
+        descriptor,
+      };
+    })
+    .filter(Boolean);
+};
+
+const persistEmployeeDescriptor = async ({
+  employeeId,
+  cacheKey,
+  photoPath,
+  descriptor,
+}) => {
+  if (!(await hasFaceTemplatesTable())) return;
+
+  const templateHash = JSON.stringify({
+    version: 1,
+    file_key: cacheKey,
+    photo_path: photoPath,
+    descriptor: Array.from(descriptor),
+  });
+
+  await knex.transaction(async (trx) => {
+    await trx("face_templates")
+      .where({ employee_id: employeeId, is_active: true })
+      .update({ is_active: false, updated_at: knex.fn.now() });
+
+    await trx("face_templates").insert({
+      employee_id: employeeId,
+      template_hash: templateHash,
+      device_used: "employee_document_photo",
+      is_active: true,
+      created_at: knex.fn.now(),
+      updated_at: knex.fn.now(),
+    });
+  });
+};
+
+const getCachedFaceDescriptor = async (imagePath, label) => {
+  const cacheKey = getFileCacheKey(imagePath);
+  const cachedDescriptor = descriptorCache.get(cacheKey);
+
+  if (cachedDescriptor) return cachedDescriptor;
+
+  const descriptor = await detectFaceDescriptor(imagePath, label);
+  descriptorCache.set(cacheKey, descriptor);
+
+  // Keep memory bounded in long-running servers.
+  if (descriptorCache.size > 500) {
+    const oldestKey = descriptorCache.keys().next().value;
+    descriptorCache.delete(oldestKey);
+  }
+
+  return descriptor;
+};
+
+const getEmployeeDocumentDescriptor = async (employee, storedPhotoPath) => {
+  const cacheKey = getFileCacheKey(storedPhotoPath);
+  const cachedDescriptor = descriptorCache.get(cacheKey);
+  if (cachedDescriptor) return cachedDescriptor;
+
+  const persistedDescriptor = await getPersistedEmployeeDescriptor(
+    employee.id,
+    cacheKey,
+  );
+  if (persistedDescriptor) {
+    descriptorCache.set(cacheKey, persistedDescriptor);
+    return persistedDescriptor;
+  }
+
+  const descriptor = await detectFaceDescriptor(
+    storedPhotoPath,
+    `employee ${employee.employee_id || employee.id} photo`,
+  );
+
+  descriptorCache.set(cacheKey, descriptor);
+  await persistEmployeeDescriptor({
+    employeeId: employee.id,
+    cacheKey,
+    photoPath: employee.photo_path,
+    descriptor,
+  });
+
+  return descriptor;
+};
+
 const compareFaces = async (image1Path, image2Path) => {
   await assertModelsLoaded();
 
@@ -188,20 +376,64 @@ const getEmployeePhotoCandidates = async (companyId) => {
       "d.created_at as document_created_at",
     );
 
-  return rows
-    .sort((a, b) => {
-      const dateA = new Date(a.document_created_at || 0).getTime();
-      const dateB = new Date(b.document_created_at || 0).getTime();
-      return (
-        dateB - dateA || Number(b.document_id || 0) - Number(a.document_id || 0)
-      );
-    })
-    .filter((row, index, sortedRows) => {
-      const firstIndex = sortedRows.findIndex(
-        (candidate) => Number(candidate.id) === Number(row.id),
-      );
-      return index === firstIndex;
-    });
+  return rows.sort((a, b) => {
+    const dateA = new Date(a.document_created_at || 0).getTime();
+    const dateB = new Date(b.document_created_at || 0).getTime();
+    return (
+      dateB - dateA || Number(b.document_id || 0) - Number(a.document_id || 0)
+    );
+  });
+};
+
+const warmFaceDescriptorCache = async (companyId) => {
+  const candidates = await getEmployeePhotoCandidates(companyId);
+  const warmedEmployeeIds = new Set();
+  let warmed = 0;
+  let skipped = 0;
+
+  for (const employee of candidates) {
+    if (warmedEmployeeIds.has(Number(employee.id))) continue;
+
+    const storedPhotoPath = resolveUploadPath(employee.photo_path);
+    if (!storedPhotoPath || !fs.existsSync(storedPhotoPath)) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      await getEmployeeDocumentDescriptor(employee, storedPhotoPath);
+      warmedEmployeeIds.add(Number(employee.id));
+      warmed += 1;
+    } catch {
+      skipped += 1;
+    }
+  }
+
+  return { warmed, skipped };
+};
+
+const warmAllEmployeeDescriptors = async () => {
+  const companyRows = await knex("employees")
+    .whereNotNull("company_id")
+    .distinct("company_id");
+
+  let totalWarmed = 0;
+  let totalSkipped = 0;
+
+  for (const row of companyRows) {
+    const companyId = Number(row.company_id);
+    if (!companyId) continue;
+
+    const result = await warmFaceDescriptorCache(companyId);
+    totalWarmed += result.warmed;
+    totalSkipped += result.skipped;
+  }
+
+  if (totalWarmed || totalSkipped) {
+    console.log(
+      `Face descriptor cache warmed: ${totalWarmed} ready, ${totalSkipped} skipped`,
+    );
+  }
 };
 
 const findEmployeeByFace = async (
@@ -235,6 +467,7 @@ const findEmployeeByFace = async (
 
   const matches = [];
   const failures = [];
+  const matchedEmployeeIds = new Set();
   let capturedDescriptor;
 
   try {
@@ -252,6 +485,10 @@ const findEmployeeByFace = async (
   }
 
   for (const employee of employees) {
+    if (matchedEmployeeIds.has(Number(employee.id))) {
+      continue;
+    }
+
     const storedPhotoPath = resolveUploadPath(employee.photo_path);
     if (!storedPhotoPath || !fs.existsSync(storedPhotoPath)) {
       failures.push({
@@ -262,9 +499,9 @@ const findEmployeeByFace = async (
     }
 
     try {
-      const storedDescriptor = await detectFaceDescriptor(
+      const storedDescriptor = await getEmployeeDocumentDescriptor(
+        employee,
         storedPhotoPath,
-        `employee ${employee.employee_id || employee.id} photo`,
       );
       const distance = faceapi.euclideanDistance(
         storedDescriptor,
@@ -272,6 +509,7 @@ const findEmployeeByFace = async (
       );
 
       matches.push(buildMatchResult({ employee, distance, threshold }));
+      matchedEmployeeIds.add(Number(employee.id));
     } catch (error) {
       failures.push({ employeeId: employee.id, reason: error.message });
     }
@@ -328,6 +566,106 @@ const findEmployeeByFace = async (
   };
 };
 
+const normalizeIncomingDescriptor = (descriptor) => {
+  let values = descriptor;
+
+  if (typeof descriptor === "string") {
+    try {
+      values = JSON.parse(descriptor);
+    } catch {
+      values = null;
+    }
+  }
+
+  if (!Array.isArray(values) || values.length !== 128) {
+    const error = new Error("Valid 128-value face descriptor is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return Float32Array.from(values.map(Number));
+};
+
+const findEmployeeByDescriptor = async (
+  companyId,
+  descriptor,
+  options = {},
+) => {
+  if (!companyId) {
+    const error = new Error("Company is required for facial recognition");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const capturedDescriptor = normalizeIncomingDescriptor(descriptor);
+  const threshold = Number(options.threshold) || 0.5;
+  const minimumMargin = Number(options.minimumMargin) || 0.04;
+  let templates = await getCompanyPersistedDescriptors(companyId);
+
+  if (!templates.length) {
+    await warmFaceDescriptorCache(companyId);
+    templates = await getCompanyPersistedDescriptors(companyId);
+  }
+
+  if (!templates.length) {
+    const error = new Error(
+      "No employee face templates are ready. Please re-upload clear employee document photos or allow the server to build templates once.",
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const matches = templates
+    .map(({ employee, descriptor: storedDescriptor }) =>
+      buildMatchResult({
+        employee,
+        distance: calculateEuclideanDistance(
+          storedDescriptor,
+          capturedDescriptor,
+        ),
+        threshold,
+      }),
+    )
+    .sort((a, b) => a.distance - b.distance);
+
+  const best = matches[0];
+  const secondBest = matches[1] || null;
+
+  if (best.distance > threshold) {
+    const error = new Error("Face did not match any employee confidently");
+    error.statusCode = 400;
+    error.bestMatch = {
+      confidence: best.confidence,
+      distance: best.distance,
+      threshold,
+    };
+    throw error;
+  }
+
+  if (secondBest && secondBest.distance - best.distance < minimumMargin) {
+    const error = new Error(
+      "Face match is ambiguous. Please retake the photo with better lighting",
+    );
+    error.statusCode = 409;
+    error.bestMatch = {
+      confidence: best.confidence,
+      distance: best.distance,
+      secondBestDistance: secondBest.distance,
+      minimumMargin,
+    };
+    throw error;
+  }
+
+  return {
+    employee: best.employee,
+    confidence: best.confidence,
+    distance: best.distance,
+    threshold,
+    comparedEmployees: matches.length,
+    skippedEmployees: 0,
+  };
+};
+
 const verifyEmployeeFace = async (employeeId, uploadedImagePath) => {
   const columns = await knex("employee_documents").columnInfo();
   const hasType = Object.prototype.hasOwnProperty.call(columns, "type");
@@ -368,7 +706,9 @@ const verifyEmployeeFace = async (employeeId, uploadedImagePath) => {
 
 module.exports = {
   compareFaces,
+  findEmployeeByDescriptor,
   findEmployeeByFace,
   verifyEmployeeFace,
+  warmFaceDescriptorCache,
   loadModels,
 };

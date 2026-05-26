@@ -49,6 +49,7 @@ const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
 
   if (normalizedModule === "payroll") return true;
   if (normalizedModule === "employees" && normalizedSubmodule === "profile") return true;
+  if (normalizedModule === "expenses" && normalizedSubmodule === "claims") return true;
 
   return false;
 };
@@ -176,6 +177,15 @@ const requireAnyPermission = (permissions = []) => {
       if (context.isTopAuthority) return next();
       for (const requiredPermission of permissions) {
         if (await hasAddonAccess(req.user, requiredPermission.module)) return next();
+        if (
+          hasDefaultAdminAccess(
+            req.user,
+            requiredPermission.module,
+            requiredPermission.submodule
+          )
+        ) {
+          return next();
+        }
       }
 
       const allowed = context.effectiveRoles.some((roleRecord) =>

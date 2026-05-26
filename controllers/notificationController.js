@@ -120,9 +120,17 @@ const createNotification = async (req, res) => {
   }
 };
 
+const resolvePushUserId = (user) => {
+  if (!user) return null;
+  // Pulse survey and in-app notifications key off employees.id
+  if (user.employee_id) return String(user.employee_id);
+  if (String(user.type || '').toLowerCase() === 'employee') return String(user.id);
+  return String(user.id);
+};
+
 const registerNotificationToken = async (req, res) => {
   try {
-    const userId = req.user?.id;
+    const userId = resolvePushUserId(req.user);
     const companyId = req.user?.company_id || null;
     const { token, platform = 'web' } = req.body || {};
 

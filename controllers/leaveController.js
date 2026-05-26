@@ -79,6 +79,27 @@ const parseLeaveDate = (value) => {
   return parsed;
 };
 
+const getLeaveApplicationDateBounds = () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const minDate = new Date(today);
+  minDate.setMonth(minDate.getMonth() - 1);
+
+  const maxDate = new Date(today);
+  maxDate.setMonth(maxDate.getMonth() + 1);
+
+  return { minDate, maxDate };
+};
+
+const assertLeaveDateWithinApplicationWindow = (parsedDate, fieldLabel) => {
+  const { minDate, maxDate } = getLeaveApplicationDateBounds();
+  if (parsedDate < minDate || parsedDate > maxDate) {
+    return `${fieldLabel} must be within the previous 1 month or next 1 month`;
+  }
+  return null;
+};
+
 const normalizeHalfDaySession = (value) => {
   const session = String(value || '').toLowerCase().trim();
   return ['first_half', 'second_half'].includes(session) ? session : null;
@@ -408,6 +429,18 @@ const applyLeave = async (req, res) => {
       if (parsedToDate < parsedFromDate) {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(400).json({ message: 'To date cannot be earlier than from date' });
+      }
+
+      const fromDateWindowError = assertLeaveDateWithinApplicationWindow(parsedFromDate, 'From date');
+      if (fromDateWindowError) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: fromDateWindowError });
+      }
+
+      const toDateWindowError = assertLeaveDateWithinApplicationWindow(parsedToDate, 'To date');
+      if (toDateWindowError) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: toDateWindowError });
       }
 
       if (isHalfDay && !halfDaySession) {

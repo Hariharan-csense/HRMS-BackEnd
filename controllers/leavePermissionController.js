@@ -62,6 +62,42 @@ const resolveAuthenticatedEmployeeId = async (req, companyId) => {
   return employee?.id || null;
 };
 
+const parsePermissionDate = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return null;
+  const [year, month, day] = String(value).split("-").map(Number);
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  parsed.setHours(0, 0, 0, 0);
+  return parsed;
+};
+
+const getPermissionDateBounds = () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const minDate = new Date(today);
+  minDate.setMonth(minDate.getMonth() - 1);
+
+  const maxDate = new Date(today);
+  maxDate.setMonth(maxDate.getMonth() + 1);
+
+  return { minDate, maxDate };
+};
+
+const assertPermissionDateWithinWindow = (parsedDate) => {
+  const { minDate, maxDate } = getPermissionDateBounds();
+  if (parsedDate < minDate || parsedDate > maxDate) {
+    return "Permission date must be within the previous 1 month or next 1 month";
+  }
+  return null;
+};
+
 const getEmployeesByRole = async (companyId, roleName) => {
   const employeeUsers = await knex("employees")
     .where("company_id", companyId)
@@ -565,6 +601,18 @@ const applyLeavePermission = async (req, res) => {
       ) {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(400).json({ message: "All fields required" });
+      }
+
+      const parsedPermissionDate = parsePermissionDate(permission_date);
+      if (!parsedPermissionDate) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: "Please provide a valid permission date" });
+      }
+
+      const permissionDateWindowError = assertPermissionDateWithinWindow(parsedPermissionDate);
+      if (permissionDateWindowError) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: permissionDateWindowError });
       }
 
       // ===============================
