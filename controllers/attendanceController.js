@@ -243,6 +243,121 @@ const getAttendanceDateById = async (companyId, attendanceId) => {
   return row?.attendance_date || null;
 };
 
+const syncApprovedOverrideToAttendance = async ({
+  companyId,
+  override,
+  fallbackDate,
+}) => {
+  if (
+    !override ||
+    String(override.status || "").toLowerCase() !== "approved"
+  ) {
+    return null;
+  }
+
+  let attendance = override.attendance_id
+    ? await knex("attendance")
+        .where({
+          id: override.attendance_id,
+          company_id: companyId,
+        })
+        .select(
+          "*",
+          knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"),
+        )
+        .first()
+    : null;
+
+  const attendanceDate = getAttendanceDate(attendance, fallbackDate);
+  if (!attendanceDate) return null;
+
+  if (!attendance) {
+    const insertedAttendance = await knex("attendance").insert({
+      company_id: companyId,
+      employee_id: override.employee_id,
+      check_in: `${attendanceDate} 00:00:00`,
+      check_out: null,
+      hours_worked: 0,
+      overtime_hours: 0,
+      status: override.original_status || "absent",
+      device_info: "Override",
+      auto_flag: 0,
+    });
+
+    const insertedAttendanceRaw = Array.isArray(insertedAttendance)
+      ? insertedAttendance[0]
+      : insertedAttendance;
+    const insertedAttendanceId =
+      typeof insertedAttendanceRaw === "object"
+        ? insertedAttendanceRaw.id
+        : insertedAttendanceRaw;
+
+    attendance = await knex("attendance")
+      .where({ id: insertedAttendanceId, company_id: companyId })
+      .first();
+
+    if (override.id && attendance?.id) {
+      await knex("attendance_overrides")
+        .where({ id: override.id, company_id: companyId })
+        .update({ attendance_id: attendance.id });
+    }
+  }
+
+  const updatePayload = buildAttendanceOverrideUpdate({
+    override,
+    date: attendanceDate,
+  });
+
+  await knex("attendance")
+    .where({ id: attendance.id, company_id: companyId })
+    .update(updatePayload);
+
+  return attendance.id;
+};
+
+const syncApprovedOverridesForAttendanceRange = async ({
+  companyId,
+  employeeId,
+  startDate,
+  endDate,
+}) => {
+  if (!startDate && !endDate) return;
+
+  const rows = await knex("attendance_overrides as ao")
+    .innerJoin("attendance as a", function () {
+      this.on("ao.attendance_id", "=", "a.id").andOn(
+        "ao.company_id",
+        "=",
+        "a.company_id",
+      );
+    })
+    .where("ao.company_id", companyId)
+    .whereRaw("LOWER(ao.status) = ?", ["approved"])
+    .modify((queryBuilder) => {
+      if (employeeId) {
+        queryBuilder.where("ao.employee_id", employeeId);
+      }
+      if (startDate) {
+        queryBuilder.whereRaw("DATE(a.check_in) >= ?", [startDate]);
+      }
+      if (endDate) {
+        queryBuilder.whereRaw("DATE(a.check_in) <= ?", [endDate]);
+      }
+    })
+    .select(
+      "ao.*",
+      knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as override_date"),
+    );
+
+  for (const override of rows) {
+    await syncApprovedOverrideToAttendance({
+      companyId,
+      override,
+      fallbackDate: override.override_date,
+    });
+  }
+};
+
 const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
   const toRad = (value) => (Number(value) * Math.PI) / 180;
   const earthRadiusMeters = 6371000;
@@ -1201,6 +1316,13 @@ const getAttendanceLogs = async (req, res) => {
   const offset = (pageNum - 1) * limitNum;
 
   try {
+    await syncApprovedOverridesForAttendanceRange({
+      companyId,
+      employeeId,
+      startDate,
+      endDate,
+    });
+
     // ===============================
     // Get logged in user info
     // ===============================
@@ -1568,13 +1690,11 @@ const createOverride = async (req, res) => {
 
     // If admin approved immediately
     if (override && override.status === "approved") {
-      const attendanceDate = getAttendanceDate(attendance, date);
-      const updatePayload = buildAttendanceOverrideUpdate({
+      await syncApprovedOverrideToAttendance({
+        companyId,
         override,
-        date: attendanceDate,
+        fallbackDate: date,
       });
-
-      await knex("attendance").where("id", attendance.id).update(updatePayload);
     }
 
     // await logAudit('create_override', 'attendance_overrides', override.id, userId, {
@@ -1648,29 +1768,14 @@ const processOverride = async (req, res) => {
       .first();
 
     if (status === "approved") {
-      const attendance = await knex("attendance")
-        .where({ id: override.attendance_id, company_id: companyId })
-        .select(
-          "*",
-          knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"),
-        )
-        .first();
-
-      if (!attendance) {
-        return res
-          .status(404)
-          .json({ message: "Attendance record not found for this override" });
-      }
-
-      const attendanceDate = getAttendanceDate(attendance);
-      const updatePayload = buildAttendanceOverrideUpdate({
+      await syncApprovedOverrideToAttendance({
+        companyId,
         override,
-        date: attendanceDate,
+        fallbackDate: await getAttendanceDateById(
+          companyId,
+          override.attendance_id,
+        ),
       });
-
-      await knex("attendance")
-        .where("id", override.attendance_id)
-        .update(updatePayload);
     }
 
     // await logAudit(`override_${status}`, 'attendance_overrides', overrideId, userId, { status, comment });

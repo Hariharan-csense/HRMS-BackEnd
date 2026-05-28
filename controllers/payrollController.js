@@ -150,6 +150,34 @@ const calculateAmountFromPercentage = (base, percentage) => {
 
 const roundTo2 = (value) => Number((Number(value) || 0).toFixed(2));
 
+const normalizePayrollDayTotals = ({ totalDays, payableDays, lopDays }) => {
+  const normalizedTotalDays = Math.max(0, roundTo2(totalDays));
+  const normalizedLopDays = Math.min(
+    normalizedTotalDays,
+    Math.max(0, roundTo2(lopDays)),
+  );
+  const maxPayableDays = Math.max(
+    0,
+    roundTo2(normalizedTotalDays - normalizedLopDays),
+  );
+  const normalizedPayableDays = Math.min(
+    maxPayableDays,
+    Math.max(0, roundTo2(payableDays)),
+  );
+
+  return {
+    totalDays: normalizedTotalDays,
+    payableDays: normalizedPayableDays,
+    lopDays: normalizedLopDays,
+  };
+};
+
+const formatPayrollDayCount = (value) => {
+  const numericValue = roundTo2(value);
+  if (Number.isInteger(numericValue)) return String(numericValue);
+  return numericValue.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+};
+
 const getTdsPercentage = (structure) => {
   const explicitPercentage = toNumber(structure?.tds_percentage, NaN);
   if (Number.isFinite(explicitPercentage)) return explicitPercentage;
@@ -384,6 +412,36 @@ const normalizeAttendanceStatus = (status) => {
   return s;
 };
 
+const getAttendanceRowTime = (row) => {
+  const value = row?.updated_at || row?.created_at || row?.check_in;
+  const parsed = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const getLatestAttendanceRowsByDay = (attendanceRows) => {
+  const latestByDay = new Map();
+
+  for (const row of attendanceRows) {
+    const dayKey =
+      row.day instanceof Date
+        ? formatDateKey(row.day)
+        : String(row.day).slice(0, 10);
+    if (!dayKey) continue;
+
+    const existing = latestByDay.get(dayKey);
+    if (
+      !existing ||
+      getAttendanceRowTime(row) > getAttendanceRowTime(existing) ||
+      (getAttendanceRowTime(row) === getAttendanceRowTime(existing) &&
+        Number(row.id || 0) > Number(existing.id || 0))
+    ) {
+      latestByDay.set(dayKey, row);
+    }
+  }
+
+  return [...latestByDay.values()];
+};
+
 const generatePdfFromHtml = (html, pdfPath) => {
   return new Promise((resolve, reject) => {
     pdf
@@ -427,16 +485,17 @@ const isPaidLeaveType = (leave) => {
   );
 };
 
-const calculatePaidLeaveCreditByDate = (
+const calculateLeaveCreditByDate = (
   leaves,
   startDate,
   effectiveEndDate,
   isNonWorkingDay,
+  shouldCountLeave = () => true,
 ) => {
   const creditByDate = new Map();
 
   for (const leave of leaves) {
-    if (!isPaidLeaveType(leave)) continue;
+    if (!shouldCountLeave(leave)) continue;
 
     const from = new Date(leave.from_date);
     const to = new Date(leave.to_date);
@@ -474,6 +533,34 @@ const calculatePaidLeaveCreditByDate = (
 
   return creditByDate;
 };
+
+const calculatePaidLeaveCreditByDate = (
+  leaves,
+  startDate,
+  effectiveEndDate,
+  isNonWorkingDay,
+) =>
+  calculateLeaveCreditByDate(
+    leaves,
+    startDate,
+    effectiveEndDate,
+    isNonWorkingDay,
+    isPaidLeaveType,
+  );
+
+const calculateUnpaidLeaveCreditByDate = (
+  leaves,
+  startDate,
+  effectiveEndDate,
+  isNonWorkingDay,
+) =>
+  calculateLeaveCreditByDate(
+    leaves,
+    startDate,
+    effectiveEndDate,
+    isNonWorkingDay,
+    (leave) => !isPaidLeaveType(leave),
+  );
 
 const sumLeaveCreditByDate = (creditByDate) =>
   roundTo2(
@@ -536,6 +623,119 @@ const addOverrideLeaveCredit = (creditByDate, overrides, isNonWorkingDay) => {
   }
 
   return creditByDate;
+};
+
+const getOverrideDateKey = (override) =>
+  String(override?.override_date || override?.attendance_date || "").slice(
+    0,
+    10,
+  );
+
+const applyApprovedAttendanceOverrides = ({
+  overrides,
+  attendanceCreditByDay,
+  paidLeaveCreditByDate,
+  lopCreditByDate,
+  isNonWorkingDay,
+}) => {
+  for (const override of overrides) {
+    const dateKey = getOverrideDateKey(override);
+    if (!dateKey) continue;
+
+    const date = new Date(`${dateKey}T00:00:00`);
+    if (Number.isNaN(date.getTime())) continue;
+
+    const parsedLeave = parseOverrideLeave(override.reason);
+    if (parsedLeave) {
+      if (isNonWorkingDay(date, dateKey)) continue;
+
+      const credit = parsedLeave.mode === "half" ? 0.5 : 1;
+
+      attendanceCreditByDay.delete(dateKey);
+      paidLeaveCreditByDate.delete(dateKey);
+      lopCreditByDate.delete(dateKey);
+
+      if (isPaidLeaveType(override)) {
+        paidLeaveCreditByDate.set(dateKey, credit);
+      } else {
+        lopCreditByDate.set(dateKey, credit);
+      }
+      continue;
+    }
+  }
+
+  return {
+    attendanceCreditByDay,
+    paidLeaveCreditByDate,
+    lopCreditByDate,
+  };
+};
+
+const addMissingWorkingDayLopCredits = ({
+  startDate,
+  endDate,
+  attendanceCreditByDay,
+  paidLeaveCreditByDate,
+  lopCreditByDate,
+  isNonWorkingDay,
+}) => {
+  const current = new Date(startDate);
+  current.setHours(0, 0, 0, 0);
+  const last = new Date(endDate);
+  last.setHours(0, 0, 0, 0);
+
+  while (current <= last) {
+    const dateKey = formatDateKey(current);
+
+    if (
+      !isNonWorkingDay(current, dateKey) &&
+      !attendanceCreditByDay.has(dateKey) &&
+      !paidLeaveCreditByDate.has(dateKey) &&
+      !lopCreditByDate.has(dateKey)
+    ) {
+      lopCreditByDate.set(dateKey, 1);
+    }
+
+    current.setDate(current.getDate() + 1);
+  }
+
+  return lopCreditByDate;
+};
+
+const getApprovedAttendanceOverridesForPayroll = async ({
+  employeeId,
+  companyId,
+  startDate,
+  endDate,
+}) => {
+  return knex("attendance_overrides as ao")
+    .leftJoin("attendance as a", "ao.attendance_id", "a.id")
+    .leftJoin("leave_types as lt", function () {
+      this.on("lt.company_id", "=", "ao.company_id").andOn(
+        knex.raw(
+          'LOWER(TRIM(lt.name)) = LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(ao.reason, "]", 1), " - ", -1)))',
+        ),
+      );
+    })
+    .where({
+      "ao.employee_id": employeeId,
+      "ao.company_id": companyId,
+      "ao.status": "approved",
+    })
+    .whereRaw("DATE(a.check_in) BETWEEN ? AND ?", [
+      formatDateKey(startDate),
+      formatDateKey(endDate),
+    ])
+    .select(
+      "ao.reason",
+      "ao.overridden_status",
+      "ao.requested_check_in",
+      "ao.requested_check_out",
+      "lt.is_paid",
+      knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as override_date"),
+    )
+    .orderBy("ao.updated_at", "asc")
+    .orderBy("ao.created_at", "asc");
 };
 
 const withOptionalColumn = async (tableName, payload, columnName, value) => {
@@ -869,10 +1069,14 @@ const processPayroll = async (req, res) => {
       })
       .whereBetween("check_in", [startDate, calculationEndDate])
       .select(
+        "id",
+        "check_in",
         knex.raw("DATE(check_in) as day"),
         "status",
         "hours_worked",
         "flag_reason",
+        "created_at",
+        "updated_at",
       );
 
     const presentDateSet = new Set();
@@ -900,7 +1104,7 @@ const processPayroll = async (req, res) => {
     const isNonWorkingDay = (d, key = formatDateKey(d)) =>
       isWeekend(d) || holidayDateSet.has(key);
 
-    for (const row of attendanceRows) {
+    for (const row of getLatestAttendanceRowsByDay(attendanceRows)) {
       const dayKey =
         row.day instanceof Date
           ? formatDateKey(row.day)
@@ -993,8 +1197,8 @@ const processPayroll = async (req, res) => {
       calculationEndDate,
       () => false,
     );
-    const unpaidLeaveCreditByDate = calculatePaidLeaveCreditByDate(
-      approvedLeaves.filter((leave) => !isPaidLeaveType(leave)),
+    const unpaidLeaveCreditByDate = calculateUnpaidLeaveCreditByDate(
+      approvedLeaves,
       startDate,
       calculationEndDate,
       () => false,
@@ -1008,56 +1212,57 @@ const processPayroll = async (req, res) => {
       );
     }
 
-    const overrideLeaves = await knex("attendance_overrides as ao")
-      .leftJoin("attendance as a", "ao.attendance_id", "a.id")
-      .leftJoin("leave_types as lt", function () {
-        this.on("lt.company_id", "=", "ao.company_id").andOn(
-          knex.raw(
-            'LOWER(TRIM(lt.name)) = LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(ao.reason, "]", 1), " - ", -1)))',
-          ),
-        );
-      })
-      .where({
-        "ao.employee_id": empId,
-        "ao.company_id": companyId,
-        "ao.status": "approved",
-      })
-      .whereRaw("DATE(a.check_in) BETWEEN ? AND ?", [
-        formatDateKey(startDate),
-        formatDateKey(calculationEndDate),
-      ])
-      .andWhere(function () {
-        this.where("ao.reason", "like", "[Paid Leave -%").orWhere(
-          "ao.reason",
-          "like",
-          "[Half Day Leave -%",
-        );
-      })
-      .select(
-        "ao.reason",
-        "lt.is_paid",
-        knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as override_date"),
-      );
+    const approvedAttendanceOverrides =
+      await getApprovedAttendanceOverridesForPayroll({
+        employeeId: empId,
+        companyId,
+        startDate,
+        endDate: calculationEndDate,
+      });
 
-    addOverrideLeaveCredit(
+    applyApprovedAttendanceOverrides({
+      overrides: approvedAttendanceOverrides,
+      attendanceCreditByDay,
       paidLeaveCreditByDate,
-      overrideLeaves,
+      lopCreditByDate,
       isNonWorkingDay,
-    );
+    });
+
+    presentDateSet.clear();
+    halfDayDateSet.clear();
+    for (const [dayKey, credit] of attendanceCreditByDay.entries()) {
+      if (credit >= 1) presentDateSet.add(dayKey);
+      if (credit > 0 && credit < 1) halfDayDateSet.add(dayKey);
+    }
+
+    addMissingWorkingDayLopCredits({
+      startDate,
+      endDate: calculationEndDate,
+      attendanceCreditByDay,
+      paidLeaveCreditByDate,
+      lopCreditByDate,
+      isNonWorkingDay,
+    });
 
     const approvedLeaveDays = sumLeaveCreditByDate(paidLeaveCreditByDate);
 
     const presentDays = presentDateSet.size;
     const halfDays = roundTo2(halfDayDateSet.size * 0.5);
     const explicitLopDays = sumLeaveCreditByDate(lopCreditByDate);
-    const payableDays = Math.max(
+    const calculatedPayableDays = Math.max(
       0,
       roundTo2(elapsedPayrollDays - explicitLopDays),
     );
-    const lopDays = explicitLopDays;
+    const normalizedDayTotals = normalizePayrollDayTotals({
+      totalDays: elapsedPayrollDays,
+      payableDays: calculatedPayableDays,
+      lopDays: explicitLopDays,
+    });
+    const payableDays = normalizedDayTotals.payableDays;
+    const lopDays = normalizedDayTotals.lopDays;
     const futurePeriodDays = Math.max(
       0,
-      roundTo2(totalDays - elapsedPayrollDays),
+      roundTo2(totalDays - normalizedDayTotals.totalDays),
     );
     const dailyGross = totalDays > 0 ? monthlyGross / totalDays : 0;
     const lopAmount = roundTo2(dailyGross * lopDays);
@@ -1189,11 +1394,11 @@ const processPayroll = async (req, res) => {
       month,
       display_month: formatPayrollMonth(month),
       payroll_period: payrollPeriod,
-      total_days: totalDays,
-      present_days: presentDateSet.size,
-      approved_leave_days: approvedLeaveDays,
-      lop_days: lopDays,
-      payable_days: payableDays,
+      total_days: formatPayrollDayCount(totalDays),
+      present_days: formatPayrollDayCount(presentDateSet.size),
+      approved_leave_days: formatPayrollDayCount(approvedLeaveDays),
+      lop_days: formatPayrollDayCount(lopDays),
+      payable_days: formatPayrollDayCount(payableDays),
 
       basic: structure.basic,
       hra: structure.hra,
@@ -1344,7 +1549,20 @@ const getPayrollRecords = async (req, res) => {
     }
     // Admin/HR/Finance sees all in company
 
-    const records = await query;
+    const records = (await query).map((record) => {
+      const dayTotals = normalizePayrollDayTotals({
+        totalDays: record.total_days,
+        payableDays: record.payable_days,
+        lopDays: record.lop_days,
+      });
+
+      return {
+        ...record,
+        total_days: dayTotals.totalDays,
+        payable_days: dayTotals.payableDays,
+        lop_days: dayTotals.lopDays,
+      };
+    });
 
     res.json({
       success: true,
@@ -1678,6 +1896,11 @@ const payslipPreview = async (req, res) => {
       previewPaidLeaveCreditByDate,
     );
     const displayPaidLeaveDays = Number(payroll.approved_leave_days || 0);
+    const displayDayTotals = normalizePayrollDayTotals({
+      totalDays: payroll.total_days,
+      payableDays: payroll.payable_days,
+      lopDays: payroll.lop_days,
+    });
 
     // ===============================
     // TEMPLATE DATA (🔥 SAME FIELDS)
@@ -1704,11 +1927,11 @@ const payslipPreview = async (req, res) => {
       month,
       display_month: formatPayrollMonth(month),
       payroll_period: formatPayrollPeriodLabel(startDate, endDate),
-      total_days: payroll.total_days,
-      present_days: payroll.present_days,
-      payable_days: payroll.payable_days,
-      approved_leave_days: displayPaidLeaveDays,
-      lop_days: payroll.lop_days,
+      total_days: formatPayrollDayCount(displayDayTotals.totalDays),
+      present_days: formatPayrollDayCount(payroll.present_days),
+      payable_days: formatPayrollDayCount(displayDayTotals.payableDays),
+      approved_leave_days: formatPayrollDayCount(displayPaidLeaveDays),
+      lop_days: formatPayrollDayCount(displayDayTotals.lopDays),
 
       // 🔥 Salary Snapshot (from payroll_processing)
       basic: structure?.basic || 0,
@@ -2076,23 +2299,33 @@ const getEmployeePayslips = async (req, res) => {
     console.log("Company ID:", companyId);
     console.log("Query result count:", records.length);
 
-    const transformedRecords = records.map((record) => ({
-      id: record.id.toString(),
-      employeeId: record.employee_id.toString(),
-      employeeCode: record.employee_code || null,
-      employeeName:
-        `${record.first_name || ""} ${record.last_name || ""}`.trim(),
-      month: record.month,
-      payableDays: record.payable_days || 0,
-      lopAmount: parseFloat(record.lop_amount) || 0,
-      gross: parseFloat(record.gross) || 0,
-      tdsAmount: parseFloat(record.tds_amount) || 0,
-      tds_amount: parseFloat(record.tds_amount) || 0,
-      deductions: parseFloat(record.deductions) || 0,
-      net: parseFloat(record.net) || 0,
-      status: record.status || "draft",
-      createdAt: record.created_at || new Date().toISOString(),
-    }));
+    const transformedRecords = records.map((record) => {
+      const dayTotals = normalizePayrollDayTotals({
+        totalDays: record.total_days,
+        payableDays: record.payable_days,
+        lopDays: record.lop_days,
+      });
+
+      return {
+        id: record.id.toString(),
+        employeeId: record.employee_id.toString(),
+        employeeCode: record.employee_code || null,
+        employeeName:
+          `${record.first_name || ""} ${record.last_name || ""}`.trim(),
+        month: record.month,
+        payableDays: dayTotals.payableDays,
+        lopDays: dayTotals.lopDays,
+        unpayableDays: dayTotals.lopDays,
+        lopAmount: parseFloat(record.lop_amount) || 0,
+        gross: parseFloat(record.gross) || 0,
+        tdsAmount: parseFloat(record.tds_amount) || 0,
+        tds_amount: parseFloat(record.tds_amount) || 0,
+        deductions: parseFloat(record.deductions) || 0,
+        net: parseFloat(record.net) || 0,
+        status: record.status || "draft",
+        createdAt: record.created_at || new Date().toISOString(),
+      };
+    });
 
     res.json({
       success: true,
