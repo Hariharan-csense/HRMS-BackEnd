@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 
 const {
+  getReportFilters,
   getAttendanceReport,
   getLeaveReport,
   getPayrollReport,
@@ -11,11 +12,17 @@ const {
 } = require('../controllers/reports.controller');
 
 const { protect } = require('../middleware/authMiddleware');
-const { requirePermission } = require("../middleware/rbacMiddleware");
+const { requirePermission, requireAnyPermission } = require("../middleware/rbacMiddleware");
 
 // Apply auth to all reports routes
 
 
+router.get('/filters', protect, requireAnyPermission([
+  { module: "reports", action: "view", submodule: "attendance" },
+  { module: "reports", action: "view", submodule: "payroll" },
+  { module: "reports", action: "view", submodule: "finance" },
+  { module: "reports", action: "view", submodule: "leave" },
+]), getReportFilters);
 router.get('/attendance', protect, requirePermission("reports", "view", { submodule: "attendance" }), getAttendanceReport);
 router.get('/payroll', protect, requirePermission("reports", "view", { submodule: "payroll" }), getPayrollReport);
 router.get('/expenses', protect, requirePermission("reports", "view", { submodule: "finance" }), getExpenseReport);

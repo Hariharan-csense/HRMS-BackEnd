@@ -438,7 +438,13 @@ const addEmployee = async (req, res) => {
   try {
     const depId = department_id ? parseInt(department_id) : null;
     const desigId = designation_id ? parseInt(designation_id) : null;
-    const normalizedRole = role.toLowerCase();
+    const requestedRole = String(role || "employee").trim();
+    const normalizedRole = requestedRole.toLowerCase();
+    const matchingRole = await knex("roles")
+      .where({ company_id: companyId })
+      .whereRaw("LOWER(name) = ?", [normalizedRole])
+      .first("name");
+    const finalRoleName = matchingRole?.name || requestedRole;
 
     // ✅ Only one HR per company
     if (normalizedRole === "hr") {
@@ -571,7 +577,7 @@ const addEmployee = async (req, res) => {
           pan: pan || null,
           uan: uan || null,
           esic: esic || null,
-          role: normalizedRole,
+          role: finalRoleName,
           location_tracking_enabled: normalizedLocationTrackingEnabled,
         });
 
@@ -657,7 +663,7 @@ const addEmployee = async (req, res) => {
         esic: esic || null,
         branch_id: finalBranchId,
         password: hashedPassword,
-        role: normalizedRole,
+        role: finalRoleName,
         location_tracking_enabled: normalizedLocationTrackingEnabled,
       });
 
@@ -1276,11 +1282,13 @@ const updateEmployee = async (req, res) => {
 
     // Role handling with HR restriction
     if (role !== undefined) {
-      const normalizedRole = role ? role.toLowerCase() : employee.role;
+      const requestedRole = String(role || employee.role || "").trim();
+      const normalizedRole = requestedRole.toLowerCase();
 
       if (normalizedRole === "hr") {
         const existingHR = await knex("employees")
-          .where({ company_id: companyId, role: "hr" })
+          .where({ company_id: companyId })
+          .whereRaw("LOWER(role) = ?", ["hr"])
           .whereNot({ id })
           .first();
 
@@ -1291,7 +1299,13 @@ const updateEmployee = async (req, res) => {
           });
         }
       }
-      updateData.role = normalizedRole;
+
+      const matchingRole = await knex("roles")
+        .where({ company_id: companyId })
+        .whereRaw("LOWER(name) = ?", [normalizedRole])
+        .first("name");
+
+      updateData.role = matchingRole?.name || requestedRole;
     }
 
     if (branch_id !== undefined) {
@@ -1491,12 +1505,13 @@ const updateEmployee = async (req, res) => {
 
     // Department head assignment (only if role or department changed)
     const finalRole = updateData.role || employee.role;
+    const finalRoleKey = String(finalRole || "").toLowerCase();
     const finalDeptId =
       updateData.department_id !== undefined
         ? updateData.department_id
         : employee.department_id;
 
-    if ((finalRole === "manager" || finalRole === "hr") && finalDeptId) {
+    if ((finalRoleKey === "manager" || finalRoleKey === "hr") && finalDeptId) {
       await knex("departments")
         .where({ id: finalDeptId, company_id: companyId })
         .update({

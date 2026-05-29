@@ -5,6 +5,7 @@ const path = require("path");
 const resolveEmployeeIdFromAuth = async (req) => {
   const companyId = Number(req.user?.company_id);
   if (!companyId) return null;
+  const userType = String(req.user?.type || "").toLowerCase().trim();
 
   if (req.user?.employee_id) {
     const direct = await knex("employees")
@@ -13,10 +14,12 @@ const resolveEmployeeIdFromAuth = async (req) => {
     if (direct) return Number(direct.id);
   }
 
-  const fallbackById = await knex("employees")
-    .where({ id: Number(req.user?.id), company_id: companyId })
-    .first();
-  if (fallbackById) return Number(fallbackById.id);
+  if (userType === "employee") {
+    const fallbackById = await knex("employees")
+      .where({ id: Number(req.user?.id), company_id: companyId })
+      .first();
+    if (fallbackById) return Number(fallbackById.id);
+  }
 
   if (req.user?.email) {
     const byEmail = await knex("employees")

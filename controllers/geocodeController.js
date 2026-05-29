@@ -104,7 +104,8 @@ const reverseGeocode = async (req, res) => {
       }
     }
 
-    // 2) Fallback to Mappls (optional; disabled by default when Google key exists but fails)
+    // 2) Fallback to Mappls when explicitly requested, when Google is absent,
+    // or when the caller allows fallback even if the env prefers Google.
     const googleKeyPresent = Boolean(
       String(
         process.env.GOOGLE_GEOCODING_API_KEY ||
@@ -117,7 +118,7 @@ const reverseGeocode = async (req, res) => {
       (!result &&
         (forceProvider === "mappls" ||
           (!googleKeyPresent && !forceProvider) ||
-          (allowFallback && googleKeyPresent)));
+          (allowFallback && forceProvider !== "mappls")));
 
     if (shouldTryMappls) {
       try {

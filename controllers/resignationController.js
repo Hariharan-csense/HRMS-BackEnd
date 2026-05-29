@@ -158,9 +158,10 @@ const updateResignation = async (req, res) => {
       .where({ id, company_id })
       .update(updates);
 
-    // 🔹 If approval_status changed to 'approved', create offboarding checklist
-    if (finalApprovalStatus && finalApprovalStatus === 'approved' && resignation.approval_status !== 'approved') {
-      // Check if checklist already exists
+    // Create the offboarding checklist whenever the saved status is approved.
+    // This also heals older approved resignations that were missing a checklist.
+    const savedApprovalStatus = finalApprovalStatus || resignation.approval_status;
+    if (savedApprovalStatus === 'approved') {
       const existingChecklist = await knex('offboarding_checklists')
         .where({ resignation_id: id, company_id })
         .first();

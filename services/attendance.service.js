@@ -56,6 +56,7 @@ const getActivePermissionForPunch = async ({ companyId, employeeId, punchTime })
 async function doCheckIn({
   employeeId,
   companyId,
+  clientId = null,
   imageData = null,
   location = null,
   deviceInfo = 'Web',
@@ -167,18 +168,23 @@ async function doCheckIn({
     }
   }
 
-  const [insertId] = await knex('attendance')
-    .insert({
-      company_id: companyId,
-      employee_id: employeeId,
-      check_in: checkInTime,
-      check_in_location: location ? JSON.stringify(location) : null,
-      check_in_image_url: resolveStoredImageUrl(imageData, companyId),
-      device_info: deviceInfo,
-      status: attendanceStatus,
-      shift_type: finalShiftType,
-      shift_id: finalShiftId
-    });
+  const insertPayload = {
+    company_id: companyId,
+    employee_id: employeeId,
+    check_in: checkInTime,
+    check_in_location: location ? JSON.stringify(location) : null,
+    check_in_image_url: resolveStoredImageUrl(imageData, companyId),
+    device_info: deviceInfo,
+    status: attendanceStatus,
+    shift_type: finalShiftType,
+    shift_id: finalShiftId
+  };
+
+  if (clientId && await knex.schema.hasColumn('attendance', 'client_id')) {
+    insertPayload.client_id = clientId;
+  }
+
+  const [insertId] = await knex('attendance').insert(insertPayload);
 
   const attendance = await knex('attendance')
     .where('id', insertId)

@@ -50,7 +50,7 @@ const calculatePayableDays = async (employeeId, month, companyId) => {
   const holidayDateSet = new Set(holidayRows.map((r) => r.day).filter(Boolean));
   const isNonWorkingDay = (d, key = formatDateKey(d)) => {
     const day = d.getDay();
-    return day === 0 || holidayDateSet.has(key);
+    return day === 0 || day === 6 || holidayDateSet.has(key);
   };
 
   // Add approved paid leaves (company scoped)
@@ -1099,7 +1099,7 @@ const processPayroll = async (req, res) => {
 
     const isWeekend = (d) => {
       const day = d.getDay();
-      return day === 0;
+      return day === 0 || day === 6;
     };
     const isNonWorkingDay = (d, key = formatDateKey(d)) =>
       isWeekend(d) || holidayDateSet.has(key);
@@ -1119,7 +1119,13 @@ const processPayroll = async (req, res) => {
         continue;
       }
 
-      if (isNonWorkingDay(dayObj, dayKey)) continue;
+      const nonWorkingDay = isNonWorkingDay(dayObj, dayKey);
+      if (
+        nonWorkingDay &&
+        !["present", "late", "half"].includes(status)
+      ) {
+        continue;
+      }
 
       let credit = 0;
 

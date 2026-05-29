@@ -323,39 +323,40 @@ const syncApprovedOverridesForAttendanceRange = async ({
 }) => {
   if (!startDate && !endDate) return;
 
-  const rows = await knex("attendance_overrides as ao")
-    .innerJoin("attendance as a", function () {
-      this.on("ao.attendance_id", "=", "a.id").andOn(
-        "ao.company_id",
-        "=",
-        "a.company_id",
-      );
-    })
-    .where("ao.company_id", companyId)
-    .whereRaw("LOWER(ao.status) = ?", ["approved"])
-    .modify((queryBuilder) => {
-      if (employeeId) {
-        queryBuilder.where("ao.employee_id", employeeId);
-      }
-      if (startDate) {
-        queryBuilder.whereRaw("DATE(a.check_in) >= ?", [startDate]);
-      }
-      if (endDate) {
-        queryBuilder.whereRaw("DATE(a.check_in) <= ?", [endDate]);
-      }
-    })
-    .select(
-      "ao.*",
-      knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as override_date"),
-    );
+  const whereParts = [
+    "ao.company_id = ?",
+    "LOWER(ao.status) = ?",
+    "ao.overridden_status IS NOT NULL",
+    "(a.status IS NULL OR LOWER(a.status) <> LOWER(ao.overridden_status))",
+  ];
+  const bindings = [companyId, "approved"];
 
-  for (const override of rows) {
-    await syncApprovedOverrideToAttendance({
-      companyId,
-      override,
-      fallbackDate: override.override_date,
-    });
+  if (employeeId) {
+    whereParts.push("ao.employee_id = ?");
+    bindings.push(employeeId);
   }
+  if (startDate) {
+    whereParts.push("DATE(a.check_in) >= ?");
+    bindings.push(startDate);
+  }
+  if (endDate) {
+    whereParts.push("DATE(a.check_in) <= ?");
+    bindings.push(endDate);
+  }
+
+  await knex.raw(
+    `
+      UPDATE attendance a
+      INNER JOIN attendance_overrides ao
+        ON ao.attendance_id = a.id
+        AND ao.company_id = a.company_id
+      SET
+        a.status = ao.overridden_status,
+        a.device_info = COALESCE(a.device_info, 'Override')
+      WHERE ${whereParts.join(" AND ")}
+    `,
+    bindings,
+  );
 };
 
 const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
@@ -878,6 +879,12 @@ const checkIn = async (req, res) => {
 
     console.log("Check-in called with:", { employeeId, companyId });
 
+    const selectedClientIdRaw = req.body?.clientId ?? req.body?.client_id;
+    const selectedClientId =
+      selectedClientIdRaw === undefined || selectedClientIdRaw === null
+        ? null
+        : Number(selectedClientIdRaw);
+
     await validateAssignedClientLocationForCheckIn({
       req,
       companyId,
@@ -903,6 +910,7 @@ const checkIn = async (req, res) => {
       deviceInfo: "Web",
       shiftId: shift?.id || null,
       shiftType: "regular", // Use string that will be converted to numeric
+      clientId: Number.isInteger(selectedClientId) ? selectedClientId : null,
     });
 
     // 5️⃣ Return success
@@ -1348,9 +1356,52 @@ const getAttendanceLogs = async (req, res) => {
     // ===============================
     // Base query
     // ===============================
+    const attendanceHasClientId = await knex.schema.hasColumn(
+      "attendance",
+      "client_id",
+    );
+    const hasClientAttendanceTable = await knex.schema.hasTable(
+      "client_attendance",
+    );
+
     let baseQuery = knex("attendance as a")
       .leftJoin("employees as e", "a.employee_id", "e.id")
       .where("a.company_id", companyId);
+
+    if (attendanceHasClientId) {
+      baseQuery.leftJoin("clients as direct_client", function () {
+        this.on("a.client_id", "=", "direct_client.id").andOn(
+          "direct_client.company_id",
+          "=",
+          "a.company_id",
+        );
+      });
+    }
+
+    if (hasClientAttendanceTable) {
+      baseQuery.leftJoin(
+        knex.raw(
+          `(
+            SELECT
+              ca.employee_id,
+              ca.date,
+              MIN(ca.client_id) as client_id,
+              GROUP_CONCAT(DISTINCT clients.client_name ORDER BY clients.client_name SEPARATOR ', ') as client_names,
+              GROUP_CONCAT(DISTINCT clients.client_id ORDER BY clients.client_id SEPARATOR ', ') as client_codes
+            FROM client_attendance ca
+            INNER JOIN clients ON clients.id = ca.client_id
+            WHERE clients.company_id = ?
+            GROUP BY ca.employee_id, ca.date
+          ) as client_day`,
+          [companyId],
+        ),
+        function () {
+          this.on("client_day.employee_id", "=", "a.employee_id").andOn(
+            knex.raw("client_day.date = DATE(a.check_in)"),
+          );
+        },
+      );
+    }
 
     // ===============================
     // Access Control
@@ -1412,6 +1463,25 @@ const getAttendanceLogs = async (req, res) => {
         "a.hours_worked",
         "a.overtime_hours",
         knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as attendance_date"),
+        ...(attendanceHasClientId ? ["a.client_id"] : []),
+        knex.raw(
+          attendanceHasClientId && hasClientAttendanceTable
+            ? "COALESCE(direct_client.client_name, client_day.client_names) as client_name"
+            : attendanceHasClientId
+              ? "direct_client.client_name as client_name"
+              : hasClientAttendanceTable
+                ? "client_day.client_names as client_name"
+                : "NULL as client_name",
+        ),
+        knex.raw(
+          attendanceHasClientId && hasClientAttendanceTable
+            ? "COALESCE(direct_client.client_id, client_day.client_codes) as client_code"
+            : attendanceHasClientId
+              ? "direct_client.client_id as client_code"
+              : hasClientAttendanceTable
+                ? "client_day.client_codes as client_code"
+                : "NULL as client_code",
+        ),
       )
       .orderBy("a.check_in", "desc")
       .limit(limitNum)
@@ -1770,7 +1840,7 @@ const processOverride = async (req, res) => {
     if (status === "approved") {
       await syncApprovedOverrideToAttendance({
         companyId,
-        override,
+        override: updatedOverride,
         fallbackDate: await getAttendanceDateById(
           companyId,
           override.attendance_id,

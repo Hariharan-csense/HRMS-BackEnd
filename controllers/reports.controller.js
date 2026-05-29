@@ -85,6 +85,101 @@ const formatHoursFromMinutes = (minutes) => {
 
 const normalizeStatus = (value) => String(value || '').toLowerCase().trim();
 
+const isAllValue = (value) => !value || String(value).toLowerCase() === 'all';
+
+const resolveDateRange = (query) => {
+  const startDate = query.startDate || query.fromDate || query.day || null;
+  const endDate = query.endDate || query.toDate || query.day || null;
+
+  if (query.month && !startDate && !endDate) {
+    return {
+      startDate: `${query.month}-01`,
+      endDate: `${query.month}-31`,
+    };
+  }
+
+  return { startDate, endDate };
+};
+
+const applyEmployeeDepartmentFilters = (query, filters, employeeAlias = 'emp') => {
+  const { employeeId, departmentId } = filters;
+
+  if (!isAllValue(employeeId)) {
+    query.where(function () {
+      this.where(`${employeeAlias}.employee_id`, employeeId);
+      if (/^\d+$/.test(String(employeeId))) {
+        this.orWhere(`${employeeAlias}.id`, Number(employeeId));
+      }
+    });
+  }
+
+  if (!isAllValue(departmentId)) {
+    query.where(`${employeeAlias}.department_id`, departmentId);
+  }
+
+  return query;
+};
+
+const parseLeaveOverrideType = (reason, fallbackStatus) => {
+  const text = String(reason || '').trim();
+  const match = text.match(/^\[(?:Paid Leave|Half Day Leave)\s+-\s*([^\]]+)\]/i);
+  if (match?.[1]) return match[1].trim();
+  if (String(fallbackStatus || '').toLowerCase().includes('half')) return 'Half Day Leave';
+  return 'Paid Leave';
+};
+
+const getReportFilters = async (req, res) => {
+  try {
+    const companyId = await resolveCompanyId(req);
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company context missing for report filters',
+      });
+    }
+
+    const employees = await knex('employees as e')
+      .leftJoin('departments as d', 'e.department_id', 'd.id')
+      .where('e.company_id', companyId)
+      .select(
+        'e.id',
+        'e.employee_id as employeeCode',
+        knex.raw("TRIM(CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,''))) as name"),
+        'e.department_id as departmentId',
+        'd.name as department'
+      )
+      .orderBy('e.first_name')
+      .orderBy('e.last_name');
+
+    const departments = await knex('employees as e')
+      .join('departments as d', 'e.department_id', 'd.id')
+      .where('e.company_id', companyId)
+      .distinct('d.id', 'd.name')
+      .orderBy('d.name');
+
+    res.json({
+      success: true,
+      data: {
+        employees: employees.map((employee) => ({
+          id: employee.employeeCode || String(employee.id),
+          pkId: employee.id,
+          name: `${employee.name || employee.employeeCode || 'Employee'}${employee.employeeCode ? ` (${employee.employeeCode})` : ''}`,
+          departmentId: employee.departmentId,
+          department: employee.department,
+        })),
+        departments: departments.map((department) => ({
+          id: String(department.id),
+          name: department.name,
+        })),
+      },
+    });
+  } catch (err) {
+    console.error('Report filters error:', err);
+    res.status(500).json({ success: false, message: 'Failed to load report filters' });
+  }
+};
+
 /* =========================
    ATTENDANCE REPORT
 ========================= */
@@ -167,6 +262,7 @@ const getAttendanceReport = async (req, res) => {
         knex.raw("CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,'')) as employeeName"),
         'e.mobile as phoneNumber',
         'e.location_office as branch',
+        'd.id as departmentId',
         'd.name as department',
         'desg.name as designation',
         'a.status',
@@ -214,6 +310,7 @@ const getAttendanceReport = async (req, res) => {
         knex.raw("CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,'')) as employeeName"),
         'e.mobile as phoneNumber',
         'e.location_office as branch',
+        'd.id as departmentId',
         'd.name as department',
         'desg.name as designation'
       );
@@ -236,6 +333,7 @@ const getAttendanceReport = async (req, res) => {
         knex.raw("CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,'')) as employeeName"),
         'e.mobile as phoneNumber',
         'e.location_office as branch',
+        'd.id as departmentId',
         'd.name as department',
         'desg.name as designation',
         'l.leave_type_name as leaveType',
@@ -592,59 +690,149 @@ const getAttendanceReport = async (req, res) => {
 // Fixed getLeaveReport function (replace in your reports.controller.js)
 
 const getLeaveReport = async (req, res) => {
-  const companyId = req.user.company_id;
-  const year = getYear(req); // optional: current year or from query
-
   try {
-    // Use correct table: leave_applications (not 'leaves')
-    // Assume column is 'leave_type_name' based on your earlier code
-    const distribution = await knex('leave_applications')
-      .select('leave_type_name as name')
-      .count('* as value')
-      .where({ company_id: companyId, status: 'approved' })
-      .andWhereRaw('YEAR(from_date) = ?', [year]) // filter by year (optional, remove if you want all time)
-      .groupBy('leave_type_name');
+    const companyId = await resolveCompanyId(req);
+    const year = getYear(req);
+    const { employeeId, departmentId } = req.query;
+    const { startDate, endDate } = resolveDateRange(req.query);
 
-    // Add colors for PieChart (same as frontend)
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company context missing for report generation',
+      });
+    }
+
+    const leaveHasCompanyId = await knex.schema.hasColumn('leave_applications', 'company_id');
+
+    let rowsQuery = knex('leave_applications as l')
+      .leftJoin('employees as emp', 'l.employee_id', 'emp.id')
+      .leftJoin('departments as d', 'emp.department_id', 'd.id')
+      .select(
+        'l.id',
+        'l.application_id as applicationId',
+        'emp.employee_id as employeeCode',
+        knex.raw("TRIM(CONCAT(COALESCE(emp.first_name,''), ' ', COALESCE(emp.last_name,''))) as employeeName"),
+        'd.id as departmentId',
+        'd.name as department',
+        'l.leave_type_name as leaveType',
+        'l.days as leaveDays',
+        knex.raw("DATE_FORMAT(l.from_date, '%Y-%m-%d') as fromDate"),
+        knex.raw("DATE_FORMAT(l.to_date, '%Y-%m-%d') as toDate"),
+        'l.reason',
+        'l.remarks',
+        'l.status'
+      );
+
+    rowsQuery = leaveHasCompanyId
+      ? rowsQuery.where('l.company_id', companyId)
+      : rowsQuery.where('emp.company_id', companyId);
+
+    if (startDate) rowsQuery.whereRaw('DATE(l.to_date) >= ?', [startDate]);
+    if (endDate) rowsQuery.whereRaw('DATE(l.from_date) <= ?', [endDate]);
+    if (!startDate && !endDate) rowsQuery.whereRaw('YEAR(l.from_date) = ?', [year]);
+    applyEmployeeDepartmentFilters(rowsQuery, { employeeId, departmentId });
+
+    const applicationRows = await rowsQuery.orderBy('l.from_date', 'desc');
+
+    let overrideRowsQuery = knex('attendance_overrides as ao')
+      .join('attendance as a', 'ao.attendance_id', 'a.id')
+      .leftJoin('employees as emp', 'ao.employee_id', 'emp.id')
+      .leftJoin('departments as d', 'emp.department_id', 'd.id')
+      .where('ao.company_id', companyId)
+      .whereRaw('LOWER(ao.status) = ?', ['approved'])
+      .where(function () {
+        this.whereRaw('LOWER(ao.reason) like ?', ['[paid leave -%'])
+          .orWhereRaw('LOWER(ao.reason) like ?', ['[half day leave -%']);
+      })
+      .select(
+        'ao.id',
+        'ao.attendance_id as attendanceId',
+        'emp.employee_id as employeeCode',
+        knex.raw("TRIM(CONCAT(COALESCE(emp.first_name,''), ' ', COALESCE(emp.last_name,''))) as employeeName"),
+        'd.id as departmentId',
+        'd.name as department',
+        'ao.overridden_status as overriddenStatus',
+        'ao.reason',
+        'ao.comment as remarks',
+        'ao.status',
+        knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as overrideDate")
+      );
+
+    if (startDate) overrideRowsQuery.whereRaw('DATE(a.check_in) >= ?', [startDate]);
+    if (endDate) overrideRowsQuery.whereRaw('DATE(a.check_in) <= ?', [endDate]);
+    if (!startDate && !endDate) overrideRowsQuery.whereRaw('YEAR(a.check_in) = ?', [year]);
+    applyEmployeeDepartmentFilters(overrideRowsQuery, { employeeId, departmentId });
+
+    const rawOverrideRows = await overrideRowsQuery
+      .orderBy('a.check_in', 'desc')
+      .orderBy('ao.id', 'desc');
+
+    const seenOverrideKeys = new Set();
+    const overrideRows = rawOverrideRows
+      .filter((row) => {
+        const key = `${row.attendanceId || row.employeeCode}-${row.overrideDate}`;
+        if (seenOverrideKeys.has(key)) return false;
+        seenOverrideKeys.add(key);
+        return true;
+      })
+      .map((row) => ({
+        id: `override-${row.id}`,
+        applicationId: `ATT-OVR-${row.id}`,
+        employeeCode: row.employeeCode,
+        employeeName: row.employeeName,
+        departmentId: row.departmentId,
+        department: row.department,
+        leaveType: parseLeaveOverrideType(row.reason, row.overriddenStatus),
+        leaveDays: String(row.overriddenStatus || '').toLowerCase().includes('half') ? 0.5 : 1,
+        fromDate: row.overrideDate,
+        toDate: row.overrideDate,
+        reason: row.reason,
+        remarks: row.remarks,
+        status: row.status,
+        source: 'attendance_override',
+      }));
+
+    const rows = [...applicationRows, ...overrideRows].sort((a, b) =>
+      String(b.fromDate || '').localeCompare(String(a.fromDate || ''))
+    );
+
     const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6366f1'];
-    const leaveData = distribution.map((row, idx) => ({
-      name: row.name || 'Other',
-      value: Number(row.value),
+    const distributionMap = new Map();
+    rows
+      .filter((row) => normalizeStatus(row.status) === 'approved')
+      .forEach((row) => {
+        const key = row.leaveType || 'Other';
+        distributionMap.set(key, (distributionMap.get(key) || 0) + Number(row.leaveDays || 0));
+      });
+
+    const distribution = Array.from(distributionMap.entries()).map(([name, value], idx) => ({
+      name,
+      value,
       fill: colors[idx % colors.length],
     }));
 
-    // Statistics
     const totalEmployees = await knex('employees')
       .count('* as count')
       .where({ company_id: companyId })
       .first();
 
-    const approved = await knex('leave_applications')
-      .count('* as count')
-      .where({ company_id: companyId, status: 'approved' })
-      .first();
-
-    const pending = await knex('leave_applications')
-      .count('* as count')
-      .where({ company_id: companyId, status: 'pending' })
-      .first();
-
-    // Average days used (assume 'days' column exists in leave_applications)
-    const avgDays = await knex('leave_applications')
-      .avg('days as avg')
-      .where({ company_id: companyId, status: 'approved' })
-      .first();
-
-    const stats = {
-      totalEmployees: totalEmployees?.count || 0,
-      approvedLeaves: approved?.count || 0,
-      pendingRequests: pending?.count || 0,
-      avgDaysUsed: Number(avgDays?.avg || 0).toFixed(1),
-    };
+    const approvedRows = rows.filter((row) => normalizeStatus(row.status) === 'approved');
+    const pendingRows = rows.filter((row) => normalizeStatus(row.status) === 'pending');
+    const totalApprovedDays = approvedRows.reduce((sum, row) => sum + Number(row.leaveDays || 0), 0);
 
     res.json({
       success: true,
-      data: { distribution: leaveData, stats },
+      data: {
+        distribution,
+        rows,
+        stats: {
+          totalEmployees: Number(totalEmployees?.count) || 0,
+          approvedLeaves: approvedRows.length,
+          pendingRequests: pendingRows.length,
+          avgDaysUsed: approvedRows.length ? (totalApprovedDays / approvedRows.length).toFixed(1) : '0.0',
+        },
+      },
     });
   } catch (err) {
     console.error('Leave report error:', err);
@@ -657,31 +845,60 @@ const getLeaveReport = async (req, res) => {
 ========================= */
 // Updated getPayrollReport (replace in reports.controller.js)
 const getPayrollReport = async (req, res) => {
-  const companyId = req.user.company_id;
-  const year = getYear(req);
-
   try {
-    console.log(`Generating payroll report for company: ${companyId}, year: ${year}`);
+    const companyId = await resolveCompanyId(req);
+    const year = getYear(req);
+    const { employeeId, departmentId } = req.query;
+    const { startDate, endDate } = resolveDateRange(req.query);
 
-    // Get data with a simpler year filter
-    const trendRaw = await knex('payroll_processing')
-      .select(
-        'month', // Select the raw month value
-        knex.raw('SUM(gross) as amount')
-      )
-      .where({ company_id: companyId })
-      .andWhere('month', 'like', `${year}-%`)
-      .groupBy('month')  // Group by the raw month value
-      .orderBy('month');  // Order by the raw month value
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Company context missing for report generation',
+      });
+    }
 
-    console.log('Trend data with simplified filter:', JSON.stringify(trendRaw, null, 2));
+    const payrollHasCompanyId = await knex.schema.hasColumn('payroll_processing', 'company_id');
+    const payrollColumns = await knex('payroll_processing').columnInfo();
+    const structureColumns = await knex('payroll_structures').columnInfo();
+    const hasPayrollColumn = (column) => Boolean(payrollColumns[column]);
+    const hasStructureColumn = (column) => Boolean(structureColumns[column]);
+    const payrollNumberSelect = (column, alias) =>
+      hasPayrollColumn(column)
+        ? knex.raw(`COALESCE(p.${column}, 0) as ${alias}`)
+        : knex.raw(`0 as ${alias}`);
+    const structureNumberSelect = (column, alias) =>
+      hasStructureColumn(column)
+        ? knex.raw(`COALESCE(ps.${column}, 0) as ${alias}`)
+        : knex.raw(`0 as ${alias}`);
 
-    // Create a map of month number to amount
+    const applyPayrollScope = (query) => {
+      if (payrollHasCompanyId) {
+        query.where('p.company_id', companyId);
+      } else {
+        query.where('emp.company_id', companyId);
+      }
+
+      if (startDate) query.whereRaw("STR_TO_DATE(CONCAT(p.month, '-01'), '%Y-%m-%d') >= ?", [startDate]);
+      if (endDate) query.whereRaw("STR_TO_DATE(CONCAT(p.month, '-01'), '%Y-%m-%d') <= ?", [endDate]);
+      if (!startDate && !endDate) query.where('p.month', 'like', `${year}-%`);
+
+      applyEmployeeDepartmentFilters(query, { employeeId, departmentId });
+      return query;
+    };
+
+    const trendRaw = await applyPayrollScope(
+      knex('payroll_processing as p')
+        .leftJoin('employees as emp', 'p.employee_id', 'emp.id')
+    )
+      .select('p.month', knex.raw('SUM(p.net) as amount'))
+      .groupBy('p.month')
+      .orderBy('p.month');
+
     const monthMap = {};
     trendRaw.forEach(row => {
-      // Extract month number from 'YYYY-MM' format (1-12)
-      const monthNum = parseInt(row.month.split('-')[1], 10) - 1; // Convert to 0-11 for JS
-      monthMap[monthNum] = Math.round(Number(row.amount) / 1000); // in ₹K
+      const monthNum = parseInt(String(row.month).split('-')[1], 10) - 1;
+      monthMap[monthNum] = Math.round(Number(row.amount || 0) / 1000);
     });
 
     const monthsOrder = [
@@ -694,7 +911,54 @@ const getPayrollReport = async (req, res) => {
       amount: monthMap[index] || 0
     }));
 
-    // Calculate summary data
+    const rows = await applyPayrollScope(
+      knex('payroll_processing as p')
+        .leftJoin('employees as emp', 'p.employee_id', 'emp.id')
+        .leftJoin('departments as d', 'emp.department_id', 'd.id')
+        .leftJoin('payroll_structures as ps', function () {
+          this.on('ps.employee_id', '=', 'p.employee_id');
+          if (payrollHasCompanyId && hasStructureColumn('company_id')) {
+            this.andOn('ps.company_id', '=', 'p.company_id');
+          }
+        })
+    )
+      .select(
+        'p.id',
+        'emp.employee_id as employeeCode',
+        knex.raw("TRIM(CONCAT(COALESCE(emp.first_name,''), ' ', COALESCE(emp.last_name,''))) as employeeName"),
+        'd.id as departmentId',
+        'd.name as department',
+        'p.month',
+        structureNumberSelect('basic', 'basicSalary'),
+        structureNumberSelect('hra', 'hra'),
+        structureNumberSelect('allowances', 'allowances'),
+        structureNumberSelect('incentives', 'incentives'),
+        structureNumberSelect('pf', 'pf'),
+        structureNumberSelect('esi', 'esi'),
+        structureNumberSelect('pt', 'pt'),
+        structureNumberSelect('tds', 'tds'),
+        structureNumberSelect('other_deductions', 'otherDeductions'),
+        payrollNumberSelect('total_days', 'totalDays'),
+        payrollNumberSelect('present_days', 'presentDays'),
+        payrollNumberSelect('approved_leave_days', 'approvedLeaveDays'),
+        payrollNumberSelect('payable_days', 'payableDays'),
+        payrollNumberSelect('lop_days', 'lopDays'),
+        hasPayrollColumn('total_days') && hasPayrollColumn('present_days') && hasPayrollColumn('approved_leave_days')
+          ? knex.raw('GREATEST(COALESCE(p.total_days, 0) - COALESCE(p.present_days, 0) - COALESCE(p.approved_leave_days, 0), 0) as absentDays')
+          : payrollNumberSelect('lop_days', 'absentDays'),
+        payrollNumberSelect('lop_amount', 'lopAmount'),
+        payrollNumberSelect('gross', 'grossAmount'),
+        payrollNumberSelect('tds_amount', 'tdsAmount'),
+        payrollNumberSelect('deductions', 'deductions'),
+        payrollNumberSelect('net', 'payrollAmount'),
+        payrollNumberSelect('net', 'netPay'),
+        payrollNumberSelect('total_expenses', 'totalExpenses'),
+        'p.status',
+        knex.raw("DATE_FORMAT(p.updated_at, '%Y-%m-%d') as payrollDate")
+      )
+      .orderBy('p.month', 'desc')
+      .orderBy('emp.first_name');
+
     const totalEmployees = await knex('employees')
       .count('* as count')
       .where({ company_id: companyId })
@@ -705,25 +969,22 @@ const getPayrollReport = async (req, res) => {
       .where({ company_id: companyId })
       .first();
 
-    // Calculate YTD total
-    const ytdTotal = trendRaw.reduce((sum, row) => sum + Number(row.amount), 0);
-
-    // Get current month data (0-11)
+    const ytdTotal = trendRaw.reduce((sum, row) => sum + Number(row.amount || 0), 0);
     const currentMonth = new Date().getMonth();
     const currentMonthData = monthMap[currentMonth] || 0;
 
-    const summary = {
-      totalEmployees: totalEmployees?.count || 0,
-      avgSalary: avgSalaryRaw?.avg ? `₹${Math.round(Number(avgSalaryRaw.avg)).toLocaleString()}` : '₹0',
-      totalPayroll: currentMonthData ? `₹${currentMonthData}K` : '₹0K',
-      ytdAmount: ytdTotal ? `₹${(ytdTotal / 1000000).toFixed(1)}M` : '₹0M',
-    };
-
-    console.log('Final response:', { trend, summary });
-
     res.json({
       success: true,
-      data: { trend, summary },
+      data: {
+        trend,
+        rows,
+        summary: {
+          totalEmployees: Number(totalEmployees?.count) || 0,
+          avgSalary: avgSalaryRaw?.avg ? `₹${Math.round(Number(avgSalaryRaw.avg)).toLocaleString()}` : '₹0',
+          totalPayroll: currentMonthData ? `₹${currentMonthData}K` : '₹0K',
+          ytdAmount: ytdTotal ? `₹${(ytdTotal / 1000000).toFixed(1)}M` : '₹0M',
+        },
+      },
     });
   } catch (err) {
     console.error('Payroll report error:', err);
@@ -745,8 +1006,77 @@ const getExpenseReport = async (req, res) => {
       });
     }
 
-    console.log(`Fetching expense report for company: ${companyId}, year: ${year}`);
     const expensesHasCompanyId = await knex.schema.hasColumn('expenses', 'company_id');
+    const { employeeId, departmentId } = req.query;
+    const { startDate, endDate } = resolveDateRange(req.query);
+
+    const applyExpenseScope = (query) => {
+      if (expensesHasCompanyId) {
+        query.where('e.company_id', companyId);
+      } else {
+        query.where('emp.company_id', companyId);
+      }
+
+      if (startDate) query.whereRaw('DATE(e.expense_date) >= ?', [startDate]);
+      if (endDate) query.whereRaw('DATE(e.expense_date) <= ?', [endDate]);
+      if (!startDate && !endDate) query.whereRaw('YEAR(e.expense_date) = ?', [year]);
+
+      applyEmployeeDepartmentFilters(query, { employeeId, departmentId });
+      return query;
+    };
+
+    const rows = await applyExpenseScope(
+      knex('expenses as e')
+        .leftJoin('employees as emp', 'e.employee_id', 'emp.id')
+        .leftJoin('departments as d', 'emp.department_id', 'd.id')
+    )
+      .select(
+        'e.id',
+        'e.expense_id as expenseId',
+        'emp.employee_id as employeeCode',
+        knex.raw("TRIM(CONCAT(COALESCE(emp.first_name,''), ' ', COALESCE(emp.last_name,''))) as employeeName"),
+        'd.id as departmentId',
+        'd.name as department',
+        'e.category',
+        'e.amount as expenseAmount',
+        'e.description as expenseDetails',
+        knex.raw("DATE_FORMAT(e.expense_date, '%Y-%m-%d') as expenseDate"),
+        'e.status'
+      )
+      .orderBy('e.expense_date', 'desc');
+
+    const summaryMap = new Map();
+    rows
+      .filter((row) => normalizeStatus(row.status) === 'approved')
+      .forEach((row) => {
+        const key = row.category || 'Other';
+        summaryMap.set(key, (summaryMap.get(key) || 0) + Number(row.expenseAmount || 0));
+      });
+
+    const reportSummaryData = Array.from(summaryMap.entries()).map(([category, amount]) => ({
+      category,
+      amount: Math.round(amount),
+    }));
+
+    const reportTotalAmount = rows
+      .filter((row) => normalizeStatus(row.status) === 'approved')
+      .reduce((sum, row) => sum + Number(row.expenseAmount || 0), 0);
+    const reportPendingAmount = rows
+      .filter((row) => normalizeStatus(row.status) === 'pending')
+      .reduce((sum, row) => sum + Number(row.expenseAmount || 0), 0);
+
+    return res.json({
+      success: true,
+      data: {
+        summary: reportSummaryData,
+        rows,
+        stats: {
+          totalClaims: rows.length,
+          totalAmount: reportTotalAmount ? `₹${Math.round(reportTotalAmount).toLocaleString()}` : '₹0',
+          pendingApproval: reportPendingAmount ? `₹${Math.round(reportPendingAmount).toLocaleString()}` : '₹0',
+        },
+      },
+    });
 
     // First, check if any expenses exist at all
     let allExpensesQuery = knex('expenses as e');
@@ -931,6 +1261,7 @@ const getExpenseReport = async (req, res) => {
 
 // Export all functions (CommonJS)
 module.exports = {
+  getReportFilters,
   getAttendanceReport,
   getLeaveReport,
   getPayrollReport,

@@ -4,6 +4,32 @@ const getAllChecklists = async (req, res) => {
   const company_id = req.user.company_id;
 
   try {
+    const approvedWithoutChecklist = await knex('resignations as r')
+      .leftJoin('offboarding_checklists as o', function () {
+        this.on('o.resignation_id', '=', 'r.id')
+          .andOn('o.company_id', '=', 'r.company_id');
+      })
+      .where('r.company_id', company_id)
+      .where('r.approval_status', 'approved')
+      .whereNull('o.id')
+      .select('r.id');
+
+    if (approvedWithoutChecklist.length > 0) {
+      await knex('offboarding_checklists').insert(
+        approvedWithoutChecklist.map((resignation) => ({
+          company_id,
+          resignation_id: resignation.id,
+          hr_clearance: false,
+          finance_clearance: false,
+          asset_return: false,
+          it_clearance: false,
+          final_settlement: false,
+          status: 'in-progress',
+          completed_date: null
+        }))
+      );
+    }
+
     const checklists = await knex('offboarding_checklists as o')
       .join('resignations as r', 'r.id', 'o.resignation_id')
       .select(
