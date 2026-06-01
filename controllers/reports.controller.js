@@ -323,6 +323,13 @@ const getAttendanceReport = async (req, res) => {
       .leftJoin('employees as e', 'l.employee_id', 'e.id')
       .leftJoin('departments as d', 'e.department_id', 'd.id')
       .leftJoin('designations as desg', 'e.designation_id', 'desg.id')
+      .leftJoin('leave_types as lt', function () {
+        this.on(
+          knex.raw(
+            '(l.leave_type_id = lt.id OR LOWER(TRIM(l.leave_type_name)) = LOWER(TRIM(lt.name)))'
+          )
+        ).andOn('lt.company_id', '=', knex.raw('?', [companyId]));
+      })
       .whereRaw('DATE(l.from_date) <= ?', [reportEndDate])
       .whereRaw('DATE(l.to_date) >= ?', [reportStartDate])
       .select(
@@ -337,6 +344,7 @@ const getAttendanceReport = async (req, res) => {
         'd.name as department',
         'desg.name as designation',
         'l.leave_type_name as leaveType',
+        'lt.is_paid as isPaid',
         knex.raw("DATE_FORMAT(l.from_date, '%Y-%m-%d') as leaveFromDate"),
         knex.raw("DATE_FORMAT(l.to_date, '%Y-%m-%d') as leaveToDate"),
         'l.days as leaveDays',
@@ -422,6 +430,7 @@ const getAttendanceReport = async (req, res) => {
         if (existing) {
           existing.leaveTaken = 'Yes';
           existing.leaveType = leave.leaveType || '';
+          existing.isPaid = leave.isPaid;
           existing.leaveDays = leave.leaveDays || '';
           existing.leaveReason = leave.leaveReason || leave.leaveRemarks || '';
           existing.checkInTime = null;
@@ -456,6 +465,7 @@ const getAttendanceReport = async (req, res) => {
           check_out_location: null,
           leaveTaken: 'Yes',
           leaveType: leave.leaveType || '',
+          isPaid: leave.isPaid,
           leaveDays: leave.leaveDays || '',
           leaveReason: leave.leaveReason || leave.leaveRemarks || '',
           permissionTaken: '',
@@ -523,6 +533,55 @@ const getAttendanceReport = async (req, res) => {
       rows.push(permissionRow);
     });
 
+    const todayDateKey = toDateKey(new Date());
+    const absentGenerationEndDate =
+      todayDateKey && reportEndDate > todayDateKey ? todayDateKey : reportEndDate;
+
+    if ((!status || normalizeStatus(status) === 'absent') && reportStartDate <= absentGenerationEndDate) {
+      scopedEmployees.forEach((employee) => {
+        for (let date = reportStartDate; date <= absentGenerationEndDate; date = addDays(date, 1)) {
+          if (isWeekendDateKey(date)) continue;
+
+          const key = rowKey(employee.employeePkId, date);
+          if (rowsByEmployeeDate.has(key)) continue;
+
+          const absentRow = {
+            id: `absent-${employee.employeePkId}-${date}`,
+            employeePkId: employee.employeePkId,
+            employeeCode: employee.employeeCode,
+            employeeName: employee.employeeName,
+            phoneNumber: employee.phoneNumber,
+            branch: employee.branch,
+            department: employee.department,
+            designation: employee.designation,
+            status: 'absent',
+            date,
+            checkInTime: null,
+            checkOutTime: null,
+            hoursWorked: 0,
+            overtimeHours: 0,
+            deviceInfo: null,
+            autoFlag: null,
+            flagReason: 'No attendance marked',
+            check_in_location: null,
+            check_out_location: null,
+            leaveTaken: '',
+            leaveType: '',
+            leaveDays: '',
+            leaveReason: '',
+            permissionTaken: '',
+            permissionFromTime: '',
+            permissionToTime: '',
+            permissionDuration: '',
+            permissionReason: '',
+          };
+
+          rowsByEmployeeDate.set(key, absentRow);
+          rows.push(absentRow);
+        }
+      });
+    }
+
     if (!status || normalizeStatus(status) === 'weekend') {
       scopedEmployees.forEach((employee) => {
         for (let date = reportStartDate; date <= reportEndDate; date = addDays(date, 1)) {
@@ -580,6 +639,7 @@ const getAttendanceReport = async (req, res) => {
       department: leave.department,
       designation: leave.designation,
       leaveType: leave.leaveType || '',
+      isPaid: leave.isPaid,
       leaveFromDate: toDateKey(leave.leaveFromDate),
       leaveToDate: toDateKey(leave.leaveToDate),
       leaveDays: leave.leaveDays || '',
@@ -1007,6 +1067,7 @@ const getExpenseReport = async (req, res) => {
     }
 
     const expensesHasCompanyId = await knex.schema.hasColumn('expenses', 'company_id');
+    const expensesHasClientId = await knex.schema.hasColumn('expenses', 'client_id');
     const { employeeId, departmentId } = req.query;
     const { startDate, endDate } = resolveDateRange(req.query);
 
@@ -1029,6 +1090,16 @@ const getExpenseReport = async (req, res) => {
       knex('expenses as e')
         .leftJoin('employees as emp', 'e.employee_id', 'emp.id')
         .leftJoin('departments as d', 'emp.department_id', 'd.id')
+        .modify((qb) => {
+          if (expensesHasClientId) {
+            qb.leftJoin('clients as c', function () {
+              this.on('e.client_id', '=', 'c.id');
+              if (expensesHasCompanyId) {
+                this.andOn('c.company_id', '=', 'e.company_id');
+              }
+            });
+          }
+        })
     )
       .select(
         'e.id',
@@ -1041,6 +1112,7 @@ const getExpenseReport = async (req, res) => {
         'e.amount as expenseAmount',
         'e.description as expenseDetails',
         knex.raw("DATE_FORMAT(e.expense_date, '%Y-%m-%d') as expenseDate"),
+        ...(expensesHasClientId ? [knex.raw('c.client_name as clientName')] : [knex.raw("'' as clientName")]),
         'e.status'
       )
       .orderBy('e.expense_date', 'desc');

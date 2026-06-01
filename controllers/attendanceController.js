@@ -8,85 +8,7 @@ const {
   findEmployeeByDescriptor,
   findEmployeeByFace,
 } = require("../utils/faceRecognition");
-const { reverseGeocodeGoogle } = require("../services/googleGeocode");
-const { reverseGeocodeMappls } = require("../services/mapplsGeocode");
 const { applyEmployeeAssignmentFilter } = require("../utils/clientAssignments");
-
-const liveGeocodeHealth = {
-  googleDisabled: false,
-  mapplsDisabled: false,
-  logged: new Set(),
-};
-
-const warnLiveGeocodeOnce = (key, ...args) => {
-  if (liveGeocodeHealth.logged.has(key)) return;
-  liveGeocodeHealth.logged.add(key);
-  console.warn(...args);
-};
-
-const getPreferredGeocodeProvider = () => {
-  const provider = String(process.env.GEOCODE_PROVIDER || "auto")
-    .trim()
-    .toLowerCase();
-  return ["google", "mappls", "auto"].includes(provider) ? provider : "auto";
-};
-
-const reverseGeocodeForLiveTracking = async ({ latitude, longitude }) => {
-  const provider = getPreferredGeocodeProvider();
-
-  if (provider !== "mappls" && !liveGeocodeHealth.googleDisabled) {
-    try {
-      return await reverseGeocodeGoogle({ latitude, longitude });
-    } catch (googleError) {
-      if (
-        ["GOOGLE_NOT_CONFIGURED", "GOOGLE_KEY_RESTRICTED"].includes(
-          googleError?.code,
-        )
-      ) {
-        liveGeocodeHealth.googleDisabled = true;
-        warnLiveGeocodeOnce(
-          "google-disabled",
-          googleError.message,
-          "Google live-tracking geocode disabled until backend restart.",
-        );
-      } else {
-        warnLiveGeocodeOnce(
-          `google-${googleError?.code || googleError?.statusText || "failed"}`,
-          "Google reverse geocode failed:",
-          googleError?.message || googleError,
-        );
-      }
-    }
-  }
-
-  if (provider !== "google" && !liveGeocodeHealth.mapplsDisabled) {
-    try {
-      return await reverseGeocodeMappls({ latitude, longitude });
-    } catch (mapplsError) {
-      if (
-        ["MAPPLS_NOT_CONFIGURED", "MAPPLS_AUTH_ERROR"].includes(
-          mapplsError?.code,
-        )
-      ) {
-        liveGeocodeHealth.mapplsDisabled = true;
-        warnLiveGeocodeOnce(
-          "mappls-disabled",
-          mapplsError?.code === "MAPPLS_AUTH_ERROR"
-            ? "Mappls reverse geocode failed (401). Mappls live-tracking geocode disabled until backend restart. Check MAPPLS_ACCESS_TOKEN."
-            : "Mappls live-tracking geocode not configured.",
-        );
-      } else {
-        warnLiveGeocodeOnce(
-          `mappls-${mapplsError?.code || mapplsError?.status || "failed"}`,
-          "Mappls reverse geocode failed:",
-          mapplsError?.message || mapplsError,
-        );
-      }
-    }
-  }
-
-  return null;
-};
 
 // Resolve the real employees.id for the logged-in user.
 // - employee login: req.user.id already points to employees.id
@@ -2440,57 +2362,10 @@ const getLiveLocationHistory = async (req, res) => {
       .orderBy("ell.location_timestamp", "asc")
       .limit(pointLimit);
 
-    // Group points by coordinates to avoid redundant geocoding API calls
-    const coordinateMap = new Map();
-    const pointsNeedingGeocode = [];
-
-    points.forEach((point) => {
-      if (point.address) {
-        // Already has address, no need to geocode
-        return;
-      }
-      const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
-      if (!coordinateMap.has(coordKey)) {
-        coordinateMap.set(coordKey, []);
-        pointsNeedingGeocode.push(point);
-      }
-      coordinateMap.get(coordKey).push(point);
-    });
-
-    // Geocode only unique coordinates (with batch processing to avoid rate limiting)
-    const geocodedAddresses = new Map();
-    const batchSize = 5; // Process 5 at a time with small delay
-
-    for (let i = 0; i < pointsNeedingGeocode.length; i += batchSize) {
-      const batch = pointsNeedingGeocode.slice(i, i + batchSize);
-      await Promise.all(
-        batch.map(async (point) => {
-          const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
-          try {
-            const reverseGeocoded = await reverseGeocodeForLiveTracking({
-              latitude: Number(point.latitude),
-              longitude: Number(point.longitude),
-            });
-            geocodedAddresses.set(coordKey, reverseGeocoded?.address || null);
-          } catch (error) {
-            console.warn("Reverse geocoding failed for point:", point.id);
-            geocodedAddresses.set(coordKey, null);
-          }
-        }),
-      );
-      // Small delay between batches to avoid rate limiting
-      if (i + batchSize < pointsNeedingGeocode.length) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-    }
-
-    // Apply geocoded addresses to all points
-    const finalPoints = points.map((point) => {
-      if (point.address) return point;
-      const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
-      const address = geocodedAddresses.get(coordKey);
-      return { ...point, address: address || null };
-    });
+    const finalPoints = points.map((point) => ({
+      ...point,
+      address: point.address || null,
+    }));
 
     const attendanceRecord = await knex("attendance as a")
       .where({
@@ -3025,55 +2900,10 @@ const exportLocationHistory = async (req, res) => {
       .orderBy("ell.location_timestamp", "asc")
       .limit(5000);
 
-    // Geocode points that don't have addresses
-    const coordinateMap = new Map();
-    const pointsNeedingGeocode = [];
-
-    points.forEach((point) => {
-      if (point.address) {
-        return;
-      }
-      const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
-      if (!coordinateMap.has(coordKey)) {
-        coordinateMap.set(coordKey, []);
-        pointsNeedingGeocode.push(point);
-      }
-      coordinateMap.get(coordKey).push(point);
-    });
-
-    // Geocode only unique coordinates (with batch processing to avoid rate limiting)
-    const geocodedAddresses = new Map();
-    const batchSize = 5;
-
-    for (let i = 0; i < pointsNeedingGeocode.length; i += batchSize) {
-      const batch = pointsNeedingGeocode.slice(i, i + batchSize);
-      await Promise.all(
-        batch.map(async (point) => {
-          const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
-          try {
-            const reverseGeocoded = await reverseGeocodeForLiveTracking({
-              latitude: Number(point.latitude),
-              longitude: Number(point.longitude),
-            });
-            geocodedAddresses.set(coordKey, reverseGeocoded?.address || null);
-          } catch (error) {
-            console.warn("Reverse geocoding failed for point:", point.id);
-            geocodedAddresses.set(coordKey, null);
-          }
-        }),
-      );
-      if (i + batchSize < pointsNeedingGeocode.length) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-    }
-
-    // Apply geocoded addresses to all points
-    const finalPoints = points.map((point) => {
-      if (point.address) return point;
-      const coordKey = `${Number(point.latitude).toFixed(6)},${Number(point.longitude).toFixed(6)}`;
-      const address = geocodedAddresses.get(coordKey);
-      return { ...point, address: address || null };
-    });
+    const finalPoints = points.map((point) => ({
+      ...point,
+      address: point.address || null,
+    }));
 
     // Get attendance for context
     let attendanceQuery = knex("attendance as a").where({

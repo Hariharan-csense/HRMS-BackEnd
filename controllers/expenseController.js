@@ -62,6 +62,123 @@ const normalizeExpenseCategory = (raw) => {
   return mapped[value] || String(raw).trim();
 };
 
+const csvEscape = (value) => {
+  if (value === null || value === undefined) return '';
+  const text = String(value);
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+};
+
+const formatExpenseExportDate = (value) => {
+  const parsed = moment(value, ['YYYY-MM-DD', moment.ISO_8601], true);
+  if (!parsed.isValid()) return value || '';
+  return parsed.format('DD-MMM-YY');
+};
+
+const excelText = (value) => {
+  const text = String(value || '').replace(/"/g, '""');
+  return text ? `="${text}"` : '';
+};
+
+const formatExpenseExportAmount = (value) => {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount) || amount === 0) return '₹0';
+  return `₹${amount.toLocaleString('en-IN', {
+    maximumFractionDigits: amount % 1 === 0 ? 0 : 2,
+  })}`;
+};
+
+const inferTravelModel = (description = '') => {
+  const text = String(description || '').toLowerCase();
+  if (!text) return '';
+  if (text.includes('train') && text.includes('bus')) return 'Train & Reg Bus';
+  if (text.includes('ac sleeper')) return 'AC Sleeper Bus';
+  if (text.includes('bus')) return 'Bus - Regular';
+  if (text.includes('train')) return 'Train';
+  if (text.includes('auto')) return 'Auto';
+  if (text.includes('cab') || text.includes('taxi')) return 'Cab';
+  if (text.includes('car')) return 'Car';
+  return '';
+};
+
+const buildExpenseModelExportRows = (expenses) => {
+  const grouped = new Map();
+
+  expenses.forEach((expense) => {
+    const key = [
+      expense.employee_id,
+      expense.expense_date,
+      expense.client_name || '',
+      expense.created_at ? moment(expense.created_at).format('YYYY-MM-DD HH:mm:ss') : '',
+    ].join('|');
+
+    if (!grouped.has(key)) {
+      const employeeName = String(expense.employee_name || '').trim();
+      grouped.set(key, {
+        month: excelText(
+          moment(expense.expense_date, 'YYYY-MM-DD', true).isValid()
+            ? moment(expense.expense_date).format('MMM-YY')
+            : '',
+        ),
+        date: excelText(formatExpenseExportDate(expense.expense_date)),
+        consultant: employeeName.split(/\s+/)[0] || employeeName,
+        client: expense.client_name || '',
+        from: '',
+        to: '',
+        modelOfTravel: '',
+        travel: 0,
+        stay: 0,
+        food: 0,
+        other: 0,
+        total: 0,
+        remarks: [],
+      });
+    }
+
+    const row = grouped.get(key);
+    const category = normalizeExpenseCategory(expense.category);
+    const amount = Number(expense.amount || 0);
+    const description = String(expense.description || '').trim();
+
+    if (category === 'Travel') {
+      row.travel += amount;
+      row.modelOfTravel = row.modelOfTravel || inferTravelModel(description);
+    } else if (category === 'Accommodation') {
+      row.stay += amount;
+    } else if (category === 'Food') {
+      row.food += amount;
+    } else {
+      row.other += amount;
+      if (description) row.remarks.push(`*Others : ${description}`);
+    }
+
+    if (category !== 'Others' && description && !row.remarks.includes(description)) {
+      row.remarks.push(description);
+    }
+
+    row.total += amount;
+  });
+
+  return Array.from(grouped.values()).map((row, index) => ({
+    'S.No': index + 1,
+    Month: row.month,
+    Date: row.date,
+    Consultant: row.consultant,
+    Client: row.client,
+    From: row.from,
+    To: row.to,
+    'Model of Travel': row.modelOfTravel,
+    Travel: formatExpenseExportAmount(row.travel),
+    Stay: formatExpenseExportAmount(row.stay),
+    Food: formatExpenseExportAmount(row.food),
+    Other: formatExpenseExportAmount(row.other),
+    Total: formatExpenseExportAmount(row.total),
+    Remarks: row.remarks.join(' | '),
+  }));
+};
+
 const parseExpenseDateToISO = (raw) => {
   if (!raw) return null;
   const parsed = moment(String(raw).trim(), ['YYYY-MM-DD', 'DD/MM/YYYY', 'DD-MM-YYYY', moment.ISO_8601], true);
@@ -1069,11 +1186,19 @@ const exportExpenses = async (req, res) => {
     return res.status(400).json({ message: 'You are not assigned to any company' });
   }
 
-  const { employeeIds, format, statusFilter, dateFilter } = req.body;
+  const { employeeIds, expenseIds, format, statusFilter, dateFilter } = req.body;
 
   try {
+    const includeClient = await hasExpensesClientIdColumn();
     let query = knex('expenses as e')
       .join('employees as emp', 'e.employee_id', 'emp.id')
+      .modify((qb) => {
+        if (includeClient) {
+          qb.leftJoin('clients as c', function () {
+            this.on('e.client_id', '=', 'c.id').andOn('c.company_id', '=', 'e.company_id');
+          });
+        }
+      })
       .select(
         'e.expense_id',
         'e.employee_id',
@@ -1085,13 +1210,33 @@ const exportExpenses = async (req, res) => {
         'e.approved_by',
         'e.approved_at',
         'e.created_at',
-        knex.raw("CONCAT(emp.first_name, ' ', emp.last_name) as employee_name")
+        knex.raw("CONCAT(emp.first_name, ' ', emp.last_name) as employee_name"),
+        ...(includeClient ? [knex.raw('c.client_name as client_name')] : [knex.raw("'' as client_name")])
       )
       .where('e.company_id', companyId);
 
     // Apply employee filter if specific employees are selected
     if (employeeIds && employeeIds.length > 0 && !employeeIds.includes('all')) {
       query = query.whereIn('e.employee_id', employeeIds);
+    }
+
+    if (Array.isArray(expenseIds) && expenseIds.length > 0) {
+      const numericExpenseIds = expenseIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+      const codeExpenseIds = expenseIds
+        .map((id) => String(id || '').trim())
+        .filter((id) => id && !/^\d+$/.test(id));
+
+      query = query.where((qb) => {
+        if (numericExpenseIds.length) {
+          qb.whereIn('e.id', numericExpenseIds);
+        }
+        if (codeExpenseIds.length) {
+          const method = numericExpenseIds.length ? 'orWhereIn' : 'whereIn';
+          qb[method]('e.expense_id', codeExpenseIds);
+        }
+      });
     }
 
     // Apply status filter
@@ -1112,36 +1257,19 @@ const exportExpenses = async (req, res) => {
 
     const expenses = await query.orderBy('e.created_at', 'desc');
 
-    // Format data for export
-    const exportData = expenses.map(exp => ({
-      'Expense ID': exp.expense_id,
-      'Employee Name': exp.employee_name,
-      'Employee ID': exp.employee_id,
-      'Category': exp.category,
-      'Amount': parseFloat(exp.amount),
-      'Date': exp.expense_date,
-      'Description': exp.description || '',
-      'Status': exp.status,
-      'Approved By': exp.approved_by || '',
-      'Approved Date': exp.approved_at ? new Date(exp.approved_at).toLocaleDateString() : '',
-      'Submitted Date': exp.created_at ? new Date(exp.created_at).toLocaleDateString() : ''
-    }));
+    // Format data for export in the requested claim sheet model.
+    const exportData = buildExpenseModelExportRows(expenses);
 
     if (format === 'csv') {
-      // Generate CSV
       const csvHeader = Object.keys(exportData[0] || {}).join(',');
       const csvRows = exportData.map(row =>
-        Object.values(row).map(value =>
-          typeof value === 'string' && value.includes(',')
-            ? `"${value.replace(/"/g, '""')}"`
-            : value
-        ).join(',')
+        Object.values(row).map(csvEscape).join(',')
       );
 
-      const csvContent = [csvHeader, ...csvRows].join('\n');
+      const csvContent = `\uFEFF${[csvHeader, ...csvRows].join('\n')}`;
 
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename=expenses_${moment().format('YYYY-MM-DD')}.csv`);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename=expense_claim_model_${moment().format('YYYY-MM-DD')}.csv`);
       res.send(csvContent);
     } else {
       // Default to JSON format
