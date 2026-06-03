@@ -50,6 +50,12 @@ const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
   if (normalizedModule === "payroll") return true;
   if (normalizedModule === "employees" && normalizedSubmodule === "profile") return true;
   if (normalizedModule === "expenses" && normalizedSubmodule === "claims") return true;
+  if (
+    normalizedModule === "pulse_surveys" &&
+    ["my_surveys", "feedback", "respond"].includes(normalizedSubmodule)
+  ) {
+    return true;
+  }
 
   return false;
 };
@@ -135,14 +141,14 @@ const requirePermission = (moduleKey, action, options = {}) => {
       if (await hasAddonAccess(req.user, moduleKey)) return next();
       if (hasDefaultAdminAccess(req.user, moduleKey, options.submodule)) return next();
 
-      // Allow all authenticated employees to respond to pulse surveys even if the role
+      // Allow authenticated users with an employee profile to respond to pulse surveys even if the role
       // assignment is missing the explicit "respond" permission. Responding should be
       // available to anyone invited to a survey.
       const isPulseRespond =
         String(moduleKey).toLowerCase() === "pulse_surveys" &&
         String(options.submodule || "").toLowerCase() === "respond" &&
         ["create", "update"].includes(String(action).toLowerCase());
-      if (isPulseRespond && String(req.user?.type || "").toLowerCase() === "employee") {
+      if (isPulseRespond && (req.user?.employee_id || String(req.user?.type || "").toLowerCase() === "employee")) {
         return next();
       }
 

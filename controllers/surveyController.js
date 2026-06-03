@@ -403,15 +403,15 @@ const updateSurveyStatus = async (req, res) => {
   }
 };
 
-// Submit general employee feedback (Employee only)
+// Submit general feedback from any authenticated company user
 const submitFeedback = async (req, res) => {
   const { feedback, category = 'general', isAnonymous = true } = req.body;
-  const employeeId = req.user.id;
+  const employeeId = Number(req.user.employee_id || (req.user.type === 'employee' ? req.user.id : 0)) || null;
   const companyId = req.user.company_id;
 
   try {
-    if (req.user.type !== 'employee') {
-      return res.status(403).json({ error: 'Only employee logins can submit feedback' });
+    if (!companyId) {
+      return res.status(400).json({ error: 'Company is required to submit feedback' });
     }
 
     if (!feedback || feedback.trim() === '') {
@@ -421,20 +421,25 @@ const submitFeedback = async (req, res) => {
     let employeeName = null;
     let department = null;
 
-    // Only fetch employee details if NOT anonymous
+    // Only show identity if NOT anonymous.
     if (!isAnonymous) {
-      const employee = await db('employees as e')
-        .leftJoin('departments as d', 'e.department_id', 'd.id')
-        .where({ 'e.id': employeeId, 'e.company_id': companyId })
-        .select('e.first_name', 'e.last_name', 'd.name as department')
-        .first();
+      if (employeeId) {
+        const employee = await db('employees as e')
+          .leftJoin('departments as d', 'e.department_id', 'd.id')
+          .where({ 'e.id': employeeId, 'e.company_id': companyId })
+          .select('e.first_name', 'e.last_name', 'd.name as department')
+          .first();
 
-      if (!employee) {
-        return res.status(404).json({ error: 'Employee not found' });
+        if (!employee) {
+          return res.status(404).json({ error: 'Employee profile not found' });
+        }
+
+        employeeName = `${employee.first_name} ${employee.last_name || ''}`.trim();
+        department = employee.department || null;
+      } else {
+        employeeName = req.user.name || req.user.email || 'Admin User';
+        department = 'Admin';
       }
-
-      employeeName = `${employee.first_name} ${employee.last_name || ''}`.trim();
-      department = employee.department || null;
     }
 
     const [feedbackId] = await db('employee_feedback').insert({

@@ -85,6 +85,32 @@ const formatHoursFromMinutes = (minutes) => {
 
 const normalizeStatus = (value) => String(value || '').toLowerCase().trim();
 
+const isHalfDayStatus = (value) => {
+  const status = normalizeStatus(value).replace(/[\s-]+/g, '_');
+  return status === 'half' || status === 'half_day';
+};
+
+const isPresentLikeStatus = (value) => {
+  const status = normalizeStatus(value).replace(/[\s-]+/g, '_');
+  return status === 'present' || status === 'late' || isHalfDayStatus(status);
+};
+
+const isHalfDayLeave = (leave) => {
+  const days = Number(leave?.leaveDays || 0);
+  const type = normalizeStatus(leave?.leaveType).replace(/[\s-]+/g, '_');
+  return (days > 0 && days <= 0.5) || Boolean(leave?.halfDaySession) || type.includes('half');
+};
+
+const isMidnightTime = (value) => /^00:00(?::00)?$/.test(String(value || '').trim());
+
+const normalizeTimeForReport = (value) => {
+  if (!value) return null;
+  const text = String(value).trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return text;
+  return `${String(match[1]).padStart(2, '0')}:${match[2]}:${match[3] || '00'}`;
+};
+
 const isAllValue = (value) => !value || String(value).toLowerCase() === 'all';
 
 const resolveDateRange = (query) => {
@@ -265,6 +291,9 @@ const getAttendanceReport = async (req, res) => {
         'd.id as departmentId',
         'd.name as department',
         'desg.name as designation',
+        'sh.name as shiftName',
+        knex.raw("TIME_FORMAT(sh.start_time, '%H:%i:%s') as scheduledStartTime"),
+        knex.raw("TIME_FORMAT(sh.end_time, '%H:%i:%s') as scheduledEndTime"),
         'a.status',
         knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as date"),
         knex.raw("TIME_FORMAT(a.check_in, '%H:%i:%s') as checkInTime"),
@@ -278,6 +307,7 @@ const getAttendanceReport = async (req, res) => {
         'a.check_out_location'
       )
       .leftJoin('designations as desg', 'e.designation_id', 'desg.id')
+      .leftJoin('shifts as sh', 'e.shift_id', 'sh.id')
       .orderBy('a.check_in', 'desc');
 
     const reportStartDate = startDate || `${year}-01-01`;
@@ -344,6 +374,7 @@ const getAttendanceReport = async (req, res) => {
         'd.name as department',
         'desg.name as designation',
         'l.leave_type_name as leaveType',
+        'l.half_day_session as halfDaySession',
         'lt.is_paid as isPaid',
         knex.raw("DATE_FORMAT(l.from_date, '%Y-%m-%d') as leaveFromDate"),
         knex.raw("DATE_FORMAT(l.to_date, '%Y-%m-%d') as leaveToDate"),
@@ -397,9 +428,28 @@ const getAttendanceReport = async (req, res) => {
     const rowKey = (employeePkId, date) => `${employeePkId || ''}-${toDateKey(date) || ''}`;
 
     const rows = attendanceRows.map((row) => {
+      const rawCheckInTime = normalizeTimeForReport(row.checkInTime);
+      const rawCheckOutTime = normalizeTimeForReport(row.checkOutTime);
+      const scheduledStartTime = normalizeTimeForReport(row.scheduledStartTime);
+      const scheduledEndTime = normalizeTimeForReport(row.scheduledEndTime);
+      const canUseScheduledFallback = isPresentLikeStatus(row.status);
       const normalized = {
         ...row,
         date: toDateKey(row.date),
+        checkInTime:
+          rawCheckInTime && !isMidnightTime(rawCheckInTime)
+            ? rawCheckInTime
+            : canUseScheduledFallback
+              ? scheduledStartTime
+              : rawCheckInTime,
+        checkOutTime:
+          rawCheckOutTime && !isMidnightTime(rawCheckOutTime)
+            ? rawCheckOutTime
+            : canUseScheduledFallback
+              ? scheduledEndTime
+              : rawCheckOutTime,
+        scheduledStartTime,
+        scheduledEndTime,
         leaveTaken: '',
         leaveType: '',
         leaveDays: '',
@@ -426,20 +476,26 @@ const getAttendanceReport = async (req, res) => {
       for (let date = range.from; date <= range.to; date = addDays(date, 1)) {
         const key = rowKey(leave.employeePkId, date);
         const existing = rowsByEmployeeDate.get(key);
+        const isHalfLeave = isHalfDayLeave(leave);
+        const leaveDays = isHalfLeave ? 0.5 : (leave.leaveDays || '');
 
         if (existing) {
           existing.leaveTaken = 'Yes';
           existing.leaveType = leave.leaveType || '';
           existing.isPaid = leave.isPaid;
-          existing.leaveDays = leave.leaveDays || '';
+          existing.leaveDays = leaveDays;
           existing.leaveReason = leave.leaveReason || leave.leaveRemarks || '';
-          existing.checkInTime = null;
-          existing.checkOutTime = null;
-          existing.check_in_location = null;
-          existing.check_out_location = null;
-          existing.hoursWorked = 0;
-          existing.overtimeHours = 0;
-          existing.status = 'leave';
+          if (isHalfLeave) {
+            existing.status = 'half';
+          } else {
+            existing.checkInTime = null;
+            existing.checkOutTime = null;
+            existing.check_in_location = null;
+            existing.check_out_location = null;
+            existing.hoursWorked = 0;
+            existing.overtimeHours = 0;
+            existing.status = 'leave';
+          }
           continue;
         }
 
@@ -452,7 +508,7 @@ const getAttendanceReport = async (req, res) => {
           branch: leave.branch,
           department: leave.department,
           designation: leave.designation,
-          status: 'leave',
+          status: isHalfLeave ? 'half' : 'leave',
           date,
           checkInTime: null,
           checkOutTime: null,
@@ -466,7 +522,7 @@ const getAttendanceReport = async (req, res) => {
           leaveTaken: 'Yes',
           leaveType: leave.leaveType || '',
           isPaid: leave.isPaid,
-          leaveDays: leave.leaveDays || '',
+          leaveDays,
           leaveReason: leave.leaveReason || leave.leaveRemarks || '',
           permissionTaken: '',
           permissionFromTime: '',
@@ -675,9 +731,9 @@ const getAttendanceReport = async (req, res) => {
       .select(
         knex.raw("DATE_FORMAT(a.check_in, '%Y-%m') as ym_key"),
         knex.raw("DATE_FORMAT(a.check_in, '%M') as month_name"),
-        knex.raw("SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present"),
-        knex.raw("SUM(CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END) as absent"),
-        knex.raw("SUM(CASE WHEN a.status = 'half' THEN 1 ELSE 0 END) as half")
+        knex.raw("SUM(CASE WHEN LOWER(a.status) IN ('present', 'late') THEN 1 ELSE 0 END) as present"),
+        knex.raw("SUM(CASE WHEN LOWER(a.status) = 'absent' THEN 1 ELSE 0 END) as absent"),
+        knex.raw("SUM(CASE WHEN LOWER(a.status) IN ('half', 'half_day', 'half-day') THEN 1 ELSE 0 END) as half")
       )
       .groupByRaw("DATE_FORMAT(a.check_in, '%Y-%m'), DATE_FORMAT(a.check_in, '%M')")
       .orderByRaw("DATE_FORMAT(a.check_in, '%Y-%m')");
@@ -713,7 +769,7 @@ const getAttendanceReport = async (req, res) => {
       .clone()
       .whereNotNull('a.check_in')
       .select(
-        knex.raw("SUM(CASE WHEN a.status = 'present' THEN 1 WHEN a.status = 'half' THEN 0.5 ELSE 0 END) / COUNT(*) * 100 as avg_att")
+        knex.raw("SUM(CASE WHEN LOWER(a.status) IN ('present', 'late') THEN 1 WHEN LOWER(a.status) IN ('half', 'half_day', 'half-day') THEN 0.5 ELSE 0 END) / COUNT(*) * 100 as avg_att")
       )
       .first();
 
