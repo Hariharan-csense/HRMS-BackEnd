@@ -1,9 +1,21 @@
-exports.up = function (knex) {
-  return knex.schema
-    .table('company_subscriptions', function (table) {
+exports.up = async function (knex) {
+  const hasBillingCycle = await knex.schema.hasColumn(
+    'company_subscriptions',
+    'billing_cycle'
+  );
+  const hasSubscriptionAddons = await knex.schema.hasTable('subscription_addons');
+  const hasCompanySubscriptionAddons = await knex.schema.hasTable(
+    'company_subscription_addons'
+  );
+
+  if (!hasBillingCycle) {
+    await knex.schema.table('company_subscriptions', function (table) {
       table.string('billing_cycle').nullable();
-    })
-    .createTable('subscription_addons', function (table) {
+    });
+  }
+
+  if (!hasSubscriptionAddons) {
+    await knex.schema.createTable('subscription_addons', function (table) {
       table.increments('id').primary();
       table.string('name').notNullable();
       table.text('description');
@@ -12,8 +24,11 @@ exports.up = function (knex) {
       table.decimal('price_above50', 10, 2).notNullable();
       table.boolean('is_active').defaultTo(true);
       table.timestamps(true, true);
-    })
-    .createTable('company_subscription_addons', function (table) {
+    });
+  }
+
+  if (!hasCompanySubscriptionAddons) {
+    await knex.schema.createTable('company_subscription_addons', function (table) {
       table.increments('id').primary();
       table.integer('subscription_id').unsigned().notNullable();
       table.integer('addon_id').unsigned().notNullable();
@@ -34,13 +49,21 @@ exports.up = function (knex) {
         .inTable('subscription_addons')
         .onDelete('CASCADE');
     });
+  }
 };
 
-exports.down = function (knex) {
-  return knex.schema
-    .dropTableIfExists('company_subscription_addons')
-    .dropTableIfExists('subscription_addons')
-    .table('company_subscriptions', function (table) {
+exports.down = async function (knex) {
+  await knex.schema.dropTableIfExists('company_subscription_addons');
+  await knex.schema.dropTableIfExists('subscription_addons');
+
+  const hasBillingCycle = await knex.schema.hasColumn(
+    'company_subscriptions',
+    'billing_cycle'
+  );
+
+  if (hasBillingCycle) {
+    await knex.schema.table('company_subscriptions', function (table) {
       table.dropColumn('billing_cycle');
     });
+  }
 };

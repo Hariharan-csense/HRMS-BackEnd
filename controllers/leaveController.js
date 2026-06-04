@@ -926,7 +926,9 @@ const updateLeaveStatus = async (req, res) => {
     // UPDATE LEAVE BALANCE (IF APPROVED) - skip for unpaid leave (LOP)
     // ===============================
     if (status === 'approved') {
-      const currentYear = new Date().getFullYear();
+      const applicationYear =
+        new Date(application.from_date).getFullYear() ||
+        new Date().getFullYear();
 
       // fetch leave type to determine if it's paid
       const applicationLeaveType = await knex('leave_types')
@@ -939,7 +941,7 @@ const updateLeaveStatus = async (req, res) => {
           .where({
             employee_id: application.employee_id,
             leave_type_id: application.leave_type_id,
-            year: currentYear
+            year: applicationYear
           })
           .first();
 
