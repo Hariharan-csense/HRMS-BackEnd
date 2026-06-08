@@ -5,6 +5,87 @@ const {
   sendTicketStatusUpdateMail
 } = require('../utils/sendTicketMail');
 
+const fullEmployeeName = (employee = {}) =>
+  `${employee.first_name || employee.firstName || employee.name || ''} ${employee.last_name || employee.lastName || ''}`
+    .trim();
+
+const creatorFromTicketRow = (ticket = {}) => {
+  const emailEmployeeName = fullEmployeeName({
+    first_name: ticket.email_employee_creator_first_name,
+    last_name: ticket.email_employee_creator_last_name,
+  });
+  if (emailEmployeeName || ticket.email_employee_creator_email) {
+    return {
+      name: emailEmployeeName || ticket.email_employee_creator_email || 'User',
+      email: ticket.email_employee_creator_email || ticket.creator_email || '',
+    };
+  }
+
+  const employeeName = fullEmployeeName({
+    first_name: ticket.employee_creator_first_name,
+    last_name: ticket.employee_creator_last_name,
+    name: ticket.employee_creator_name,
+  });
+
+  if (employeeName || ticket.employee_creator_email) {
+    return {
+      name: employeeName || ticket.employee_creator_email || 'User',
+      email: ticket.employee_creator_email || ticket.creator_email || '',
+    };
+  }
+
+  return {
+    name: ticket.creator_name || ticket.creator_email || 'User',
+    email: ticket.creator_email || '',
+  };
+};
+
+const resolveTicketCreator = async (authUser = {}) => {
+  const email = String(authUser.email || '').toLowerCase().trim();
+  const companyId = authUser.company_id || null;
+
+  if (email && companyId) {
+    const userByEmail = await knex('users')
+      .where({ company_id: companyId })
+      .whereRaw('LOWER(email) = ?', [email])
+      .select('id', 'name', 'email')
+      .first();
+
+    if (userByEmail) {
+      return {
+        id: userByEmail.id,
+        profile: {
+          name: authUser.name || userByEmail.name || userByEmail.email,
+          email: userByEmail.email,
+        },
+      };
+    }
+  }
+
+  const userById = await knex('users')
+    .where({ id: authUser.id })
+    .select('id', 'name', 'email')
+    .first();
+
+  if (userById) {
+    return {
+      id: userById.id,
+      profile: {
+        name: authUser.name || userById.name || userById.email,
+        email: userById.email,
+      },
+    };
+  }
+
+  return {
+    id: authUser.id,
+    profile: {
+      name: authUser.name || email || 'User',
+      email: authUser.email || '',
+    },
+  };
+};
+
 // @desc    Create new ticket
 // @route   POST /api/tickets
 // @access  Admin only
@@ -108,7 +189,8 @@ const {
 const createTicket = async (req, res) => {
   try {
     const { title, description, priority, category } = req.body;
-    const createdBy = req.user.id;
+    const creator = await resolveTicketCreator(req.user);
+    const createdBy = creator.id;
 
     if (!title || !description) {
       return res.status(400).json({
@@ -144,11 +226,6 @@ const createTicket = async (req, res) => {
       })
       .returning(['id','ticket_number','title','priority','category','status','created_at']);
 
-    const creator = await knex('users')
-      .where('id', createdBy)
-      .select('name','email')
-      .first();
-
     const formattedTicket = {
       id: newTicket.id,
       ticketNumber: newTicket.ticket_number,
@@ -158,7 +235,7 @@ const createTicket = async (req, res) => {
       category: newTicket.category,
       status: newTicket.status,
       remarks:null,
-      createdBy: creator,
+      createdBy: creator.profile,
       createdAt: newTicket.created_at
     };
 
@@ -173,7 +250,7 @@ const createTicket = async (req, res) => {
       await sendTicketCreatedMail(
         superAdminEmails,
         formattedTicket,
-        creator
+        creator.profile
       );
     }
 
@@ -317,12 +394,26 @@ const getTickets = async (req, res) => {
         'tickets.updated_at',
         'creator.name as creator_name',
         'creator.email as creator_email',
+        'employee_creator.first_name as employee_creator_first_name',
+        'employee_creator.last_name as employee_creator_last_name',
+        'employee_creator.email as employee_creator_email',
+        'email_employee_creator.first_name as email_employee_creator_first_name',
+        'email_employee_creator.last_name as email_employee_creator_last_name',
+        'email_employee_creator.email as email_employee_creator_email',
         'assigned.name as assigned_name',
         'assigned.email as assigned_email',
         'companies.company_name',
         'companies.company_id as company_identifier'
       ])
       .leftJoin('users as creator', 'tickets.created_by', 'creator.id')
+      .leftJoin('employees as employee_creator', function () {
+        this.on('tickets.created_by', '=', 'employee_creator.id')
+          .andOn('tickets.company_id', '=', 'employee_creator.company_id');
+      })
+      .leftJoin('employees as email_employee_creator', function () {
+        this.on('tickets.company_id', '=', 'email_employee_creator.company_id')
+          .andOn(knex.raw('LOWER(creator.email)'), '=', knex.raw('LOWER(email_employee_creator.email)'));
+      })
       .leftJoin('users as assigned', 'tickets.assigned_to', 'assigned.id')
       .leftJoin('companies', 'tickets.company_id', 'companies.id')
       .where('tickets.company_id', companyId)
@@ -369,10 +460,7 @@ const getTickets = async (req, res) => {
             email: ticket.assigned_email
           }
         : null,
-      createdBy: {
-        name: ticket.creator_name,
-        email: ticket.creator_email
-      },
+      createdBy: creatorFromTicketRow(ticket),
       organization: {
         id: ticket.company_id,
         name: ticket.company_name,
@@ -430,10 +518,24 @@ const getTicket = async (req, res) => {
         'tickets.updated_at',
         'creator.name as creator_name',
         'creator.email as creator_email',
+        'employee_creator.first_name as employee_creator_first_name',
+        'employee_creator.last_name as employee_creator_last_name',
+        'employee_creator.email as employee_creator_email',
+        'email_employee_creator.first_name as email_employee_creator_first_name',
+        'email_employee_creator.last_name as email_employee_creator_last_name',
+        'email_employee_creator.email as email_employee_creator_email',
         'assigned.name as assigned_name',
         'assigned.email as assigned_email'
       ])
       .leftJoin('users as creator', 'tickets.created_by', 'creator.id')
+      .leftJoin('employees as employee_creator', function () {
+        this.on('tickets.created_by', '=', 'employee_creator.id')
+          .andOn('employee_creator.company_id', '=', 'tickets.company_id');
+      })
+      .leftJoin('employees as email_employee_creator', function () {
+        this.on('tickets.company_id', '=', 'email_employee_creator.company_id')
+          .andOn(knex.raw('LOWER(creator.email)'), '=', knex.raw('LOWER(email_employee_creator.email)'));
+      })
       .leftJoin('users as assigned', 'tickets.assigned_to', 'assigned.id')
       .where('tickets.id', id)
       .first();
@@ -459,10 +561,7 @@ const getTicket = async (req, res) => {
         name: ticket.assigned_name,
         email: ticket.assigned_email
       } : null,
-      createdBy: {
-        name: ticket.creator_name,
-        email: ticket.creator_email
-      },
+      createdBy: creatorFromTicketRow(ticket),
       createdAt: ticket.created_at,
       updatedAt: ticket.updated_at
     };
@@ -629,10 +728,24 @@ const updateTicket = async (req, res) => {
 
     const ticket = await knex('tickets')
       .leftJoin('users as creator','tickets.created_by','creator.id')
+      .leftJoin('employees as employee_creator', function () {
+        this.on('tickets.created_by', '=', 'employee_creator.id')
+          .andOn('employee_creator.company_id', '=', 'tickets.company_id');
+      })
+      .leftJoin('employees as email_employee_creator', function () {
+        this.on('tickets.company_id', '=', 'email_employee_creator.company_id')
+          .andOn(knex.raw('LOWER(creator.email)'), '=', knex.raw('LOWER(email_employee_creator.email)'));
+      })
       .select(
         'tickets.*',
         'creator.email as creator_email',
-        'creator.name as creator_name'
+        'creator.name as creator_name',
+        'employee_creator.first_name as employee_creator_first_name',
+        'employee_creator.last_name as employee_creator_last_name',
+        'employee_creator.email as employee_creator_email',
+        'email_employee_creator.first_name as email_employee_creator_first_name',
+        'email_employee_creator.last_name as email_employee_creator_last_name',
+        'email_employee_creator.email as email_employee_creator_email'
       )
       .where('tickets.id', id)
       .first();
@@ -646,8 +759,9 @@ const updateTicket = async (req, res) => {
 
     // 🔔 STATUS UPDATE MAIL
     if(status && status !== existingTicket.status){
+      const creator = creatorFromTicketRow(ticket);
       await sendTicketStatusUpdateMail(
-        ticket.creator_email,
+        creator.email,
         formattedTicket
       );
     }

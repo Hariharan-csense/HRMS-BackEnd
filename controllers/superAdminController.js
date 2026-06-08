@@ -1,5 +1,40 @@
 const knex = require('../db/db');
 
+const fullEmployeeName = (employee = {}) =>
+  `${employee.first_name || employee.firstName || employee.name || ''} ${employee.last_name || employee.lastName || ''}`
+    .trim();
+
+const creatorFromTicketRow = (ticket = {}) => {
+  const emailEmployeeName = fullEmployeeName({
+    first_name: ticket.email_employee_creator_first_name,
+    last_name: ticket.email_employee_creator_last_name,
+  });
+  if (emailEmployeeName || ticket.email_employee_creator_email) {
+    return {
+      name: emailEmployeeName || ticket.email_employee_creator_email || 'User',
+      email: ticket.email_employee_creator_email || ticket.creator_email || '',
+    };
+  }
+
+  const employeeName = fullEmployeeName({
+    first_name: ticket.employee_creator_first_name,
+    last_name: ticket.employee_creator_last_name,
+    name: ticket.employee_creator_name,
+  });
+
+  if (employeeName || ticket.employee_creator_email) {
+    return {
+      name: employeeName || ticket.employee_creator_email || 'User',
+      email: ticket.employee_creator_email || ticket.creator_email || '',
+    };
+  }
+
+  return {
+    name: ticket.creator_name || ticket.creator_email || 'User',
+    email: ticket.creator_email || '',
+  };
+};
+
 // @desc    Get all companies with user counts
 // @route   GET /api/superadmin/companies
 // @access  Super Admin only
@@ -64,12 +99,26 @@ const getAllTickets = async (req, res) => {
         'tickets.updated_at',
         'creator.name as creator_name',
         'creator.email as creator_email',
+        'employee_creator.first_name as employee_creator_first_name',
+        'employee_creator.last_name as employee_creator_last_name',
+        'employee_creator.email as employee_creator_email',
+        'email_employee_creator.first_name as email_employee_creator_first_name',
+        'email_employee_creator.last_name as email_employee_creator_last_name',
+        'email_employee_creator.email as email_employee_creator_email',
         'assigned.name as assigned_name',
         'assigned.email as assigned_email',
         'companies.company_name',
         'companies.company_id as company_identifier'
       ])
       .leftJoin('users as creator', 'tickets.created_by', 'creator.id')
+      .leftJoin('employees as employee_creator', function () {
+        this.on('tickets.created_by', '=', 'employee_creator.id')
+          .andOn('employee_creator.company_id', '=', 'tickets.company_id');
+      })
+      .leftJoin('employees as email_employee_creator', function () {
+        this.on('tickets.company_id', '=', 'email_employee_creator.company_id')
+          .andOn(knex.raw('LOWER(creator.email)'), '=', knex.raw('LOWER(email_employee_creator.email)'));
+      })
       .leftJoin('users as assigned', 'tickets.assigned_to', 'assigned.id')
       .leftJoin('companies', 'tickets.company_id', 'companies.id')
       .orderBy('tickets.created_at', 'desc');
@@ -114,10 +163,7 @@ const getAllTickets = async (req, res) => {
         name: ticket.assigned_name,
         email: ticket.assigned_email
       } : null,
-      createdBy: {
-        name: ticket.creator_name,
-        email: ticket.creator_email
-      },
+      createdBy: creatorFromTicketRow(ticket),
       organization: ticket.company_id ? {
         id: ticket.company_id,
         name: ticket.company_name,
@@ -277,10 +323,24 @@ const getTicketsByOrganization = async (req, res) => {
         'tickets.updated_at',
         'creator.name as creator_name',
         'creator.email as creator_email',
+        'employee_creator.first_name as employee_creator_first_name',
+        'employee_creator.last_name as employee_creator_last_name',
+        'employee_creator.email as employee_creator_email',
+        'email_employee_creator.first_name as email_employee_creator_first_name',
+        'email_employee_creator.last_name as email_employee_creator_last_name',
+        'email_employee_creator.email as email_employee_creator_email',
         'assigned.name as assigned_name',
         'assigned.email as assigned_email'
       ])
       .leftJoin('users as creator', 'tickets.created_by', 'creator.id')
+      .leftJoin('employees as employee_creator', function () {
+        this.on('tickets.created_by', '=', 'employee_creator.id')
+          .andOn('employee_creator.company_id', '=', 'tickets.company_id');
+      })
+      .leftJoin('employees as email_employee_creator', function () {
+        this.on('tickets.company_id', '=', 'email_employee_creator.company_id')
+          .andOn(knex.raw('LOWER(creator.email)'), '=', knex.raw('LOWER(email_employee_creator.email)'));
+      })
       .leftJoin('users as assigned', 'tickets.assigned_to', 'assigned.id')
       .where('tickets.company_id', id)
       .orderBy('tickets.created_at', 'desc');
@@ -322,10 +382,7 @@ const getTicketsByOrganization = async (req, res) => {
         name: ticket.assigned_name,
         email: ticket.assigned_email
       } : null,
-      createdBy: {
-        name: ticket.creator_name,
-        email: ticket.creator_email
-      },
+      createdBy: creatorFromTicketRow(ticket),
       organization: {
         id: organization.id,
         name: organization.company_name
