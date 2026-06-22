@@ -1,56 +1,61 @@
 // src/controllers/leaveController.js
-const fs = require('fs');
-const knex = require('../db/db');
-const upload = require('../middleware/leaveAttachmentUpload');
-const { hasAnyRole } = require('../middleware/authMiddleware');
-const { sendLeaveNotification } = require('../utils/sendLeaveNotification');
-const { sendLeaveStatusNotification } = require('../utils/sendLeaveStatusNotification');
-const {generateAutoNumber} = require('../utils/generateAutoNumber');
+const fs = require("fs");
+const knex = require("../db/db");
+const upload = require("../middleware/leaveAttachmentUpload");
+const { hasAnyRole } = require("../middleware/authMiddleware");
+const { sendLeaveNotification } = require("../utils/sendLeaveNotification");
+const {
+  sendLeaveStatusNotification,
+} = require("../utils/sendLeaveStatusNotification");
+const { generateAutoNumber } = require("../utils/generateAutoNumber");
 const {
   assignLeaveBalancesForEmployee,
   backfillLeaveBalancesForLeaveType,
-  reconcileMissingLeaveBalances
-} = require('../services/leaveBalanceService');
+  reconcileMissingLeaveBalances,
+} = require("../services/leaveBalanceService");
 
-const normalizeWorkflowText = (value) => String(value || '').toLowerCase().trim();
+const normalizeWorkflowText = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .trim();
 
 const resolveWorkflowRole = (user = {}) => {
   const normalizedRole = normalizeWorkflowText(user.role);
   const normalizedType = normalizeWorkflowText(user.type);
 
-  if (normalizedRole === 'ceo') return 'ceo';
-  if (normalizedRole === 'admin' || normalizedType === 'admin') return 'admin';
-  if (normalizedRole === 'hr') return 'hr';
-  if (normalizedRole === 'manager') return 'manager';
-  return 'employee';
+  if (normalizedRole === "ceo") return "ceo";
+  if (normalizedRole === "admin" || normalizedType === "admin") return "admin";
+  if (normalizedRole === "hr") return "hr";
+  if (normalizedRole === "manager") return "manager";
+  return "employee";
 };
 
 const resolveEmployeeProfile = async (req, companyId) => {
   if (req.user?.employee_id) {
-    const byMappedId = await knex('employees')
+    const byMappedId = await knex("employees")
       .where({ id: Number(req.user.employee_id), company_id: companyId })
       .first();
     if (byMappedId) return byMappedId;
   }
 
-  if (normalizeWorkflowText(req.user?.type) === 'employee') {
-    const byId = await knex('employees')
+  if (normalizeWorkflowText(req.user?.type) === "employee") {
+    const byId = await knex("employees")
       .where({ id: Number(req.user?.id), company_id: companyId })
       .first();
     if (byId) return byId;
   }
 
   if (req.user?.email) {
-    const byEmail = await knex('employees')
-      .where('company_id', companyId)
-      .whereRaw('LOWER(email) = ?', [
+    const byEmail = await knex("employees")
+      .where("company_id", companyId)
+      .whereRaw("LOWER(email) = ?", [
         String(req.user.email).toLowerCase().trim(),
       ])
       .first();
     if (byEmail) return byEmail;
   }
 
-  const fallbackById = await knex('employees')
+  const fallbackById = await knex("employees")
     .where({ id: Number(req.user?.id), company_id: companyId })
     .first();
   if (fallbackById) return fallbackById;
@@ -59,14 +64,14 @@ const resolveEmployeeProfile = async (req, companyId) => {
 };
 
 const parseCsv = (value) =>
-  String(value || '')
-    .split(',')
+  String(value || "")
+    .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
 
 const parseLeaveDate = (value) => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return null;
-  const [year, month, day] = String(value).split('-').map(Number);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return null;
+  const [year, month, day] = String(value).split("-").map(Number);
   const parsed = new Date(year, month - 1, day);
   if (
     parsed.getFullYear() !== year ||
@@ -101,38 +106,40 @@ const assertLeaveDateWithinApplicationWindow = (parsedDate, fieldLabel) => {
 };
 
 const normalizeHalfDaySession = (value) => {
-  const session = String(value || '').toLowerCase().trim();
-  return ['first_half', 'second_half'].includes(session) ? session : null;
+  const session = String(value || "")
+    .toLowerCase()
+    .trim();
+  return ["first_half", "second_half"].includes(session) ? session : null;
 };
 
 const getSelectedApproverEmails = async (companyId, body = {}) => {
   const selectedEntries = parseCsv(body.reporting_manager_id);
   const selectedUserIds = selectedEntries
-    .filter((id) => id.startsWith('user:'))
-    .map((id) => Number(id.replace('user:', '')))
+    .filter((id) => id.startsWith("user:"))
+    .map((id) => Number(id.replace("user:", "")))
     .filter(Boolean);
   const selectedIds = selectedEntries
-    .filter((id) => !id.startsWith('user:'))
+    .filter((id) => !id.startsWith("user:"))
     .map((id) => Number(id))
     .filter(Boolean);
 
   const emails = [];
 
   if (selectedIds.length > 0) {
-    const rows = await knex('employees')
-      .where('company_id', companyId)
-      .whereIn('id', selectedIds)
-      .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ['active'])
-      .select('email');
+    const rows = await knex("employees")
+      .where("company_id", companyId)
+      .whereIn("id", selectedIds)
+      .whereRaw('LOWER(TRIM(COALESCE(status, ""))) = ?', ["active"])
+      .select("email");
 
     emails.push(...rows.map((row) => row.email).filter(Boolean));
   }
 
   if (selectedUserIds.length > 0) {
-    const rows = await knex('users')
-      .where('company_id', companyId)
-      .whereIn('id', selectedUserIds)
-      .select('email');
+    const rows = await knex("users")
+      .where("company_id", companyId)
+      .whereIn("id", selectedUserIds)
+      .select("email");
 
     emails.push(...rows.map((row) => row.email).filter(Boolean));
   }
@@ -149,15 +156,17 @@ const getSelectedApproverEmails = async (companyId, body = {}) => {
 const resolveApproverEmployeeId = async (req, companyId) => {
   if (!companyId) return null;
 
-  const directEmployee = await knex('employees')
+  const directEmployee = await knex("employees")
     .where({ id: Number(req.user?.id), company_id: companyId })
     .first();
   if (directEmployee) return Number(directEmployee.id);
 
   if (req.user?.email) {
-    const byEmail = await knex('employees')
-      .where('company_id', companyId)
-      .whereRaw('LOWER(email) = ?', [String(req.user.email).toLowerCase().trim()])
+    const byEmail = await knex("employees")
+      .where("company_id", companyId)
+      .whereRaw("LOWER(email) = ?", [
+        String(req.user.email).toLowerCase().trim(),
+      ])
       .first();
     if (byEmail) return Number(byEmail.id);
   }
@@ -169,34 +178,40 @@ const resolveApproverEmployeeId = async (req, companyId) => {
 const generateId = async (table, prefix, companyId) => {
   const last = await knex(table)
     .where({ company_id: companyId })
-    .orderBy('id', 'desc')
+    .orderBy("id", "desc")
     .first();
 
   if (!last) return `${prefix}001`;
 
-  const columnName = table === 'leave_applications' ? 'application_id' : `${prefix.toLowerCase()}_id`;
-  const num = parseInt(last[columnName].replace(prefix, '')) + 1;
-  return `${prefix}${String(num).padStart(3, '0')}`;
+  const columnName =
+    table === "leave_applications"
+      ? "application_id"
+      : `${prefix.toLowerCase()}_id`;
+  const num = parseInt(last[columnName].replace(prefix, "")) + 1;
+  return `${prefix}${String(num).padStart(3, "0")}`;
 };
 
 // Initialize leave balance for new employee or new year
 const initializeLeaveBalance = async (
   employeeId,
   companyId,
-  year = new Date().getFullYear()
+  year = new Date().getFullYear(),
 ) => {
   try {
-    const result = await assignLeaveBalancesForEmployee(employeeId, companyId, { year });
+    const result = await assignLeaveBalancesForEmployee(employeeId, companyId, {
+      year,
+    });
     if (!result.success) {
-      console.warn(`Leave balance initialization skipped for employee ${employeeId}: ${result.reason}`);
+      console.warn(
+        `Leave balance initialization skipped for employee ${employeeId}: ${result.reason}`,
+      );
     }
     return result;
   } catch (error) {
-    console.error('Error initializing leave balance:', error);
-    return { success: false, inserted: 0, reason: 'error' };
+    console.error("Error initializing leave balance:", error);
+    return { success: false, inserted: 0, reason: "error" };
   }
 };
-
 
 // Apply Leave (company scoped)
 // const applyLeave = async (req, res) => {
@@ -376,7 +391,6 @@ const initializeLeaveBalance = async (
 //   });
 // };
 
-
 const applyLeave = async (req, res) => {
   upload(req, res, async (err) => {
     if (err) {
@@ -386,7 +400,9 @@ const applyLeave = async (req, res) => {
     const companyId = req.user.company_id;
     if (!companyId) {
       if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(400).json({ message: 'You are not assigned to any company' });
+      return res
+        .status(400)
+        .json({ message: "You are not assigned to any company" });
     }
 
     const userRole = req.user.role; // 🔥 FROM TOKEN
@@ -399,23 +415,32 @@ const applyLeave = async (req, res) => {
 
       if (!employee) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(404).json({ message: 'Employee not found or access denied' });
+        return res
+          .status(404)
+          .json({ message: "Employee not found or access denied" });
       }
 
       const employeeId = employee.id;
-      const employeeName = `${employee.first_name} ${employee.last_name || ''}`.trim();
+      const employeeName =
+        `${employee.first_name} ${employee.last_name || ""}`.trim();
 
       let { leave_type_id } = req.body;
       const { from_date, to_date, reason } = req.body;
-      const leaveDuration = String(req.body.leave_duration || req.body.leaveDuration || 'full_day').toLowerCase().trim();
-      const isHalfDay = leaveDuration === 'half_day';
+      const leaveDuration = String(
+        req.body.leave_duration || req.body.leaveDuration || "full_day",
+      )
+        .toLowerCase()
+        .trim();
+      const isHalfDay = leaveDuration === "half_day";
       const halfDaySession = isHalfDay
-        ? normalizeHalfDaySession(req.body.half_day_session || req.body.halfDaySession)
+        ? normalizeHalfDaySession(
+            req.body.half_day_session || req.body.halfDaySession,
+          )
         : null;
 
       if (!leave_type_id || !from_date || !to_date || !reason) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: 'All fields required' });
+        return res.status(400).json({ message: "All fields required" });
       }
 
       const parsedFromDate = parseLeaveDate(from_date);
@@ -423,21 +448,31 @@ const applyLeave = async (req, res) => {
 
       if (!parsedFromDate || !parsedToDate) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: 'Please provide valid leave dates' });
+        return res
+          .status(400)
+          .json({ message: "Please provide valid leave dates" });
       }
 
       if (parsedToDate < parsedFromDate) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: 'To date cannot be earlier than from date' });
+        return res
+          .status(400)
+          .json({ message: "To date cannot be earlier than from date" });
       }
 
-      const fromDateWindowError = assertLeaveDateWithinApplicationWindow(parsedFromDate, 'From date');
+      const fromDateWindowError = assertLeaveDateWithinApplicationWindow(
+        parsedFromDate,
+        "From date",
+      );
       if (fromDateWindowError) {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(400).json({ message: fromDateWindowError });
       }
 
-      const toDateWindowError = assertLeaveDateWithinApplicationWindow(parsedToDate, 'To date');
+      const toDateWindowError = assertLeaveDateWithinApplicationWindow(
+        parsedToDate,
+        "To date",
+      );
       if (toDateWindowError) {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(400).json({ message: toDateWindowError });
@@ -445,12 +480,16 @@ const applyLeave = async (req, res) => {
 
       if (isHalfDay && !halfDaySession) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: 'Please select first half or second half for half-day leave' });
+        return res.status(400).json({
+          message: "Please select first half or second half for half-day leave",
+        });
       }
 
       if (isHalfDay && from_date !== to_date) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: 'Half-day leave must be for a single date' });
+        return res
+          .status(400)
+          .json({ message: "Half-day leave must be for a single date" });
       }
 
       // ===============================
@@ -458,7 +497,8 @@ const applyLeave = async (req, res) => {
       // ===============================
       const days = isHalfDay
         ? 0.5
-        : Math.floor((parsedToDate - parsedFromDate) / (1000 * 60 * 60 * 24)) + 1;
+        : Math.floor((parsedToDate - parsedFromDate) / (1000 * 60 * 60 * 24)) +
+          1;
 
       // ===============================
       // CHECK LEAVE BALANCE / PROBATION (LOP) HANDLING
@@ -466,28 +506,28 @@ const applyLeave = async (req, res) => {
       const currentYear = new Date().getFullYear();
 
       // Get the requested leave type (company scoped)
-      let leaveType = await knex('leave_types')
+      let leaveType = await knex("leave_types")
         .where({ id: leave_type_id, company_id: companyId })
         .first();
 
       if (!leaveType) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: 'Invalid leave type' });
+        return res.status(400).json({ message: "Invalid leave type" });
       }
 
       // If employee is on probation, treat leave as unpaid (loss of pay)
-      if (employee.employment_type === 'Probation') {
+      if (employee.employment_type === "Probation") {
         // Try to find an existing unpaid leave type for the company
-        let unpaid = await knex('leave_types')
+        let unpaid = await knex("leave_types")
           .where({ company_id: companyId, is_paid: false })
           .first();
 
         if (!unpaid) {
           // Create a company-scoped Unpaid Leave type if not present
           // Generate leave type ID (LVT001 format)
-          const lastLeaveType = await knex('leave_types')
+          const lastLeaveType = await knex("leave_types")
             .where({ company_id: companyId })
-            .orderBy('id', 'desc')
+            .orderBy("id", "desc")
             .first();
 
           let nextNumber = 1;
@@ -498,20 +538,20 @@ const applyLeave = async (req, res) => {
             }
           }
 
-          const lt_code = `LVT${nextNumber.toString().padStart(3, '0')}`;
-          await knex('leave_types').insert({
+          const lt_code = `LVT${nextNumber.toString().padStart(3, "0")}`;
+          await knex("leave_types").insert({
             leave_type_id: lt_code,
-            name: 'Unpaid Leave',
+            name: "Unpaid Leave",
             is_paid: false,
             annual_limit: 0,
             carry_forward: 0,
             encashable: false,
-            description: 'Auto-created unpaid leave for probation employees',
-            status: 'active',
-            company_id: companyId
+            description: "Auto-created unpaid leave for probation employees",
+            status: "active",
+            company_id: companyId,
           });
 
-          unpaid = await knex('leave_types')
+          unpaid = await knex("leave_types")
             .where({ leave_type_id: lt_code, company_id: companyId })
             .first();
         }
@@ -525,17 +565,19 @@ const applyLeave = async (req, res) => {
       // If leave type is paid, ensure balance exists and is sufficient
       let balance = null;
       if (leaveType && leaveType.is_paid) {
-        balance = await knex('leave_balances')
+        balance = await knex("leave_balances")
           .where({
             employee_id: employeeId,
             leave_type_id,
-            year: currentYear
+            year: currentYear,
           })
           .first();
 
         if (!balance || Number(balance.available) < days) {
           if (req.file) fs.unlinkSync(req.file.path);
-          return res.status(400).json({ message: 'Insufficient leave balance' });
+          return res
+            .status(400)
+            .json({ message: "Insufficient leave balance" });
         }
       }
 
@@ -551,9 +593,9 @@ const applyLeave = async (req, res) => {
       // CREATE LEAVE APPLICATION
       // ===============================
       // Generate application ID (APP001 format)
-      const lastApplication = await knex('leave_applications')
+      const lastApplication = await knex("leave_applications")
         .where({ company_id: companyId })
-        .orderBy('id', 'desc')
+        .orderBy("id", "desc")
         .first();
 
       let nextNumber = 1;
@@ -564,16 +606,16 @@ const applyLeave = async (req, res) => {
         }
       }
 
-      const application_id = `APP${nextNumber.toString().padStart(3, '0')}`;
+      const application_id = `APP${nextNumber.toString().padStart(3, "0")}`;
 
       // ensure leaveType is available for notification later
       if (!leaveType) {
-        leaveType = await knex('leave_types')
+        leaveType = await knex("leave_types")
           .where({ id: leave_type_id })
           .first();
       }
 
-      const [newId] = await knex('leave_applications').insert({
+      const [newId] = await knex("leave_applications").insert({
         company_id: companyId,
         application_id,
         employee_id: employeeId,
@@ -586,10 +628,10 @@ const applyLeave = async (req, res) => {
         half_day_session: halfDaySession,
         reason,
         attachment_path: attachmentPath,
-        status: 'pending'
+        status: "pending",
       });
 
-      const newApplication = await knex('leave_applications')
+      const newApplication = await knex("leave_applications")
         .where({ id: newId })
         .first();
 
@@ -599,110 +641,110 @@ const applyLeave = async (req, res) => {
       // ===============================
       const recipientSet = new Set();
 
-      console.log('================ APPLY LEAVE EMAIL DEBUG ================');
-      console.log('Applicant ID:', employee.id);
-      console.log('Applicant Role (token):', userRole);
-      console.log('Applicant Department:', employee.department_id);
-      console.log('Applicant Designation:', employee.designation_id);
+      console.log("================ APPLY LEAVE EMAIL DEBUG ================");
+      console.log("Applicant ID:", employee.id);
+      console.log("Applicant Role (token):", userRole);
+      console.log("Applicant Department:", employee.department_id);
+      console.log("Applicant Designation:", employee.designation_id);
 
       // Get Manager Designation
-      const managerDesignation = await knex('designations')
-        .whereRaw('LOWER(name) = ?', ['manager'])
+      const managerDesignation = await knex("designations")
+        .whereRaw("LOWER(name) = ?", ["manager"])
         .andWhere({ company_id: companyId })
         .first();
 
       // Get HR Department (if any)
-      const hrDepartment = await knex('departments')
-        .whereRaw('LOWER(name) = ?', ['hr'])
+      const hrDepartment = await knex("departments")
+        .whereRaw("LOWER(name) = ?", ["hr"])
         .andWhere({ company_id: companyId })
         .first();
 
-      console.log('Manager Designation:', managerDesignation);
-      console.log('HR Department:', hrDepartment);
+      console.log("Manager Designation:", managerDesignation);
+      console.log("HR Department:", hrDepartment);
 
       // Helper: fetch all HR emails for company (may be multiple)
       const fetchCompanyHrEmails = async () => {
-        const hrs = await knex('employees')
-          .whereRaw("TRIM(LOWER(role)) = ?", ['hr'])
-          .andWhere({ company_id: companyId, status: 'Active' })
-          .select('email');
-        return hrs.map(h => h.email).filter(Boolean);
+        const hrs = await knex("employees")
+          .whereRaw("TRIM(LOWER(role)) = ?", ["hr"])
+          .andWhere({ company_id: companyId, status: "Active" })
+          .select("email");
+        return hrs.map((h) => h.email).filter(Boolean);
       };
 
       // Helper: fetch all admin emails for company
       const fetchAdminEmails = async () => {
-        const admins = await knex('employees')
-          .whereRaw("TRIM(LOWER(role)) = ?", ['admin'])
-          .andWhere({ company_id: companyId, status: 'Active' })
-          .select('email');
-        return admins.map(a => a.email).filter(Boolean);
+        const admins = await knex("employees")
+          .whereRaw("TRIM(LOWER(role)) = ?", ["admin"])
+          .andWhere({ company_id: companyId, status: "Active" })
+          .select("email");
+        return admins.map((a) => a.email).filter(Boolean);
       };
 
       // 1️⃣ EMPLOYEE → Dept Manager + HR (if present) + Admins (if HR present)
-      if (resolveWorkflowRole(req.user) === 'employee') {
+      if (resolveWorkflowRole(req.user) === "employee") {
         if (managerDesignation && employee.department_id) {
-          const deptManager = await knex('employees')
+          const deptManager = await knex("employees")
             .where({
               company_id: companyId,
               department_id: employee.department_id,
               designation_id: managerDesignation.id,
-              status: 'Active'
+              status: "Active",
             })
-            .select('email')
+            .select("email")
             .first();
 
           if (deptManager?.email) recipientSet.add(deptManager.email);
         }
 
         const hrEmails = await fetchCompanyHrEmails();
-        hrEmails.forEach(e => recipientSet.add(e));
+        hrEmails.forEach((e) => recipientSet.add(e));
 
         if (hrEmails.length > 0) {
           const adminEmails = await fetchAdminEmails();
-          adminEmails.forEach(e => recipientSet.add(e));
+          adminEmails.forEach((e) => recipientSet.add(e));
         }
       }
 
       // 2️⃣ MANAGER → HR (+ admins if HR exists)
-      else if (resolveWorkflowRole(req.user) === 'manager') {
+      else if (resolveWorkflowRole(req.user) === "manager") {
         const hrEmails = await fetchCompanyHrEmails();
-        hrEmails.forEach(e => recipientSet.add(e));
+        hrEmails.forEach((e) => recipientSet.add(e));
 
         if (hrEmails.length > 0) {
           const adminEmails = await fetchAdminEmails();
-          adminEmails.forEach(e => recipientSet.add(e));
+          adminEmails.forEach((e) => recipientSet.add(e));
         }
       }
 
       // 3️⃣ HR → ADMIN (keep existing behavior but allow multiple admins)
-      else if (resolveWorkflowRole(req.user) === 'hr') {
+      else if (resolveWorkflowRole(req.user) === "hr") {
         const adminEmails = await fetchAdminEmails();
-        adminEmails.forEach(e => recipientSet.add(e));
+        adminEmails.forEach((e) => recipientSet.add(e));
       }
 
       // 4️⃣ ADMIN → HR (+ include admins too so they get a copy)
-      else if (resolveWorkflowRole(req.user) === 'admin') {
+      else if (resolveWorkflowRole(req.user) === "admin") {
         const hrEmails = await fetchCompanyHrEmails();
-        hrEmails.forEach(e => recipientSet.add(e));
+        hrEmails.forEach((e) => recipientSet.add(e));
 
         // include admins as well so admin group receives notification
         const adminEmails = await fetchAdminEmails();
-        adminEmails.forEach(e => recipientSet.add(e));
+        adminEmails.forEach((e) => recipientSet.add(e));
       }
 
       const rebuiltRecipients = [];
       const workflowRole = resolveWorkflowRole(req.user);
 
-      if (workflowRole === 'employee') {
+      if (workflowRole === "employee") {
         if (managerDesignation && employee.department_id) {
-          const deptManager = await knex('employees')
+          const deptManager = await knex("employees")
             .where({
               company_id: companyId,
               department_id: employee.department_id,
               designation_id: managerDesignation.id,
-              status: 'Active'
+              status: "Active",
             })
-            .select('email')
+            .select("email")
             .first();
 
           if (deptManager?.email) rebuiltRecipients.push(deptManager.email);
@@ -710,11 +752,11 @@ const applyLeave = async (req, res) => {
 
         const [adminEmails, ceoEmails] = await Promise.all([
           fetchAdminEmails(),
-          knex('employees')
-            .whereRaw("TRIM(LOWER(role)) = ?", ['ceo'])
-            .andWhere({ company_id: companyId, status: 'Active' })
-            .select('email')
-            .then(rows => rows.map((row) => row.email).filter(Boolean))
+          knex("employees")
+            .whereRaw("TRIM(LOWER(role)) = ?", ["ceo"])
+            .andWhere({ company_id: companyId, status: "Active" })
+            .select("email")
+            .then((rows) => rows.map((row) => row.email).filter(Boolean)),
         ]);
 
         [...adminEmails, ...ceoEmails].forEach((email) => {
@@ -722,11 +764,11 @@ const applyLeave = async (req, res) => {
             rebuiltRecipients.push(email);
           }
         });
-      } else if (['manager', 'hr', 'admin', 'ceo'].includes(workflowRole)) {
-        const ceoEmails = await knex('employees')
-          .whereRaw("TRIM(LOWER(role)) = ?", ['ceo'])
-          .andWhere({ company_id: companyId, status: 'Active' })
-          .select('email');
+      } else if (["manager", "hr", "admin", "ceo"].includes(workflowRole)) {
+        const ceoEmails = await knex("employees")
+          .whereRaw("TRIM(LOWER(role)) = ?", ["ceo"])
+          .andWhere({ company_id: companyId, status: "Active" })
+          .select("email");
 
         ceoEmails
           .map((row) => row.email)
@@ -755,13 +797,13 @@ const applyLeave = async (req, res) => {
       // FALLBACK
       let toEmails = Array.from(recipientSet);
       if (toEmails.length === 0) {
-        const fallback = process.env.DEFAULT_HR_EMAIL || 'hr@company.com';
-        console.log('⚠️ Using FALLBACK EMAIL:', fallback);
+        const fallback = process.env.DEFAULT_HR_EMAIL || "hr@company.com";
+        console.log("⚠️ Using FALLBACK EMAIL:", fallback);
         toEmails = [fallback];
       }
 
-      console.log('📧 FINAL Leave notification recipients:', toEmails);
-      console.log('=========================================================');
+      console.log("📧 FINAL Leave notification recipients:", toEmails);
+      console.log("=========================================================");
 
       // SEND EMAIL
       await sendLeaveNotification(
@@ -769,9 +811,9 @@ const applyLeave = async (req, res) => {
         newApplication,
         {
           employee_name: employeeName,
-          employee_email: employee.email
+          employee_email: employee.email,
         },
-        leaveType
+        leaveType,
       );
 
       // ===============================
@@ -779,67 +821,63 @@ const applyLeave = async (req, res) => {
       // ===============================
       res.status(201).json({
         success: true,
-        message: 'Leave application submitted successfully!',
+        message: "Leave application submitted successfully!",
         application: {
           ...newApplication,
           attachment_url: attachmentPath
             ? `${process.env.BASE_URL}${attachmentPath}`
-            : null
-        }
+            : null,
+        },
       });
-
     } catch (error) {
       if (req.file) fs.unlinkSync(req.file.path);
-      console.error('Apply leave error:', error);
-      res.status(500).json({ message: 'Server error' });
+      console.error("Apply leave error:", error);
+      res.status(500).json({ message: "Server error" });
     }
   });
 };
 
-
-
 const getLeaveApplications = async (req, res) => {
   const companyId = req.user.company_id;
   if (!companyId) {
-    return res.status(400).json({ message: 'You are not assigned to any company' });
+    return res
+      .status(400)
+      .json({ message: "You are not assigned to any company" });
   }
 
   try {
-    let query = knex('leave_applications')
+    let query = knex("leave_applications")
       .leftJoin(
-        'employees as approver',
-        'leave_applications.approved_by',
-        'approver.id'
+        "employees as approver",
+        "leave_applications.approved_by",
+        "approver.id",
       )
-      .where('leave_applications.company_id', companyId)
+      .where("leave_applications.company_id", companyId)
       .select(
-        'leave_applications.*',
-        'approver.first_name as approved_by_first_name',
-        'approver.last_name as approved_by_last_name'
+        "leave_applications.*",
+        "approver.first_name as approved_by_first_name",
+        "approver.last_name as approved_by_last_name",
       )
-      .orderBy('leave_applications.created_at', 'desc');
+      .orderBy("leave_applications.created_at", "desc");
 
-    if (hasAnyRole(req.user, ['employee']) && !hasAnyRole(req.user, ['manager', 'hr', 'admin', 'ceo', 'superadmin'])) {
-      query = query.where(
-        'leave_applications.employee_id',
-        req.user.id
-      );
-    } 
-    else if (hasAnyRole(req.user, ['manager'])) {
-      query = query.where(builder => {
+    if (
+      hasAnyRole(req.user, ["employee"]) &&
+      !hasAnyRole(req.user, ["manager", "hr", "admin", "ceo", "superadmin"])
+    ) {
+      query = query.where("leave_applications.employee_id", req.user.id);
+    } else if (hasAnyRole(req.user, ["manager"])) {
+      query = query.where((builder) => {
         builder
-          .where('leave_applications.employee_id', req.user.id)
+          .where("leave_applications.employee_id", req.user.id)
           .orWhereExists(function () {
             this.select(1)
-              .from('employees as team')
-              .where('team.company_id', companyId)
-              .whereRaw(
-                'manager_name = CONCAT(?, " ", COALESCE(?, ""))',
-                [req.user.first_name || '', req.user.last_name || '']
-              )
-              .whereRaw(
-                'team.id = leave_applications.employee_id'
-              );
+              .from("employees as team")
+              .where("team.company_id", companyId)
+              .whereRaw('manager_name = CONCAT(?, " ", COALESCE(?, ""))', [
+                req.user.first_name || "",
+                req.user.last_name || "",
+              ])
+              .whereRaw("team.id = leave_applications.employee_id");
           });
       });
     }
@@ -847,105 +885,115 @@ const getLeaveApplications = async (req, res) => {
 
     const applications = await query;
 
-    const enriched = applications.map(app => ({
+    const enriched = applications.map((app) => ({
       ...app,
       approved_by_name: app.approved_by_first_name
-        ? `${app.approved_by_first_name} ${app.approved_by_last_name || ''}`.trim()
+        ? `${app.approved_by_first_name} ${app.approved_by_last_name || ""}`.trim()
         : null,
-      attachment_url: app.attachment_path || null
+      attachment_url: app.attachment_path || null,
     }));
 
     res.json({
       success: true,
       count: enriched.length,
-      applications: enriched
+      applications: enriched,
     });
-
   } catch (error) {
-    console.error('Get leave applications error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Get leave applications error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
-
 
 // Approve/Reject Leave (HR/Admin only - company scoped)
 const updateLeaveStatus = async (req, res) => {
   const companyId = req.user.company_id;
 
   if (!companyId) {
-    return res.status(400).json({ message: 'You are not assigned to any company' });
+    return res
+      .status(400)
+      .json({ message: "You are not assigned to any company" });
   }
 
   const { id } = req.params;
   const { status, remarks } = req.body;
 
-  if (!['approved', 'rejected'].includes(status)) {
-    return res.status(400).json({ message: 'Invalid status' });
+  if (!["approved", "rejected"].includes(status)) {
+    return res.status(400).json({ message: "Invalid status" });
   }
 
   try {
     // ===============================
     // GET LEAVE APPLICATION
     // ===============================
-    const application = await knex('leave_applications')
+    const application = await knex("leave_applications")
       .where({ id, company_id: companyId })
       .first();
 
-    if (!application) return res.status(404).json({ message: 'Application not found' });
-    if (application.status !== 'pending') return res.status(400).json({ message: 'Application already processed' });
+    if (!application)
+      return res.status(404).json({ message: "Application not found" });
+    if (application.status !== "pending")
+      return res.status(400).json({ message: "Application already processed" });
 
     // ===============================
     // GET APPLICANT EMPLOYEE
     // ===============================
-    const applicant = await knex('employees')
+    const applicant = await knex("employees")
       .where({ id: application.employee_id, company_id: companyId })
-      .select('id', 'first_name', 'last_name', 'email', 'department_id')
+      .select("id", "first_name", "last_name", "email", "department_id")
       .first();
 
-    if (!applicant) return res.status(404).json({ message: 'Employee not found' });
+    if (!applicant)
+      return res.status(404).json({ message: "Employee not found" });
 
     // ===============================
     // AUTHORIZATION CHECK
     // ===============================
     let isAuthorized = false;
-    if (hasAnyRole(req.user, ['hr', 'admin', 'ceo', 'superadmin'])) isAuthorized = true;
-    if (!isAuthorized && hasAnyRole(req.user, ['manager']) && applicant.department_id) {
-      const manager = await knex('employees')
+    if (hasAnyRole(req.user, ["hr", "admin", "ceo", "superadmin"]))
+      isAuthorized = true;
+    if (
+      !isAuthorized &&
+      hasAnyRole(req.user, ["manager"]) &&
+      applicant.department_id
+    ) {
+      const manager = await knex("employees")
         .where({
           id: req.user.id,
           company_id: companyId,
           department_id: applicant.department_id,
-          role: 'manager'
+          role: "manager",
         })
         .first();
       if (manager) isAuthorized = true;
     }
-    if (!isAuthorized) return res.status(403).json({ message: 'Not authorized' });
+    if (!isAuthorized)
+      return res.status(403).json({ message: "Not authorized" });
 
     // ===============================
     // UPDATE LEAVE BALANCE (IF APPROVED) - skip for unpaid leave (LOP)
     // ===============================
-    if (status === 'approved') {
+    if (status === "approved") {
       const applicationYear =
         new Date(application.from_date).getFullYear() ||
         new Date().getFullYear();
 
       // fetch leave type to determine if it's paid
-      const applicationLeaveType = await knex('leave_types')
+      const applicationLeaveType = await knex("leave_types")
         .where({ id: application.leave_type_id, company_id: companyId })
         .first();
 
       // If leave type is paid, update balances as before
       if (applicationLeaveType && applicationLeaveType.is_paid) {
-        const balance = await knex('leave_balances')
+        const balance = await knex("leave_balances")
           .where({
             employee_id: application.employee_id,
             leave_type_id: application.leave_type_id,
-            year: applicationYear
+            year: applicationYear,
           })
           .first();
 
-        if (!balance) return res.status(400).json({ message: 'Leave balance not found' });
+        if (!balance)
+          return res.status(400).json({ message: "Leave balance not found" });
 
         // Ensure numeric values to prevent NaN
         const total = Number(balance.total ?? balance.opening_balance) || 0;
@@ -957,19 +1005,17 @@ const updateLeaveStatus = async (req, res) => {
 
         if (newAvailable < 0) {
           return res.status(400).json({
-            message: 'Insufficient leave balance',
+            message: "Insufficient leave balance",
             leave_type_id: application.leave_type_id,
             requested_days: applicationDays,
-            available_days: total - availed
+            available_days: total - availed,
           });
         }
 
-        await knex('leave_balances')
-          .where({ id: balance.id })
-          .update({
-            availed: newAvailed,
-            available: newAvailable
-          });
+        await knex("leave_balances").where({ id: balance.id }).update({
+          availed: newAvailed,
+          available: newAvailable,
+        });
       } else {
         // unpaid leave (loss of pay) — do not touch leave balances
       }
@@ -980,53 +1026,56 @@ const updateLeaveStatus = async (req, res) => {
     // ===============================
     const approverEmployeeId = await resolveApproverEmployeeId(req, companyId);
 
-    await knex('leave_applications')
+    await knex("leave_applications")
       .where({ id })
       .update({
         status,
         approved_by: approverEmployeeId,
         approved_at: knex.fn.now(),
-        remarks: remarks || null
+        remarks: remarks || null,
       });
 
     // ===============================
     // SEND EMAIL TO EMPLOYEE
     // ===============================
-    const employeeFullName = `${applicant.first_name} ${applicant.last_name || ''}`.trim();
-    await sendLeaveStatusNotification(application, { employee_name: employeeFullName, employee_email: applicant.email }, status);
+    const employeeFullName =
+      `${applicant.first_name} ${applicant.last_name || ""}`.trim();
+    await sendLeaveStatusNotification(
+      application,
+      { employee_name: employeeFullName, employee_email: applicant.email },
+      status,
+    );
 
     res.json({ success: true, message: `Leave ${status} successfully!` });
-
   } catch (error) {
-    console.error('Update leave status error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Update leave status error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
-
 
 // Get Leave Types (company scoped)
 const getLeaveTypes = async (req, res) => {
   const companyId = req.user.company_id;
   if (!companyId) {
-    return res.status(400).json({ message: 'You are not assigned to any company' });
+    return res
+      .status(400)
+      .json({ message: "You are not assigned to any company" });
   }
 
   try {
-    const types = await knex('leave_types')
-      .where({ company_id: companyId, status: 'active' })
-      .orderBy('name');
+    const types = await knex("leave_types")
+      .where({ company_id: companyId, status: "active" })
+      .orderBy("name");
 
     res.json({
       success: true,
-      leaveTypes: types
+      leaveTypes: types,
     });
   } catch (error) {
-    console.error('Get leave types error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Get leave types error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
-
-
 
 // const getLeaveBalance = async (req, res) => {
 //   const companyId = req.user.company_id;
@@ -1098,8 +1147,6 @@ const getLeaveTypes = async (req, res) => {
 //     res.status(500).json({ message: 'Server error' });
 //   }
 // };
-
-
 
 // const getLeaveBalance = async (req, res) => {
 //   try {
@@ -1177,9 +1224,6 @@ const getLeaveTypes = async (req, res) => {
 //   }
 // };
 
-
-
-
 const getLeaveBalance = async (req, res) => {
   try {
     const { id, company_id } = req.user;
@@ -1187,33 +1231,41 @@ const getLeaveBalance = async (req, res) => {
 
     await reconcileMissingLeaveBalances({ companyId: company_id, year });
 
-    let query = knex('leave_balances as lb')
-      .join('leave_types as lt', 'lb.leave_type_id', 'lt.id')
-      .join('employees as emp', 'lb.employee_id', 'emp.id')
+    let query = knex("leave_balances as lb")
+      .join("leave_types as lt", "lb.leave_type_id", "lt.id")
+      .join("employees as emp", "lb.employee_id", "emp.id")
       .select(
-        'lb.id',
-        'lb.employee_id',
-        'emp.first_name',
-        'emp.last_name',
-        'emp.department_id',
-        'lb.company_id',
-        'lb.leave_type_id',
-        'lb.opening_balance',
-        'lb.availed',
-        'lb.available',
-        'lb.year',
-        'lt.name as leave_type_name'
+        "lb.id",
+        "lb.employee_id",
+        "emp.first_name",
+        "emp.last_name",
+        "emp.department_id",
+        "lb.company_id",
+        "lb.leave_type_id",
+        "lb.opening_balance",
+        "lb.availed",
+        "lb.available",
+        "lb.year",
+        "lt.name as leave_type_name",
       )
-      .where('lb.company_id', company_id)
-      .andWhere('lb.year', year)
-      
+      .where("lb.company_id", company_id)
+      .andWhere("lb.year", year);
 
     // ===============================
     // ROLE BASED ACCESS
     // ===============================
 
-    if (!hasAnyRole(req.user, ['admin', 'hr', 'manager', 'finance', 'ceo', 'superadmin'])) {
-      query.andWhere('lb.employee_id', id);
+    if (
+      !hasAnyRole(req.user, [
+        "admin",
+        "hr",
+        "manager",
+        "finance",
+        "ceo",
+        "superadmin",
+      ])
+    ) {
+      query.andWhere("lb.employee_id", id);
     }
 
     const rows = await query;
@@ -1221,31 +1273,27 @@ const getLeaveBalance = async (req, res) => {
     const result = {
       company_id,
       year,
-      balances: rows.map(r => ({
+      balances: rows.map((r) => ({
         employee_id: r.employee_id,
-        employee_name: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
+        employee_name: `${r.first_name || ""} ${r.last_name || ""}`.trim(),
         department_id: r.department_id,
         leave_type_id: r.leave_type_id,
         leave_type_name: r.leave_type_name,
         opening_balance: r.opening_balance,
         availed: r.availed,
-        available: r.available
-      }))
+        available: r.available,
+      })),
     };
 
     res.json({
       success: true,
-      data: result
+      data: result,
     });
-
   } catch (error) {
-    console.error('Get leave balances error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Get leave balances error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
-
-
-
 
 const calculateLeaveForConfirmedEmployee = async (employeeId, companyId) => {
   try {
@@ -1255,15 +1303,17 @@ const calculateLeaveForConfirmedEmployee = async (employeeId, companyId) => {
     }
     return {
       success: true,
-      message: result.inserted > 0 ? 'Leave calculated successfully for confirmed employee' : 'No new leave balances created',
-      inserted: result.inserted
+      message:
+        result.inserted > 0
+          ? "Leave calculated successfully for confirmed employee"
+          : "No new leave balances created",
+      inserted: result.inserted,
     };
   } catch (error) {
-    console.error('Error calculating leave for confirmed employee:', error);
-    return { success: false, message: 'Server error' };
+    console.error("Error calculating leave for confirmed employee:", error);
+    return { success: false, message: "Server error" };
   }
 };
-
 
 // const getRelevantUsers = async (req, res) => {
 //   try {
@@ -1334,36 +1384,38 @@ const calculateLeaveForConfirmedEmployee = async (employeeId, companyId) => {
 const getRelevantUsers = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userRole = (req.user.role || '').toLowerCase(); // employee role (HR, Manager, Sales, etc.)
+    const userRole = (req.user.role || "").toLowerCase(); // employee role (HR, Manager, Sales, etc.)
     const workflowRole = resolveWorkflowRole(req.user);
     const companyId = req.user.company_id;
 
     if (!companyId) {
-      return res.status(400).json({ message: 'You are not assigned to any company' });
+      return res
+        .status(400)
+        .json({ message: "You are not assigned to any company" });
     }
 
     const userSelectColumns = [
-      'id',
+      "id",
       knex.raw("CONCAT(first_name, ' ', last_name) AS name"),
-      'department_id',
-      'role'
+      "department_id",
+      "role",
     ];
 
     const getUsersByRole = async (roleName) => {
-      const employeeUsers = await knex('employees')
+      const employeeUsers = await knex("employees")
         .whereRaw("TRIM(LOWER(role)) = ?", [roleName])
         .andWhere({ company_id: companyId })
         .select(...userSelectColumns);
 
-      const appUsers = await knex('users')
+      const appUsers = await knex("users")
         .whereRaw("TRIM(LOWER(role)) = ?", [roleName])
         .andWhere({ company_id: companyId })
         .select(
           knex.raw("CONCAT('user:', id) AS id"),
-          'name',
-          knex.raw('NULL AS department_id'),
-          'role',
-          'email'
+          "name",
+          knex.raw("NULL AS department_id"),
+          "role",
+          "email",
         );
 
       return [...employeeUsers, ...appUsers];
@@ -1372,27 +1424,28 @@ const getRelevantUsers = async (req, res) => {
     let result;
 
     // Employee -> department head + all HR + all Admin
-    if (workflowRole === 'employee') {
-      const employee = await knex('employees')
+    if (workflowRole === "employee") {
+      const employee = await knex("employees")
         .where({ id: userId, company_id: companyId })
         .first();
 
-      if (!employee) return res.status(404).json({ message: 'Employee not found' });
+      if (!employee)
+        return res.status(404).json({ message: "Employee not found" });
 
       // Get department head using current schema (head_name, head_id)
-      const departmentHead = await knex('departments')
+      const departmentHead = await knex("departments")
         .where({ id: employee.department_id, company_id: companyId })
-        .select('head_name', 'head_id')
+        .select("head_name", "head_id")
         .first();
 
       const [hrUsers, adminUsers] = await Promise.all([
-        getUsersByRole('hr'),
-        getUsersByRole('admin')
+        getUsersByRole("hr"),
+        getUsersByRole("admin"),
       ]);
 
       let manager = null;
       if (departmentHead?.head_id) {
-        const headEmployee = await knex('employees')
+        const headEmployee = await knex("employees")
           .where({ id: departmentHead.head_id, company_id: companyId })
           .select(...userSelectColumns)
           .first();
@@ -1407,43 +1460,43 @@ const getRelevantUsers = async (req, res) => {
       result = {
         manager,
         admin: adminUsers,
-        hr: hrUsers
+        hr: hrUsers,
       };
 
-    // Admin/Manager -> only HR list
-    } else if (['admin', 'manager', 'ceo'].includes(workflowRole)) {
-      const hrUsers = await getUsersByRole('hr');
+      // Admin/Manager -> only HR list
+    } else if (["admin", "manager", "ceo"].includes(workflowRole)) {
+      const hrUsers = await getUsersByRole("hr");
       result = { hr: hrUsers };
 
-    // HR -> only Admin list
-    } else if (workflowRole === 'hr') {
-      const adminUsers = await getUsersByRole('admin');
+      // HR -> only Admin list
+    } else if (workflowRole === "hr") {
+      const adminUsers = await getUsersByRole("admin");
       result = { admin: adminUsers };
-
     } else {
-      return res.status(403).json({ message: 'Access denied' });
+      return res.status(403).json({ message: "Access denied" });
     }
 
-    if (workflowRole === 'employee') {
-      const employee = await knex('employees')
+    if (workflowRole === "employee") {
+      const employee = await knex("employees")
         .where({ id: userId, company_id: companyId })
         .first();
 
-      if (!employee) return res.status(404).json({ message: 'Employee not found' });
+      if (!employee)
+        return res.status(404).json({ message: "Employee not found" });
 
-      const departmentHead = await knex('departments')
+      const departmentHead = await knex("departments")
         .where({ id: employee.department_id, company_id: companyId })
-        .select('head_name', 'head_id')
+        .select("head_name", "head_id")
         .first();
 
       const [adminUsers, ceoUsers] = await Promise.all([
-        getUsersByRole('admin'),
-        getUsersByRole('ceo')
+        getUsersByRole("admin"),
+        getUsersByRole("ceo"),
       ]);
 
       let manager = null;
       if (departmentHead?.head_id) {
-        const headEmployee = await knex('employees')
+        const headEmployee = await knex("employees")
           .where({ id: departmentHead.head_id, company_id: companyId })
           .select(...userSelectColumns)
           .first();
@@ -1458,22 +1511,19 @@ const getRelevantUsers = async (req, res) => {
       result = {
         manager,
         admin: adminUsers,
-        ceo: ceoUsers
+        ceo: ceoUsers,
       };
-    } else if (['manager', 'hr', 'admin', 'ceo'].includes(workflowRole)) {
-      const ceoUsers = await getUsersByRole('ceo');
+    } else if (["manager", "hr", "admin", "ceo"].includes(workflowRole)) {
+      const ceoUsers = await getUsersByRole("ceo");
       result = { ceo: ceoUsers };
     }
 
     res.json(result);
-
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: "Server error" });
   }
 };
-
-
 
 module.exports = {
   applyLeave,
@@ -1486,6 +1536,5 @@ module.exports = {
   getRelevantUsers,
   assignLeaveBalancesForEmployee,
   backfillLeaveBalancesForLeaveType,
-  reconcileMissingLeaveBalances
+  reconcileMissingLeaveBalances,
 };
-

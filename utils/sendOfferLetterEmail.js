@@ -1,36 +1,39 @@
-const { transporter } = require('./mailer');
-const handlebars = require('handlebars');
-const fs = require('fs');
-const path = require('path');
+const { transporter } = require("./mailer");
+const handlebars = require("handlebars");
+const fs = require("fs");
+const path = require("path");
 
 const sendOfferLetterEmail = async (offerLetter) => {
   try {
     const templatePath = path.join(
       __dirname,
-      '../templates/offerLetterEmail.hbs'
+      "../templates/offerLetterEmail.hbs",
     );
 
     // If template doesn't exist, send plain text email
     let html;
     if (fs.existsSync(templatePath)) {
-      const templateSource = fs.readFileSync(templatePath, 'utf8');
+      const templateSource = fs.readFileSync(templatePath, "utf8");
       const template = handlebars.compile(templateSource);
-      
+
       html = template({
         candidateName: offerLetter.candidate_name,
         position: offerLetter.position,
         department: offerLetter.department,
         salary: offerLetter.salary,
-        startDate: new Date(offerLetter.start_date).toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        }),
+        startDate: new Date(offerLetter.start_date).toLocaleDateString(
+          "en-US",
+          {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          },
+        ),
         location: offerLetter.location,
         employmentType: offerLetter.employment_type,
-        companyName: 'Your Company', // You might want to get this from company table
+        companyName: "Your Company", // You might want to get this from company table
         offerContent: offerLetter.offer_content,
-        currentYear: new Date().getFullYear()
+        currentYear: new Date().getFullYear(),
       });
     } else {
       // Fallback to plain HTML if template doesn't exist
@@ -47,10 +50,12 @@ const sendOfferLetterEmail = async (offerLetter) => {
               <li><strong>Department:</strong> ${offerLetter.department}</li>
               <li><strong>Location:</strong> ${offerLetter.location}</li>
               <li><strong>Employment Type:</strong> ${offerLetter.employment_type}</li>
-              <li><strong>Date of Joining:</strong> ${new Date(offerLetter.start_date).toLocaleDateString('en-US', {
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
+              <li><strong>Date of Joining:</strong> ${new Date(
+                offerLetter.start_date,
+              ).toLocaleDateString("en-US", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
               })}</li>
               <li><strong>Salary:</strong> ${offerLetter.salary}</li>
             </ul>
@@ -80,27 +85,26 @@ const sendOfferLetterEmail = async (offerLetter) => {
       `;
     }
 
-    console.log('📧 Sending Offer Letter to:', offerLetter.candidate_email);
+    console.log("📧 Sending Offer Letter to:", offerLetter.candidate_email);
 
     const info = await transporter.sendMail({
       from: `"HRMS System" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
       to: offerLetter.candidate_email,
       subject: `Offer Letter - ${offerLetter.position} at Your Company`,
-      html
+      html,
     });
 
-    console.log('✅ Offer letter email sent successfully');
-    console.log('📬 Message ID:', info.messageId);
-    console.log('📬 Accepted:', info.accepted);
+    console.log("✅ Offer letter email sent successfully");
+    console.log("📬 Message ID:", info.messageId);
+    console.log("📬 Accepted:", info.accepted);
 
     return {
       success: true,
       messageId: info.messageId,
-      accepted: info.accepted
+      accepted: info.accepted,
     };
-
   } catch (error) {
-    console.error('❌ Offer letter email error:', error);
+    console.error("❌ Offer letter email error:", error);
     throw error;
   }
 };

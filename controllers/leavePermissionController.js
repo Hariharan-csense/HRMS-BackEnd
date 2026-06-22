@@ -606,10 +606,13 @@ const applyLeavePermission = async (req, res) => {
       const parsedPermissionDate = parsePermissionDate(permission_date);
       if (!parsedPermissionDate) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: "Please provide a valid permission date" });
+        return res
+          .status(400)
+          .json({ message: "Please provide a valid permission date" });
       }
 
-      const permissionDateWindowError = assertPermissionDateWithinWindow(parsedPermissionDate);
+      const permissionDateWindowError =
+        assertPermissionDateWithinWindow(parsedPermissionDate);
       if (permissionDateWindowError) {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(400).json({ message: permissionDateWindowError });

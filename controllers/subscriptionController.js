@@ -1,69 +1,81 @@
-const db = require('../db/db');
-const moment = require('moment');
-const Razorpay = require('razorpay');
-const crypto = require('crypto');
+const db = require("../db/db");
+const moment = require("moment");
+const Razorpay = require("razorpay");
+const crypto = require("crypto");
 const {
   getAddonModuleAliases,
   normalizeModuleKey: normalizeAddonModuleKey,
-} = require('../utils/subscriptionAddons');
+} = require("../utils/subscriptionAddons");
 
 const getBillingDuration = (billingCycle) => {
-  const cycle = String(billingCycle || '').toLowerCase();
-  if (['yearly', 'annual', 'year'].includes(cycle)) return { count: 1, unit: 'year' };
-  return { count: 1, unit: 'month' };
+  const cycle = String(billingCycle || "").toLowerCase();
+  if (["yearly", "annual", "year"].includes(cycle))
+    return { count: 1, unit: "year" };
+  return { count: 1, unit: "month" };
 };
 
 const normalizeBillingCycle = (billingCycle) => {
-  const cycle = String(billingCycle || '').toLowerCase();
-  if (['yearly', 'annual', 'year'].includes(cycle)) return 'yearly';
-  return 'monthly';
+  const cycle = String(billingCycle || "").toLowerCase();
+  if (["yearly", "annual", "year"].includes(cycle)) return "yearly";
+  return "monthly";
 };
 
 const roundMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
 
 const getPlanSchemaInfo = async () => {
   try {
-    return await db('subscription_plans').columnInfo();
+    return await db("subscription_plans").columnInfo();
   } catch (error) {
-    console.log('Could not inspect subscription_plans schema:', error.message);
+    console.log("Could not inspect subscription_plans schema:", error.message);
     return {};
   }
 };
 
-const getPlanMonthlyPriceField = (columns = {}) => (columns.monthly_price ? 'monthly_price' : 'price');
-const getPlanYearlyPriceField = (columns = {}) => (columns.yearly_price ? 'yearly_price' : null);
-const getPlanStorageField = (columns = {}) => (columns.storage_gb ? 'storage_gb' : null);
-const getPlanMaxUsersField = (columns = {}) => (columns.max_users ? 'max_users' : null);
+const getPlanMonthlyPriceField = (columns = {}) =>
+  columns.monthly_price ? "monthly_price" : "price";
+const getPlanYearlyPriceField = (columns = {}) =>
+  columns.yearly_price ? "yearly_price" : null;
+const getPlanStorageField = (columns = {}) =>
+  columns.storage_gb ? "storage_gb" : null;
+const getPlanMaxUsersField = (columns = {}) =>
+  columns.max_users ? "max_users" : null;
 
 const isFreePlanName = (planName) => {
-  const normalized = String(planName || '')
+  const normalized = String(planName || "")
     .toLowerCase()
-    .replace(/[\s_-]+/g, '');
+    .replace(/[\s_-]+/g, "");
   if (!normalized) return false;
-  if (normalized.includes('freeplan') || normalized.includes('freepackage')) return true;
-  return normalized.includes('free') && !normalized.includes('trial');
+  if (normalized.includes("freeplan") || normalized.includes("freepackage"))
+    return true;
+  return normalized.includes("free") && !normalized.includes("trial");
 };
 
-const resolvePlanPricingFields = (planName, { price, yearly_price, trial_days } = {}) => {
+const resolvePlanPricingFields = (
+  planName,
+  { price, yearly_price, trial_days } = {},
+) => {
   if (isFreePlanName(planName)) {
     return { price: 0, yearly_price: 0, trial_days: 0 };
   }
 
   return {
-    price: price === undefined || price === null || price === '' ? undefined : Number(price),
+    price:
+      price === undefined || price === null || price === ""
+        ? undefined
+        : Number(price),
     yearly_price:
-      yearly_price === undefined || yearly_price === null || yearly_price === ''
+      yearly_price === undefined || yearly_price === null || yearly_price === ""
         ? undefined
         : Number(yearly_price),
     trial_days:
-      trial_days === undefined || trial_days === null || trial_days === ''
+      trial_days === undefined || trial_days === null || trial_days === ""
         ? undefined
         : Number(trial_days),
   };
 };
 
 const parseOptionalNumber = (value) => {
-  if (value === undefined || value === null || value === '') return undefined;
+  if (value === undefined || value === null || value === "") return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 };
@@ -79,12 +91,13 @@ const resolveSelectedUsers = (usersCount) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 };
 
-const getTierPrice = (record, usersCount, billingCycle = 'monthly') => {
+const getTierPrice = (record, usersCount, billingCycle = "monthly") => {
   if (!record) return 0;
   const normalizedCycle = normalizeBillingCycle(billingCycle);
-  const resolvedPrice = normalizedCycle === 'yearly'
-    ? (record.yearly_price ?? record.yearlyPrice)
-    : (record.monthly_price ?? record.price);
+  const resolvedPrice =
+    normalizedCycle === "yearly"
+      ? (record.yearly_price ?? record.yearlyPrice)
+      : (record.monthly_price ?? record.price);
   return Number(resolvedPrice || 0);
 };
 
@@ -94,26 +107,34 @@ const getEndDateForPlan = (startDate, billingCycle) => {
 };
 
 const normalizeModuleKey = (value) =>
-  String(value || '')
+  String(value || "")
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 
 const inferAddonModuleKey = (addon = {}) => {
-  const text = `${addon.module_key || ''} ${addon.name || ''} ${addon.description || ''}`.toLowerCase();
+  const text =
+    `${addon.module_key || ""} ${addon.name || ""} ${addon.description || ""}`.toLowerCase();
   if (
-    (text.includes('live') && text.includes('tracking')) ||
-    text.includes('tracking_management') ||
-    text.includes('tracking management')
-  ) return 'live_tracking';
-  if (text.includes('client') && text.includes('attendance')) return 'client_attendance';
-  if (text.includes('expense')) return 'expenses';
-  if (text.includes('ticket')) return 'tickets';
-  if (text.includes('asset')) return 'assets';
-  if (text.includes('payroll')) return 'payroll';
-  if (text.includes('rms') || text.includes('recruitment') || text.includes('hr management')) return 'hr_management';
-  if (text.includes('exit') || text.includes('offboarding')) return 'exit';
+    (text.includes("live") && text.includes("tracking")) ||
+    text.includes("tracking_management") ||
+    text.includes("tracking management")
+  )
+    return "live_tracking";
+  if (text.includes("client") && text.includes("attendance"))
+    return "client_attendance";
+  if (text.includes("expense")) return "expenses";
+  if (text.includes("ticket")) return "tickets";
+  if (text.includes("asset")) return "assets";
+  if (text.includes("payroll")) return "payroll";
+  if (
+    text.includes("rms") ||
+    text.includes("recruitment") ||
+    text.includes("hr management")
+  )
+    return "hr_management";
+  if (text.includes("exit") || text.includes("offboarding")) return "exit";
   return normalizeModuleKey(addon.module_key || addon.name);
 };
 
@@ -121,44 +142,57 @@ const getAddonPriceForUsers = (addon, usersCount) => {
   const count = Number(usersCount || 0);
   if (count <= 5) return Number(addon.price_upto25 || 0);
   if (count <= 10) return Number(addon.price_upto50 || addon.price_upto25 || 0);
-  return Number(addon.price_above50 || addon.price_upto50 || addon.price_upto25 || 0);
+  return Number(
+    addon.price_above50 || addon.price_upto50 || addon.price_upto25 || 0,
+  );
 };
 
 const getSubscriptionAddons = async (subscriptionId, trx = db) => {
   if (!subscriptionId) return [];
 
-  const hasCompanyAddons = await trx.schema.hasTable('company_subscription_addons');
-  const hasAddons = await trx.schema.hasTable('subscription_addons');
+  const hasCompanyAddons = await trx.schema.hasTable(
+    "company_subscription_addons",
+  );
+  const hasAddons = await trx.schema.hasTable("subscription_addons");
   if (!hasCompanyAddons || !hasAddons) return [];
 
-  const addonColumns = await trx('subscription_addons').columnInfo();
+  const addonColumns = await trx("subscription_addons").columnInfo();
   const moduleKeySelect = addonColumns.module_key
-    ? 'subscription_addons.module_key'
-    : trx.raw('NULL as module_key');
+    ? "subscription_addons.module_key"
+    : trx.raw("NULL as module_key");
 
-  const rows = await trx('company_subscription_addons')
-    .join('subscription_addons', 'company_subscription_addons.addon_id', 'subscription_addons.id')
-    .where('company_subscription_addons.subscription_id', subscriptionId)
-    .where('subscription_addons.is_active', true)
-    .select(
-      'company_subscription_addons.id',
-      'company_subscription_addons.addon_id',
-      'company_subscription_addons.users_count',
-      'company_subscription_addons.billing_cycle',
-      'company_subscription_addons.price_per_user',
-      'company_subscription_addons.total_price',
-      'subscription_addons.name',
-      'subscription_addons.description',
-      moduleKeySelect
+  const rows = await trx("company_subscription_addons")
+    .join(
+      "subscription_addons",
+      "company_subscription_addons.addon_id",
+      "subscription_addons.id",
     )
-    .orderBy('subscription_addons.name', 'asc');
+    .where("company_subscription_addons.subscription_id", subscriptionId)
+    .where("subscription_addons.is_active", true)
+    .select(
+      "company_subscription_addons.id",
+      "company_subscription_addons.addon_id",
+      "company_subscription_addons.users_count",
+      "company_subscription_addons.billing_cycle",
+      "company_subscription_addons.price_per_user",
+      "company_subscription_addons.total_price",
+      "subscription_addons.name",
+      "subscription_addons.description",
+      moduleKeySelect,
+    )
+    .orderBy("subscription_addons.name", "asc");
 
   let assignmentRows = [];
-  const hasAssignments = await trx.schema.hasTable('company_addon_user_assignments');
+  const hasAssignments = await trx.schema.hasTable(
+    "company_addon_user_assignments",
+  );
   if (hasAssignments && rows.length > 0) {
-    assignmentRows = await trx('company_addon_user_assignments')
-      .whereIn('subscription_addon_id', rows.map((row) => row.id))
-      .select('subscription_addon_id', 'employee_id');
+    assignmentRows = await trx("company_addon_user_assignments")
+      .whereIn(
+        "subscription_addon_id",
+        rows.map((row) => row.id),
+      )
+      .select("subscription_addon_id", "employee_id");
   }
 
   return rows.map((addon) => ({
@@ -168,32 +202,40 @@ const getSubscriptionAddons = async (subscriptionId, trx = db) => {
     price_per_user: Number(addon.price_per_user || 0),
     total_price: Number(addon.total_price || 0),
     assigned_employee_ids: assignmentRows
-      .filter((assignment) => Number(assignment.subscription_addon_id) === Number(addon.id))
-      .map((assignment) => Number(assignment.employee_id))
+      .filter(
+        (assignment) =>
+          Number(assignment.subscription_addon_id) === Number(addon.id),
+      )
+      .map((assignment) => Number(assignment.employee_id)),
   }));
 };
 
-const razorpay = process.env.RAZORPAY_KEY_ID && 
-                 process.env.RAZORPAY_KEY_SECRET &&
-                 process.env.RAZORPAY_KEY_ID !== 'your_actual_razorpay_key_id_here' &&
-                 process.env.RAZORPAY_KEY_SECRET !== 'your_actual_razorpay_key_secret_here'
-  ? new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET
-    })
-  : null;
+const razorpay =
+  process.env.RAZORPAY_KEY_ID &&
+  process.env.RAZORPAY_KEY_SECRET &&
+  process.env.RAZORPAY_KEY_ID !== "your_actual_razorpay_key_id_here" &&
+  process.env.RAZORPAY_KEY_SECRET !== "your_actual_razorpay_key_secret_here"
+    ? new Razorpay({
+        key_id: process.env.RAZORPAY_KEY_ID,
+        key_secret: process.env.RAZORPAY_KEY_SECRET,
+      })
+    : null;
 
 const computePricing = (plan, usersCount, billingCycle) => {
   const normalizedCycle = normalizeBillingCycle(billingCycle);
   const basePerUser = getTierPrice(plan, usersCount, normalizedCycle);
-  const totalAmount = roundMoney(basePerUser * Number(usersCount || 0) * (normalizedCycle === 'yearly' ? 12 : 1));
+  const totalAmount = roundMoney(
+    basePerUser *
+      Number(usersCount || 0) *
+      (normalizedCycle === "yearly" ? 12 : 1),
+  );
 
   return {
     billing_cycle: normalizedCycle,
     base_per_user: basePerUser,
     per_user_monthly: basePerUser,
     per_user_total: basePerUser,
-    total_amount: totalAmount
+    total_amount: totalAmount,
   };
 };
 
@@ -206,34 +248,40 @@ const getPlans = async (req, res) => {
     const storageField = getPlanStorageField(planColumns);
     const maxUsersField = getPlanMaxUsersField(planColumns);
 
-    let query = db('subscription_plans')
-      .where('is_active', true)
-      .orderBy(monthlyPriceField, 'asc')
+    let query = db("subscription_plans")
+      .where("is_active", true)
+      .orderBy(monthlyPriceField, "asc")
       .select(
-        'id',
-        'name',
-        'description',
+        "id",
+        "name",
+        "description",
         `${monthlyPriceField} as price`,
-        yearlyPriceField ? `${yearlyPriceField} as yearly_price` : db.raw('NULL as yearly_price'),
-        maxUsersField ? `${maxUsersField} as max_users` : db.raw('0 as max_users'),
-        storageField ? `${storageField} as storage_gb` : db.raw('NULL as storage_gb'),
-        'trial_days',
-        'is_active',
-        'created_at',
-        'updated_at'
+        yearlyPriceField
+          ? `${yearlyPriceField} as yearly_price`
+          : db.raw("NULL as yearly_price"),
+        maxUsersField
+          ? `${maxUsersField} as max_users`
+          : db.raw("0 as max_users"),
+        storageField
+          ? `${storageField} as storage_gb`
+          : db.raw("NULL as storage_gb"),
+        "trial_days",
+        "is_active",
+        "created_at",
+        "updated_at",
       );
-    
+
     const plans = await query;
-    
+
     res.json({
       success: true,
-      data: plans
+      data: plans,
     });
   } catch (error) {
-    console.error('Error fetching subscription plans:', error);
+    console.error("Error fetching subscription plans:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch subscription plans'
+      message: "Failed to fetch subscription plans",
     });
   }
 };
@@ -244,39 +292,45 @@ const createUpgradeOrder = async (req, res) => {
     if (!razorpay) {
       return res.status(500).json({
         success: false,
-        message: 'Razorpay is not configured. Please add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to .env file with your actual Razorpay API credentials from https://www.razorpay.com'
+        message:
+          "Razorpay is not configured. Please add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to .env file with your actual Razorpay API credentials from https://www.razorpay.com",
       });
     }
 
     const { plan_id, users_count, billing_cycle } = req.body;
     // Determine company context: prefer req.user.company_id, allow superadmin to specify company_id in body
-    let companyId = req.user && req.user.company_id ? req.user.company_id : null;
-    if (!companyId && req.user && req.user.role === 'superadmin' && req.body.company_id) {
+    let companyId =
+      req.user && req.user.company_id ? req.user.company_id : null;
+    if (
+      !companyId &&
+      req.user &&
+      req.user.role === "superadmin" &&
+      req.body.company_id
+    ) {
       companyId = req.body.company_id;
     }
 
     if (!companyId) {
       return res.status(400).json({
         success: false,
-        message: 'Company context not found. Ensure you are using a company admin account or pass `company_id` in the request body as a superadmin.'
+        message:
+          "Company context not found. Ensure you are using a company admin account or pass `company_id` in the request body as a superadmin.",
       });
     }
 
     if (!plan_id) {
       return res.status(400).json({
         success: false,
-        message: 'plan_id is required'
+        message: "plan_id is required",
       });
     }
 
-    const plan = await db('subscription_plans')
-      .where('id', plan_id)
-      .first();
+    const plan = await db("subscription_plans").where("id", plan_id).first();
 
     if (!plan) {
       return res.status(404).json({
         success: false,
-        message: 'Subscription plan not found'
+        message: "Subscription plan not found",
       });
     }
 
@@ -287,7 +341,7 @@ const createUpgradeOrder = async (req, res) => {
     if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid plan amount'
+        message: "Invalid plan amount",
       });
     }
 
@@ -295,12 +349,12 @@ const createUpgradeOrder = async (req, res) => {
 
     const order = await razorpay.orders.create({
       amount: amountPaise,
-      currency: 'INR',
+      currency: "INR",
       receipt,
       notes: {
         company_id: String(companyId),
-        plan_id: String(plan_id)
-      }
+        plan_id: String(plan_id),
+      },
     });
 
     return res.json({
@@ -309,22 +363,22 @@ const createUpgradeOrder = async (req, res) => {
         order_id: order.id,
         amount: order.amount,
         currency: order.currency,
-          plan: {
-            id: plan.id,
-            name: plan.name,
-            price: Number(plan.monthly_price ?? plan.price ?? 0),
-            billing_cycle: pricing.billing_cycle,
-            display_price: pricing.total_amount,
-            users_count: selectedUsers
-          },
-        key_id: process.env.RAZORPAY_KEY_ID
-      }
+        plan: {
+          id: plan.id,
+          name: plan.name,
+          price: Number(plan.monthly_price ?? plan.price ?? 0),
+          billing_cycle: pricing.billing_cycle,
+          display_price: pricing.total_amount,
+          users_count: selectedUsers,
+        },
+        key_id: process.env.RAZORPAY_KEY_ID,
+      },
     });
   } catch (error) {
-    console.error('Error creating Razorpay upgrade order:', error);
+    console.error("Error creating Razorpay upgrade order:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to create payment order'
+      message: "Failed to create payment order",
     });
   }
 };
@@ -338,13 +392,19 @@ const verifyUpgradePayment = async (req, res) => {
       await trx.rollback();
       return res.status(500).json({
         success: false,
-        message: 'Razorpay is not configured on server'
+        message: "Razorpay is not configured on server",
       });
     }
 
     // Determine company context: prefer req.user.company_id, allow superadmin to specify company_id in body
-    let companyId = req.user && req.user.company_id ? req.user.company_id : null;
-    if (!companyId && req.user && req.user.role === 'superadmin' && req.body.company_id) {
+    let companyId =
+      req.user && req.user.company_id ? req.user.company_id : null;
+    if (
+      !companyId &&
+      req.user &&
+      req.user.role === "superadmin" &&
+      req.body.company_id
+    ) {
       companyId = req.body.company_id;
     }
 
@@ -352,7 +412,8 @@ const verifyUpgradePayment = async (req, res) => {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Company context not found. Ensure you are using a company admin account or pass `company_id` in the request body as a superadmin.'
+        message:
+          "Company context not found. Ensure you are using a company admin account or pass `company_id` in the request body as a superadmin.",
       });
     }
     const {
@@ -361,39 +422,42 @@ const verifyUpgradePayment = async (req, res) => {
       billing_cycle,
       razorpay_order_id,
       razorpay_payment_id,
-      razorpay_signature
+      razorpay_signature,
     } = req.body;
 
-    if (!plan_id || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    if (
+      !plan_id ||
+      !razorpay_order_id ||
+      !razorpay_payment_id ||
+      !razorpay_signature
+    ) {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Missing required payment verification fields'
+        message: "Missing required payment verification fields",
       });
     }
 
     const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest('hex');
+      .digest("hex");
 
     if (expectedSignature !== razorpay_signature) {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Payment verification failed'
+        message: "Payment verification failed",
       });
     }
 
-    const plan = await trx('subscription_plans')
-      .where('id', plan_id)
-      .first();
+    const plan = await trx("subscription_plans").where("id", plan_id).first();
 
     if (!plan) {
       await trx.rollback();
       return res.status(404).json({
         success: false,
-        message: 'Subscription plan not found'
+        message: "Subscription plan not found",
       });
     }
 
@@ -404,20 +468,20 @@ const verifyUpgradePayment = async (req, res) => {
     const startDate = moment().toDate();
     const endDate = getEndDateForPlan(startDate, pricing.billing_cycle);
 
-    const currentSubscription = await trx('company_subscriptions')
-      .where('company_id', companyId)
-      .orderBy('created_at', 'desc')
+    const currentSubscription = await trx("company_subscriptions")
+      .where("company_id", companyId)
+      .orderBy("created_at", "desc")
       .first();
 
     let subscriptionId;
     if (currentSubscription) {
-      await trx('company_subscriptions')
-        .where('id', currentSubscription.id)
+      await trx("company_subscriptions")
+        .where("id", currentSubscription.id)
         .update({
           plan_id: plan_id,
           start_date: startDate,
           end_date: endDate,
-          status: 'active',
+          status: "active",
           max_users: selectedUsers,
           storage_gb: plan.storage_gb || 1,
           billing_cycle: pricing.billing_cycle,
@@ -425,20 +489,20 @@ const verifyUpgradePayment = async (req, res) => {
           last_payment_date: new Date(),
           next_billing_date: endDate,
           payment_details: JSON.stringify({
-            provider: 'razorpay',
+            provider: "razorpay",
             razorpay_order_id,
-            razorpay_payment_id
+            razorpay_payment_id,
           }),
-          updated_at: new Date()
+          updated_at: new Date(),
         });
       subscriptionId = currentSubscription.id;
     } else {
-      const inserted = await trx('company_subscriptions').insert({
+      const inserted = await trx("company_subscriptions").insert({
         company_id: companyId,
         plan_id: plan_id,
         start_date: startDate,
         end_date: endDate,
-        status: 'active',
+        status: "active",
         max_users: selectedUsers,
         storage_gb: plan.storage_gb || 1,
         billing_cycle: pricing.billing_cycle,
@@ -446,44 +510,46 @@ const verifyUpgradePayment = async (req, res) => {
         last_payment_date: new Date(),
         next_billing_date: endDate,
         payment_details: JSON.stringify({
-          provider: 'razorpay',
+          provider: "razorpay",
           razorpay_order_id,
-          razorpay_payment_id
-        })
+          razorpay_payment_id,
+        }),
       });
       subscriptionId = inserted[0];
     }
 
-    await trx('subscription_payments').insert({
+    await trx("subscription_payments").insert({
       company_id: companyId,
       subscription_id: subscriptionId,
       amount: paidAmount,
-      payment_method: 'upi',
+      payment_method: "upi",
       transaction_id: razorpay_payment_id,
       payment_reference: razorpay_order_id,
-      status: 'completed',
+      status: "completed",
       payment_date: new Date(),
-      notes: JSON.stringify({ provider: 'razorpay', razorpay_signature })
+      notes: JSON.stringify({ provider: "razorpay", razorpay_signature }),
     });
 
     await trx.commit();
 
     return res.json({
       success: true,
-      message: 'Payment verified and subscription upgraded successfully',
+      message: "Payment verified and subscription upgraded successfully",
       data: {
         subscription_id: subscriptionId,
         plan_name: plan.name,
         amount_paid: paidAmount,
-        next_billing_date: endDate
-      }
+        next_billing_date: endDate,
+      },
     });
   } catch (error) {
-    console.error('Error verifying upgrade payment:', error);
-    try { await trx.rollback(); } catch (e) {}
+    console.error("Error verifying upgrade payment:", error);
+    try {
+      await trx.rollback();
+    } catch (e) {}
     return res.status(500).json({
       success: false,
-      message: 'Failed to verify payment and upgrade subscription'
+      message: "Failed to verify payment and upgrade subscription",
     });
   }
 };
@@ -497,43 +563,48 @@ const getAllPlans = async (req, res) => {
     const storageField = getPlanStorageField(planColumns);
     const maxUsersField = getPlanMaxUsersField(planColumns);
 
-    let query = db('subscription_plans')
-      .orderBy(monthlyPriceField, 'asc')
+    let query = db("subscription_plans")
+      .orderBy(monthlyPriceField, "asc")
       .select(
-        'id',
-        'name',
-        'description',
+        "id",
+        "name",
+        "description",
         `${monthlyPriceField} as price`,
-        yearlyPriceField ? `${yearlyPriceField} as yearly_price` : db.raw('NULL as yearly_price'),
-        maxUsersField ? `${maxUsersField} as max_users` : db.raw('0 as max_users'),
-        storageField ? `${storageField} as storage_gb` : db.raw('NULL as storage_gb'),
-        'trial_days',
-        'is_active',
-        'created_at',
-        'updated_at'
+        yearlyPriceField
+          ? `${yearlyPriceField} as yearly_price`
+          : db.raw("NULL as yearly_price"),
+        maxUsersField
+          ? `${maxUsersField} as max_users`
+          : db.raw("0 as max_users"),
+        storageField
+          ? `${storageField} as storage_gb`
+          : db.raw("NULL as storage_gb"),
+        "trial_days",
+        "is_active",
+        "created_at",
+        "updated_at",
       );
-    
+
     const plans = await query;
-    
+
     res.json({
       success: true,
-      data: plans
+      data: plans,
     });
   } catch (error) {
-    console.error('Error fetching all subscription plans:', error);
+    console.error("Error fetching all subscription plans:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch subscription plans'
+      message: "Failed to fetch subscription plans",
     });
   }
 };
 
-
 // Create new subscription plan
 const createPlan = async (req, res) => {
   try {
-    console.log('Create plan request received:', req.body);
-    
+    console.log("Create plan request received:", req.body);
+
     const {
       name,
       description,
@@ -541,17 +612,21 @@ const createPlan = async (req, res) => {
       yearly_price,
       storage_gb,
       trial_days,
-      is_active = true
+      is_active = true,
     } = req.body;
 
-    if (!String(name || '').trim()) {
+    if (!String(name || "").trim()) {
       return res.status(400).json({
         success: false,
-        message: 'Plan name is required',
+        message: "Plan name is required",
       });
     }
 
-    const resolvedPricing = resolvePlanPricingFields(name, { price, yearly_price, trial_days });
+    const resolvedPricing = resolvePlanPricingFields(name, {
+      price,
+      yearly_price,
+      trial_days,
+    });
     const isFreePlan = isFreePlanName(name);
 
     if (
@@ -560,21 +635,22 @@ const createPlan = async (req, res) => {
         resolvedPricing.yearly_price === undefined ||
         resolvedPricing.trial_days === undefined)
     ) {
-      console.log('Validation failed - missing fields');
+      console.log("Validation failed - missing fields");
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: name, price, yearly_price, trial_days',
+        message:
+          "Missing required fields: name, price, yearly_price, trial_days",
       });
     }
 
     // Check if storage_gb column exists before trying to insert it
     const hasStorageColumn = await checkStorageColumnExists();
-    
+
     const planColumns = await getPlanSchemaInfo();
     const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
     const yearlyPriceField = getPlanYearlyPriceField(planColumns);
 
-    console.log('Creating plan with data:', {
+    console.log("Creating plan with data:", {
       name,
       description,
       price: resolvedPricing.price,
@@ -602,23 +678,25 @@ const createPlan = async (req, res) => {
 
     const maxUsersField = getPlanMaxUsersField(planColumns);
     if (maxUsersField && planData[maxUsersField] === undefined) {
-      planData[maxUsersField] = isFreePlan ? 0 : parseOptionalNumber(req.body.max_users) ?? 25;
+      planData[maxUsersField] = isFreePlan
+        ? 0
+        : (parseOptionalNumber(req.body.max_users) ?? 25);
     }
 
-    const [planId] = await db('subscription_plans').insert(planData);
+    const [planId] = await db("subscription_plans").insert(planData);
 
-    console.log('Plan created successfully with ID:', planId);
+    console.log("Plan created successfully with ID:", planId);
 
     res.status(201).json({
       success: true,
-      message: 'Subscription plan created successfully',
-      data: { id: planId }
+      message: "Subscription plan created successfully",
+      data: { id: planId },
     });
   } catch (error) {
-    console.error('Error creating subscription plan:', error);
+    console.error("Error creating subscription plan:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create subscription plan'
+      message: "Failed to create subscription plan",
     });
   }
 };
@@ -626,12 +704,12 @@ const createPlan = async (req, res) => {
 // Helper function to check if storage_gb column exists
 const checkStorageColumnExists = async () => {
   try {
-    const column = await db('subscription_plans')
+    const column = await db("subscription_plans")
       .columnInfo()
-      .then(columns => columns.storage_gb);
+      .then((columns) => columns.storage_gb);
     return !!column;
   } catch (error) {
-    console.log('Could not check storage_gb column:', error.message);
+    console.log("Could not check storage_gb column:", error.message);
     return false;
   }
 };
@@ -640,7 +718,7 @@ const checkStorageColumnExists = async () => {
 const updatePlan = async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('Update plan request received:', req.body);
+    console.log("Update plan request received:", req.body);
     const {
       name,
       description,
@@ -648,15 +726,15 @@ const updatePlan = async (req, res) => {
       yearly_price,
       storage_gb,
       trial_days,
-      is_active
+      is_active,
     } = req.body;
 
     // Check if plan exists
-    const existingPlan = await db('subscription_plans').where('id', id).first();
+    const existingPlan = await db("subscription_plans").where("id", id).first();
     if (!existingPlan) {
       return res.status(404).json({
         success: false,
-        message: 'Subscription plan not found'
+        message: "Subscription plan not found",
       });
     }
 
@@ -665,8 +743,12 @@ const updatePlan = async (req, res) => {
     const yearlyPriceField = getPlanYearlyPriceField(planColumns);
     const hasStorageColumn = await checkStorageColumnExists();
 
-    const planName = String(name || existingPlan.name || '').trim();
-    const resolvedPricing = resolvePlanPricingFields(planName, { price, yearly_price, trial_days });
+    const planName = String(name || existingPlan.name || "").trim();
+    const resolvedPricing = resolvePlanPricingFields(planName, {
+      price,
+      yearly_price,
+      trial_days,
+    });
     const isFreePlan = isFreePlanName(planName);
 
     const resolvedPrice = isFreePlan
@@ -711,20 +793,21 @@ const updatePlan = async (req, res) => {
 
     const maxUsersField = getPlanMaxUsersField(planColumns);
     if (maxUsersField && req.body.max_users !== undefined) {
-      updateData[maxUsersField] = parseOptionalNumber(req.body.max_users) ?? existingPlan[maxUsersField];
+      updateData[maxUsersField] =
+        parseOptionalNumber(req.body.max_users) ?? existingPlan[maxUsersField];
     }
 
-    await db('subscription_plans').where('id', id).update(updateData);
+    await db("subscription_plans").where("id", id).update(updateData);
 
     res.json({
       success: true,
-      message: 'Subscription plan updated successfully'
+      message: "Subscription plan updated successfully",
     });
   } catch (error) {
-    console.error('Error updating subscription plan:', error);
+    console.error("Error updating subscription plan:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update subscription plan'
+      message: "Failed to update subscription plan",
     });
   }
 };
@@ -736,34 +819,34 @@ const patchPlan = async (req, res) => {
     const updateData = req.body;
 
     // Check if plan exists
-    const existingPlan = await db('subscription_plans').where('id', id).first();
+    const existingPlan = await db("subscription_plans").where("id", id).first();
     if (!existingPlan) {
       return res.status(404).json({
         success: false,
-        message: 'Subscription plan not found'
+        message: "Subscription plan not found",
       });
     }
 
     // Check if storage_gb column exists and is being updated
     const hasStorageColumn = await checkStorageColumnExists();
     const finalUpdateData = { ...updateData, updated_at: new Date() };
-    
+
     // Remove storage_gb if column doesn't exist
     if (!hasStorageColumn && finalUpdateData.storage_gb !== undefined) {
       delete finalUpdateData.storage_gb;
     }
 
-    await db('subscription_plans').where('id', id).update(finalUpdateData);
+    await db("subscription_plans").where("id", id).update(finalUpdateData);
 
     res.json({
       success: true,
-      message: 'Subscription plan updated successfully'
+      message: "Subscription plan updated successfully",
     });
   } catch (error) {
-    console.error('Error updating subscription plan:', error);
+    console.error("Error updating subscription plan:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update subscription plan'
+      message: "Failed to update subscription plan",
     });
   }
 };
@@ -774,46 +857,45 @@ const deletePlan = async (req, res) => {
     const { id } = req.params;
 
     // Check if plan exists
-    const existingPlan = await db('subscription_plans').where('id', id).first();
+    const existingPlan = await db("subscription_plans").where("id", id).first();
     if (!existingPlan) {
       return res.status(404).json({
         success: false,
-        message: 'Subscription plan not found'
+        message: "Subscription plan not found",
       });
     }
 
     // If the plan is still in use, deactivate it instead of hard-deleting it.
-    const activeSubscription = await db('company_subscriptions')
-      .where('plan_id', id)
-      .whereIn('status', ['trial', 'active'])
+    const activeSubscription = await db("company_subscriptions")
+      .where("plan_id", id)
+      .whereIn("status", ["trial", "active"])
       .first();
 
     if (activeSubscription) {
-      await db('subscription_plans')
-        .where('id', id)
-        .update({
-          is_active: false,
-          updated_at: new Date()
-        });
+      await db("subscription_plans").where("id", id).update({
+        is_active: false,
+        updated_at: new Date(),
+      });
 
       return res.json({
         success: true,
-        message: 'Plan is being used by active subscriptions, so it was deactivated instead of deleted.',
-        deactivated: true
+        message:
+          "Plan is being used by active subscriptions, so it was deactivated instead of deleted.",
+        deactivated: true,
       });
     }
 
-    await db('subscription_plans').where('id', id).del();
+    await db("subscription_plans").where("id", id).del();
 
     res.json({
       success: true,
-      message: 'Subscription plan deleted successfully'
+      message: "Subscription plan deleted successfully",
     });
   } catch (error) {
-    console.error('Error deleting subscription plan:', error);
+    console.error("Error deleting subscription plan:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to delete subscription plan'
+      message: "Failed to delete subscription plan",
     });
   }
 };
@@ -824,55 +906,61 @@ const getAllSubscriptions = async (req, res) => {
     const planColumns = await getPlanSchemaInfo();
     const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
 
-    const subscriptions = await db('company_subscriptions')
+    const subscriptions = await db("company_subscriptions")
       .select(
-        'company_subscriptions.*',
-        'subscription_plans.name as plan_name',
+        "company_subscriptions.*",
+        "subscription_plans.name as plan_name",
         `${monthlyPriceField} as plan_price`,
-        'company_subscriptions.max_users as plan_max_users',
-        'companies.company_name'
+        "company_subscriptions.max_users as plan_max_users",
+        "companies.company_name",
       )
-      .join('subscription_plans', 'company_subscriptions.plan_id', 'subscription_plans.id')
-      .join('companies', 'company_subscriptions.company_id', 'companies.id')
-      .orderBy('company_subscriptions.created_at', 'desc');
+      .join(
+        "subscription_plans",
+        "company_subscriptions.plan_id",
+        "subscription_plans.id",
+      )
+      .join("companies", "company_subscriptions.company_id", "companies.id")
+      .orderBy("company_subscriptions.created_at", "desc");
 
     res.json({
       success: true,
-      data: subscriptions
+      data: subscriptions,
     });
   } catch (error) {
-    console.error('Error fetching all subscriptions:', error);
+    console.error("Error fetching all subscriptions:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch subscriptions'
+      message: "Failed to fetch subscriptions",
     });
   }
 };
 
 const getAddons = async (req, res) => {
   try {
-    const hasAddons = await db.schema.hasTable('subscription_addons');
+    const hasAddons = await db.schema.hasTable("subscription_addons");
     if (!hasAddons) {
       return res.json({ success: true, data: [] });
     }
 
-    const addonColumns = await db('subscription_addons').columnInfo();
-    const moduleKeySelect = addonColumns.module_key ? 'module_key' : db.raw('NULL as module_key');
+    const addonColumns = await db("subscription_addons").columnInfo();
+    const moduleKeySelect = addonColumns.module_key
+      ? "module_key"
+      : db.raw("NULL as module_key");
 
-    const addons = await db('subscription_addons')
+    const addons = await db("subscription_addons")
       .select(
-        'id',
-        'name',
-        'description',
+        "id",
+        "name",
+        "description",
         moduleKeySelect,
-        'price_upto25',
-        'price_upto50',
-        'price_above50',
-        'is_active',
-        'created_at',
-        'updated_at'
+        "price_upto25",
+        "price_upto50",
+        "price_above50",
+        "is_active",
+        "created_at",
+        "updated_at",
       )
-      .orderBy('created_at', 'desc');
+      .orderBy("created_at", "desc");
 
     res.json({
       success: true,
@@ -884,41 +972,43 @@ const getAddons = async (req, res) => {
         price_upto15: Number(addon.price_above50 || 0),
         price_upto25: Number(addon.price_upto25 || 0),
         price_upto50: Number(addon.price_upto50 || 0),
-        price_above50: Number(addon.price_above50 || 0)
-      }))
+        price_above50: Number(addon.price_above50 || 0),
+      })),
     });
   } catch (error) {
-    console.error('Error fetching subscription add-ons:', error);
+    console.error("Error fetching subscription add-ons:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch subscription add-ons'
+      message: "Failed to fetch subscription add-ons",
     });
   }
 };
 
 const getAvailableAddons = async (req, res) => {
   try {
-    const hasAddons = await db.schema.hasTable('subscription_addons');
+    const hasAddons = await db.schema.hasTable("subscription_addons");
     if (!hasAddons) {
       return res.json({ success: true, data: [] });
     }
 
-    const addonColumns = await db('subscription_addons').columnInfo();
-    const moduleKeySelect = addonColumns.module_key ? 'module_key' : db.raw('NULL as module_key');
+    const addonColumns = await db("subscription_addons").columnInfo();
+    const moduleKeySelect = addonColumns.module_key
+      ? "module_key"
+      : db.raw("NULL as module_key");
 
-    const addons = await db('subscription_addons')
-      .where('is_active', true)
+    const addons = await db("subscription_addons")
+      .where("is_active", true)
       .select(
-        'id',
-        'name',
-        'description',
+        "id",
+        "name",
+        "description",
         moduleKeySelect,
-        'price_upto25',
-        'price_upto50',
-        'price_above50',
-        'is_active'
+        "price_upto25",
+        "price_upto50",
+        "price_above50",
+        "is_active",
       )
-      .orderBy('name', 'asc');
+      .orderBy("name", "asc");
 
     res.json({
       success: true,
@@ -930,39 +1020,42 @@ const getAvailableAddons = async (req, res) => {
         price_upto15: Number(addon.price_above50 || 0),
         price_upto25: Number(addon.price_upto25 || 0),
         price_upto50: Number(addon.price_upto50 || 0),
-        price_above50: Number(addon.price_above50 || 0)
-      }))
+        price_above50: Number(addon.price_above50 || 0),
+      })),
     });
   } catch (error) {
-    console.error('Error fetching available add-ons:', error);
+    console.error("Error fetching available add-ons:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch available add-ons'
+      message: "Failed to fetch available add-ons",
     });
   }
 };
 
 const createAddon = async (req, res) => {
   try {
-    const {
-      name,
-      description,
-      module_key,
-      is_active = true
-    } = req.body;
+    const { name, description, module_key, is_active = true } = req.body;
 
     const priceUpto5 = req.body.price_upto5 ?? req.body.price_upto25;
     const priceUpto10 = req.body.price_upto10 ?? req.body.price_upto50;
-    const priceUpto15 = req.body.price_upto15 ?? req.body.price_above15 ?? req.body.price_above50;
+    const priceUpto15 =
+      req.body.price_upto15 ?? req.body.price_above15 ?? req.body.price_above50;
 
-    if (!name || !module_key || priceUpto5 === undefined || priceUpto10 === undefined || priceUpto15 === undefined) {
+    if (
+      !name ||
+      !module_key ||
+      priceUpto5 === undefined ||
+      priceUpto10 === undefined ||
+      priceUpto15 === undefined
+    ) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: name, module_key, price_upto5, price_upto10, price_upto15'
+        message:
+          "Missing required fields: name, module_key, price_upto5, price_upto10, price_upto15",
       });
     }
 
-    const addonColumns = await db('subscription_addons').columnInfo();
+    const addonColumns = await db("subscription_addons").columnInfo();
     const addonData = {
       name,
       description,
@@ -971,25 +1064,25 @@ const createAddon = async (req, res) => {
       price_above50: Number(priceUpto15),
       is_active,
       created_at: new Date(),
-      updated_at: new Date()
+      updated_at: new Date(),
     };
 
     if (addonColumns.module_key) {
       addonData.module_key = normalizeModuleKey(module_key);
     }
 
-    const [addonId] = await db('subscription_addons').insert(addonData);
+    const [addonId] = await db("subscription_addons").insert(addonData);
 
     res.status(201).json({
       success: true,
-      message: 'Add-on package created successfully',
-      data: { id: addonId }
+      message: "Add-on package created successfully",
+      data: { id: addonId },
     });
   } catch (error) {
-    console.error('Error creating subscription add-on:', error);
+    console.error("Error creating subscription add-on:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create add-on package'
+      message: "Failed to create add-on package",
     });
   }
 };
@@ -997,23 +1090,31 @@ const createAddon = async (req, res) => {
 const updateAddon = async (req, res) => {
   try {
     const { id } = req.params;
-    const existingAddon = await db('subscription_addons').where('id', id).first();
+    const existingAddon = await db("subscription_addons")
+      .where("id", id)
+      .first();
     if (!existingAddon) {
       return res.status(404).json({
         success: false,
-        message: 'Add-on package not found'
+        message: "Add-on package not found",
       });
     }
 
-    const addonColumns = await db('subscription_addons').columnInfo();
+    const addonColumns = await db("subscription_addons").columnInfo();
     const priceUpto5 = req.body.price_upto5 ?? req.body.price_upto25;
     const priceUpto10 = req.body.price_upto10 ?? req.body.price_upto50;
-    const priceUpto15 = req.body.price_upto15 ?? req.body.price_above15 ?? req.body.price_above50;
+    const priceUpto15 =
+      req.body.price_upto15 ?? req.body.price_above15 ?? req.body.price_above50;
 
-    if (priceUpto5 === undefined || priceUpto10 === undefined || priceUpto15 === undefined) {
+    if (
+      priceUpto5 === undefined ||
+      priceUpto10 === undefined ||
+      priceUpto15 === undefined
+    ) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: price_upto5, price_upto10, price_upto15'
+        message:
+          "Missing required fields: price_upto5, price_upto10, price_upto15",
       });
     }
 
@@ -1024,24 +1125,24 @@ const updateAddon = async (req, res) => {
       price_upto50: Number(priceUpto10),
       price_above50: Number(priceUpto15),
       is_active: Boolean(req.body.is_active),
-      updated_at: new Date()
+      updated_at: new Date(),
     };
 
     if (addonColumns.module_key) {
       updateData.module_key = normalizeModuleKey(req.body.module_key);
     }
 
-    await db('subscription_addons').where('id', id).update(updateData);
+    await db("subscription_addons").where("id", id).update(updateData);
 
     res.json({
       success: true,
-      message: 'Add-on package updated successfully'
+      message: "Add-on package updated successfully",
     });
   } catch (error) {
-    console.error('Error updating subscription add-on:', error);
+    console.error("Error updating subscription add-on:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update add-on package'
+      message: "Failed to update add-on package",
     });
   }
 };
@@ -1049,40 +1150,43 @@ const updateAddon = async (req, res) => {
 const deleteAddon = async (req, res) => {
   try {
     const { id } = req.params;
-    const existingAddon = await db('subscription_addons').where('id', id).first();
+    const existingAddon = await db("subscription_addons")
+      .where("id", id)
+      .first();
     if (!existingAddon) {
       return res.status(404).json({
         success: false,
-        message: 'Add-on package not found'
+        message: "Add-on package not found",
       });
     }
 
-    const activeAssignment = await db('company_subscription_addons')
-      .where('addon_id', id)
+    const activeAssignment = await db("company_subscription_addons")
+      .where("addon_id", id)
       .first();
 
     if (activeAssignment) {
-      await db('subscription_addons')
-        .where('id', id)
+      await db("subscription_addons")
+        .where("id", id)
         .update({ is_active: false, updated_at: new Date() });
 
       return res.json({
         success: true,
-        message: 'Add-on is assigned to a subscription, so it was deactivated instead of deleted.',
-        deactivated: true
+        message:
+          "Add-on is assigned to a subscription, so it was deactivated instead of deleted.",
+        deactivated: true,
       });
     }
 
-    await db('subscription_addons').where('id', id).del();
+    await db("subscription_addons").where("id", id).del();
     res.json({
       success: true,
-      message: 'Add-on package deleted successfully'
+      message: "Add-on package deleted successfully",
     });
   } catch (error) {
-    console.error('Error deleting subscription add-on:', error);
+    console.error("Error deleting subscription add-on:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to delete add-on package'
+      message: "Failed to delete add-on package",
     });
   }
 };
@@ -1091,7 +1195,12 @@ const assignAddonToCompany = async (req, res) => {
   const trx = await db.transaction();
 
   try {
-    const { company_id, addon_id, users_count, billing_cycle = 'monthly' } = req.body;
+    const {
+      company_id,
+      addon_id,
+      users_count,
+      billing_cycle = "monthly",
+    } = req.body;
     const selectedUsers = resolveSelectedUsers(users_count);
     const normalizedCycle = normalizeBillingCycle(billing_cycle);
 
@@ -1099,64 +1208,69 @@ const assignAddonToCompany = async (req, res) => {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'company_id and addon_id are required'
+        message: "company_id and addon_id are required",
       });
     }
 
-    const company = await trx('companies').where('id', company_id).first();
+    const company = await trx("companies").where("id", company_id).first();
     if (!company) {
       await trx.rollback();
       return res.status(404).json({
         success: false,
-        message: 'Organization not found'
+        message: "Organization not found",
       });
     }
 
-    const addon = await trx('subscription_addons').where('id', addon_id).first();
+    const addon = await trx("subscription_addons")
+      .where("id", addon_id)
+      .first();
     if (!addon) {
       await trx.rollback();
       return res.status(404).json({
         success: false,
-        message: 'Add-on package not found'
+        message: "Add-on package not found",
       });
     }
 
-    const subscription = await trx('company_subscriptions')
-      .where('company_id', company_id)
-      .whereIn('status', ['trial', 'active'])
-      .orderBy('created_at', 'desc')
+    const subscription = await trx("company_subscriptions")
+      .where("company_id", company_id)
+      .whereIn("status", ["trial", "active"])
+      .orderBy("created_at", "desc")
       .first();
 
     if (!subscription) {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Organization needs an active base subscription before assigning add-ons'
+        message:
+          "Organization needs an active base subscription before assigning add-ons",
       });
     }
 
     const pricePerUser = getAddonPriceForUsers(addon, selectedUsers);
-    const totalPrice = roundMoney(pricePerUser * selectedUsers * (normalizedCycle === 'yearly' ? 12 : 1));
+    const totalPrice = roundMoney(
+      pricePerUser * selectedUsers * (normalizedCycle === "yearly" ? 12 : 1),
+    );
 
-    const existingAssignment = await trx('company_subscription_addons')
+    const existingAssignment = await trx("company_subscription_addons")
       .where({
         subscription_id: subscription.id,
-        addon_id
+        addon_id,
       })
       .first();
 
     if (existingAssignment) {
-      await trx('company_subscription_addons')
-        .where('id', existingAssignment.id)
+      await trx("company_subscription_addons")
+        .where("id", existingAssignment.id)
         .update({
           users_count: selectedUsers,
           billing_cycle: normalizedCycle,
           price_per_user: pricePerUser,
           total_price: totalPrice,
-          updated_at: new Date()
+          updated_at: new Date(),
         });
     } else {
-      await trx('company_subscription_addons').insert({
+      await trx("company_subscription_addons").insert({
         subscription_id: subscription.id,
         addon_id,
         users_count: selectedUsers,
@@ -1164,39 +1278,45 @@ const assignAddonToCompany = async (req, res) => {
         price_per_user: pricePerUser,
         total_price: totalPrice,
         created_at: new Date(),
-        updated_at: new Date()
+        updated_at: new Date(),
       });
     }
 
-    const previousAddonTotal = existingAssignment ? Number(existingAssignment.total_price || 0) : 0;
+    const previousAddonTotal = existingAssignment
+      ? Number(existingAssignment.total_price || 0)
+      : 0;
     const currentPaidAmount = Number(subscription.paid_amount || 0);
-    await trx('company_subscriptions')
-      .where('id', subscription.id)
+    await trx("company_subscriptions")
+      .where("id", subscription.id)
       .update({
-        paid_amount: roundMoney(currentPaidAmount - previousAddonTotal + totalPrice),
-        updated_at: new Date()
+        paid_amount: roundMoney(
+          currentPaidAmount - previousAddonTotal + totalPrice,
+        ),
+        updated_at: new Date(),
       });
 
     await trx.commit();
 
     res.json({
       success: true,
-      message: 'Add-on assigned to organization successfully',
+      message: "Add-on assigned to organization successfully",
       data: {
         subscription_id: subscription.id,
         addon_id,
         users_count: selectedUsers,
         billing_cycle: normalizedCycle,
         price_per_user: pricePerUser,
-        total_price: totalPrice
-      }
+        total_price: totalPrice,
+      },
     });
   } catch (error) {
-    console.error('Error assigning subscription add-on:', error);
-    try { await trx.rollback(); } catch (e) {}
+    console.error("Error assigning subscription add-on:", error);
+    try {
+      await trx.rollback();
+    } catch (e) {}
     res.status(500).json({
       success: false,
-      message: 'Failed to assign add-on to organization'
+      message: "Failed to assign add-on to organization",
     });
   }
 };
@@ -1206,73 +1326,78 @@ const createAddonOrder = async (req, res) => {
     if (!razorpay) {
       return res.status(500).json({
         success: false,
-        message: 'Razorpay is not configured. Please add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to .env file.'
+        message:
+          "Razorpay is not configured. Please add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to .env file.",
       });
     }
 
-    const companyId = req.user && req.user.company_id ? req.user.company_id : null;
+    const companyId =
+      req.user && req.user.company_id ? req.user.company_id : null;
     const { addon_id, users_count, billing_cycle } = req.body;
 
     if (!companyId) {
       return res.status(400).json({
         success: false,
-        message: 'Company context not found'
+        message: "Company context not found",
       });
     }
 
     if (!addon_id) {
       return res.status(400).json({
         success: false,
-        message: 'addon_id is required'
+        message: "addon_id is required",
       });
     }
 
-    const subscription = await db('company_subscriptions')
-      .where('company_id', companyId)
-      .whereIn('status', ['trial', 'active'])
-      .orderBy('created_at', 'desc')
+    const subscription = await db("company_subscriptions")
+      .where("company_id", companyId)
+      .whereIn("status", ["trial", "active"])
+      .orderBy("created_at", "desc")
       .first();
 
     if (!subscription) {
       return res.status(400).json({
         success: false,
-        message: 'Please start or buy a base subscription before buying add-ons'
+        message:
+          "Please start or buy a base subscription before buying add-ons",
       });
     }
 
-    const addon = await db('subscription_addons')
+    const addon = await db("subscription_addons")
       .where({ id: addon_id, is_active: true })
       .first();
 
     if (!addon) {
       return res.status(404).json({
         success: false,
-        message: 'Add-on package not found'
+        message: "Add-on package not found",
       });
     }
 
     const selectedUsers = resolveSelectedUsers(users_count);
     const normalizedCycle = normalizeBillingCycle(billing_cycle);
     const pricePerUser = getAddonPriceForUsers(addon, selectedUsers);
-    const totalPrice = roundMoney(pricePerUser * selectedUsers * (normalizedCycle === 'yearly' ? 12 : 1));
+    const totalPrice = roundMoney(
+      pricePerUser * selectedUsers * (normalizedCycle === "yearly" ? 12 : 1),
+    );
 
     const amountPaise = Math.round(totalPrice * 100);
     if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid add-on amount'
+        message: "Invalid add-on amount",
       });
     }
 
     const order = await razorpay.orders.create({
       amount: amountPaise,
-      currency: 'INR',
+      currency: "INR",
       receipt: `sub_addon_${companyId}_${addon_id}_${Date.now()}`,
       notes: {
         company_id: String(companyId),
         subscription_id: String(subscription.id),
-        addon_id: String(addon_id)
-      }
+        addon_id: String(addon_id),
+      },
     });
 
     return res.json({
@@ -1289,15 +1414,15 @@ const createAddonOrder = async (req, res) => {
           users_count: selectedUsers,
           billing_cycle: normalizedCycle,
           price_per_user: pricePerUser,
-          total_price: totalPrice
-        }
-      }
+          total_price: totalPrice,
+        },
+      },
     });
   } catch (error) {
-    console.error('Error creating add-on order:', error);
+    console.error("Error creating add-on order:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to create add-on payment order'
+      message: "Failed to create add-on payment order",
     });
   }
 };
@@ -1310,61 +1435,69 @@ const verifyAddonPayment = async (req, res) => {
       await trx.rollback();
       return res.status(500).json({
         success: false,
-        message: 'Razorpay is not configured on server'
+        message: "Razorpay is not configured on server",
       });
     }
 
-    const companyId = req.user && req.user.company_id ? req.user.company_id : null;
+    const companyId =
+      req.user && req.user.company_id ? req.user.company_id : null;
     const {
       addon_id,
       users_count,
       billing_cycle,
       razorpay_order_id,
       razorpay_payment_id,
-      razorpay_signature
+      razorpay_signature,
     } = req.body;
 
     if (!companyId) {
       await trx.rollback();
-      return res.status(400).json({ success: false, message: 'Company context not found' });
+      return res
+        .status(400)
+        .json({ success: false, message: "Company context not found" });
     }
 
-    if (!addon_id || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    if (
+      !addon_id ||
+      !razorpay_order_id ||
+      !razorpay_payment_id ||
+      !razorpay_signature
+    ) {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Missing required payment verification fields'
+        message: "Missing required payment verification fields",
       });
     }
 
     const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest('hex');
+      .digest("hex");
 
     if (expectedSignature !== razorpay_signature) {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Payment verification failed'
+        message: "Payment verification failed",
       });
     }
 
-    const subscription = await trx('company_subscriptions')
-      .where('company_id', companyId)
-      .whereIn('status', ['trial', 'active'])
-      .orderBy('created_at', 'desc')
+    const subscription = await trx("company_subscriptions")
+      .where("company_id", companyId)
+      .whereIn("status", ["trial", "active"])
+      .orderBy("created_at", "desc")
       .first();
 
     if (!subscription) {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: 'Active subscription not found'
+        message: "Active subscription not found",
       });
     }
 
-    const addon = await trx('subscription_addons')
+    const addon = await trx("subscription_addons")
       .where({ id: addon_id, is_active: true })
       .first();
 
@@ -1372,34 +1505,36 @@ const verifyAddonPayment = async (req, res) => {
       await trx.rollback();
       return res.status(404).json({
         success: false,
-        message: 'Add-on package not found'
+        message: "Add-on package not found",
       });
     }
 
     const selectedUsers = resolveSelectedUsers(users_count);
     const normalizedCycle = normalizeBillingCycle(billing_cycle);
     const pricePerUser = getAddonPriceForUsers(addon, selectedUsers);
-    const totalPrice = roundMoney(pricePerUser * selectedUsers * (normalizedCycle === 'yearly' ? 12 : 1));
+    const totalPrice = roundMoney(
+      pricePerUser * selectedUsers * (normalizedCycle === "yearly" ? 12 : 1),
+    );
 
-    const existingAssignment = await trx('company_subscription_addons')
+    const existingAssignment = await trx("company_subscription_addons")
       .where({
         subscription_id: subscription.id,
-        addon_id
+        addon_id,
       })
       .first();
 
     if (existingAssignment) {
-      await trx('company_subscription_addons')
-        .where('id', existingAssignment.id)
+      await trx("company_subscription_addons")
+        .where("id", existingAssignment.id)
         .update({
           users_count: selectedUsers,
           billing_cycle: normalizedCycle,
           price_per_user: pricePerUser,
           total_price: totalPrice,
-          updated_at: new Date()
+          updated_at: new Date(),
         });
     } else {
-      await trx('company_subscription_addons').insert({
+      await trx("company_subscription_addons").insert({
         subscription_id: subscription.id,
         addon_id,
         users_count: selectedUsers,
@@ -1407,62 +1542,70 @@ const verifyAddonPayment = async (req, res) => {
         price_per_user: pricePerUser,
         total_price: totalPrice,
         created_at: new Date(),
-        updated_at: new Date()
+        updated_at: new Date(),
       });
     }
 
-    const previousAddonTotal = existingAssignment ? Number(existingAssignment.total_price || 0) : 0;
-    await trx('company_subscriptions')
-      .where('id', subscription.id)
+    const previousAddonTotal = existingAssignment
+      ? Number(existingAssignment.total_price || 0)
+      : 0;
+    await trx("company_subscriptions")
+      .where("id", subscription.id)
       .update({
-        paid_amount: roundMoney(Number(subscription.paid_amount || 0) - previousAddonTotal + totalPrice),
+        paid_amount: roundMoney(
+          Number(subscription.paid_amount || 0) -
+            previousAddonTotal +
+            totalPrice,
+        ),
         last_payment_date: new Date(),
         payment_details: JSON.stringify({
-          provider: 'razorpay',
+          provider: "razorpay",
           razorpay_order_id,
           razorpay_payment_id,
-          purchase_type: 'addon'
+          purchase_type: "addon",
         }),
-        updated_at: new Date()
+        updated_at: new Date(),
       });
 
-    await trx('subscription_payments').insert({
+    await trx("subscription_payments").insert({
       company_id: companyId,
       subscription_id: subscription.id,
       amount: totalPrice,
-      payment_method: 'upi',
+      payment_method: "upi",
       transaction_id: razorpay_payment_id,
       payment_reference: razorpay_order_id,
-      status: 'completed',
+      status: "completed",
       payment_date: new Date(),
       notes: JSON.stringify({
-        provider: 'razorpay',
-        purchase_type: 'addon',
+        provider: "razorpay",
+        purchase_type: "addon",
         addon_id,
         addon_name: addon.name,
         users_count: selectedUsers,
-        razorpay_signature
-      })
+        razorpay_signature,
+      }),
     });
 
     await trx.commit();
 
     return res.json({
       success: true,
-      message: 'Add-on purchased successfully',
+      message: "Add-on purchased successfully",
       data: {
         addon_id,
         addon_name: addon.name,
         users_count: selectedUsers,
-        amount_paid: totalPrice
-      }
+        amount_paid: totalPrice,
+      },
     });
   } catch (error) {
-    console.error('Error verifying add-on payment:', error);
-    try { await trx.rollback(); } catch (e) {}
+    console.error("Error verifying add-on payment:", error);
+    try {
+      await trx.rollback();
+    } catch (e) {}
     return res.status(500).json({
       success: false,
-      message: 'Failed to verify add-on payment'
+      message: "Failed to verify add-on payment",
     });
   }
 };
@@ -1470,46 +1613,47 @@ const verifyAddonPayment = async (req, res) => {
 const removeCompanyAddon = async (req, res) => {
   try {
     const { assignmentId } = req.params;
-    const existingAssignment = await db('company_subscription_addons')
-      .where('id', assignmentId)
+    const existingAssignment = await db("company_subscription_addons")
+      .where("id", assignmentId)
       .first();
 
     if (!existingAssignment) {
       return res.status(404).json({
         success: false,
-        message: 'Assigned add-on not found'
+        message: "Assigned add-on not found",
       });
     }
 
-    await db('company_subscription_addons').where('id', assignmentId).del();
+    await db("company_subscription_addons").where("id", assignmentId).del();
 
     res.json({
       success: true,
-      message: 'Add-on removed from organization successfully'
+      message: "Add-on removed from organization successfully",
     });
   } catch (error) {
-    console.error('Error removing company add-on:', error);
+    console.error("Error removing company add-on:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to remove add-on from organization'
+      message: "Failed to remove add-on from organization",
     });
   }
 };
 
 const getAddonUserAssignments = async (req, res) => {
   try {
-    const companyId = req.user && req.user.company_id ? req.user.company_id : null;
+    const companyId =
+      req.user && req.user.company_id ? req.user.company_id : null;
     if (!companyId) {
       return res.status(400).json({
         success: false,
-        message: 'Company context not found'
+        message: "Company context not found",
       });
     }
 
-    const subscription = await db('company_subscriptions')
-      .where('company_id', companyId)
-      .whereIn('status', ['trial', 'active'])
-      .orderBy('created_at', 'desc')
+    const subscription = await db("company_subscriptions")
+      .where("company_id", companyId)
+      .whereIn("status", ["trial", "active"])
+      .orderBy("created_at", "desc")
       .first();
 
     if (!subscription) {
@@ -1517,52 +1661,61 @@ const getAddonUserAssignments = async (req, res) => {
     }
 
     const activeAddons = await getSubscriptionAddons(subscription.id);
-    const hasAssignments = await db.schema.hasTable('company_addon_user_assignments');
+    const hasAssignments = await db.schema.hasTable(
+      "company_addon_user_assignments",
+    );
     if (!hasAssignments) {
       return res.json({
         success: true,
         data: activeAddons.map((addon) => ({
           ...addon,
-          assignments: []
-        }))
+          assignments: [],
+        })),
       });
     }
 
-    const assignments = await db('company_addon_user_assignments')
-      .leftJoin('employees', 'company_addon_user_assignments.employee_id', 'employees.id')
-      .where('company_addon_user_assignments.company_id', companyId)
+    const assignments = await db("company_addon_user_assignments")
+      .leftJoin(
+        "employees",
+        "company_addon_user_assignments.employee_id",
+        "employees.id",
+      )
+      .where("company_addon_user_assignments.company_id", companyId)
       .select(
-        'company_addon_user_assignments.id',
-        'company_addon_user_assignments.subscription_addon_id',
-        'company_addon_user_assignments.addon_id',
-        'company_addon_user_assignments.employee_id',
-        'company_addon_user_assignments.module_key',
-        'employees.first_name',
-        'employees.last_name',
-        'employees.employee_id as employee_code',
-        'employees.email'
+        "company_addon_user_assignments.id",
+        "company_addon_user_assignments.subscription_addon_id",
+        "company_addon_user_assignments.addon_id",
+        "company_addon_user_assignments.employee_id",
+        "company_addon_user_assignments.module_key",
+        "employees.first_name",
+        "employees.last_name",
+        "employees.employee_id as employee_code",
+        "employees.email",
       );
 
     const data = activeAddons.map((addon) => ({
       ...addon,
       assignments: assignments
-        .filter((assignment) => Number(assignment.subscription_addon_id) === Number(addon.id))
+        .filter(
+          (assignment) =>
+            Number(assignment.subscription_addon_id) === Number(addon.id),
+        )
         .map((assignment) => ({
           id: assignment.id,
           employee_id: assignment.employee_id,
           employee_code: assignment.employee_code,
-          name: `${assignment.first_name || ''} ${assignment.last_name || ''}`.trim(),
+          name: `${assignment.first_name || ""} ${assignment.last_name || ""}`.trim(),
           email: assignment.email,
-          module_key: assignment.module_key
-        }))
+          module_key: assignment.module_key,
+        })),
     }));
 
     return res.json({ success: true, data });
   } catch (error) {
-    console.error('Error fetching add-on user assignments:', error);
+    console.error("Error fetching add-on user assignments:", error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to fetch add-on user assignments'
+      message: "Failed to fetch add-on user assignments",
     });
   }
 };
@@ -1571,7 +1724,8 @@ const updateAddonUserAssignments = async (req, res) => {
   const trx = await db.transaction();
 
   try {
-    const companyId = req.user && req.user.company_id ? req.user.company_id : null;
+    const companyId =
+      req.user && req.user.company_id ? req.user.company_id : null;
     const { subscriptionAddonId } = req.params;
     const employeeIds = Array.isArray(req.body.employee_ids)
       ? req.body.employee_ids.map((id) => Number(id)).filter(Boolean)
@@ -1579,37 +1733,47 @@ const updateAddonUserAssignments = async (req, res) => {
 
     if (!companyId) {
       await trx.rollback();
-      return res.status(400).json({ success: false, message: 'Company context not found' });
+      return res
+        .status(400)
+        .json({ success: false, message: "Company context not found" });
     }
 
-    const subscription = await trx('company_subscriptions')
-      .where('company_id', companyId)
-      .whereIn('status', ['trial', 'active'])
-      .orderBy('created_at', 'desc')
+    const subscription = await trx("company_subscriptions")
+      .where("company_id", companyId)
+      .whereIn("status", ["trial", "active"])
+      .orderBy("created_at", "desc")
       .first();
 
     if (!subscription) {
       await trx.rollback();
-      return res.status(400).json({ success: false, message: 'Active subscription not found' });
+      return res
+        .status(400)
+        .json({ success: false, message: "Active subscription not found" });
     }
 
-    const subscriptionAddon = await trx('company_subscription_addons')
-      .join('subscription_addons', 'company_subscription_addons.addon_id', 'subscription_addons.id')
-      .where('company_subscription_addons.id', subscriptionAddonId)
-      .where('company_subscription_addons.subscription_id', subscription.id)
+    const subscriptionAddon = await trx("company_subscription_addons")
+      .join(
+        "subscription_addons",
+        "company_subscription_addons.addon_id",
+        "subscription_addons.id",
+      )
+      .where("company_subscription_addons.id", subscriptionAddonId)
+      .where("company_subscription_addons.subscription_id", subscription.id)
       .select(
-        'company_subscription_addons.id',
-        'company_subscription_addons.addon_id',
-        'company_subscription_addons.users_count',
-        'subscription_addons.name',
-        'subscription_addons.description',
-        'subscription_addons.module_key'
+        "company_subscription_addons.id",
+        "company_subscription_addons.addon_id",
+        "company_subscription_addons.users_count",
+        "subscription_addons.name",
+        "subscription_addons.description",
+        "subscription_addons.module_key",
       )
       .first();
 
     if (!subscriptionAddon) {
       await trx.rollback();
-      return res.status(404).json({ success: false, message: 'Add-on subscription not found' });
+      return res
+        .status(404)
+        .json({ success: false, message: "Add-on subscription not found" });
     }
 
     const seatLimit = Number(subscriptionAddon.users_count || 0);
@@ -1617,40 +1781,44 @@ const updateAddonUserAssignments = async (req, res) => {
       await trx.rollback();
       return res.status(400).json({
         success: false,
-        message: `This add-on allows only ${seatLimit} assigned users`
+        message: `This add-on allows only ${seatLimit} assigned users`,
       });
     }
 
     if (employeeIds.length > 0) {
-      const employeeCount = await trx('employees')
-        .where('company_id', companyId)
-        .whereIn('id', employeeIds)
-        .count('* as count')
+      const employeeCount = await trx("employees")
+        .where("company_id", companyId)
+        .whereIn("id", employeeIds)
+        .count("* as count")
         .first();
 
       if ((parseInt(employeeCount.count, 10) || 0) !== employeeIds.length) {
         await trx.rollback();
         return res.status(400).json({
           success: false,
-          message: 'One or more selected employees are invalid'
+          message: "One or more selected employees are invalid",
         });
       }
     }
 
     const moduleKeys = [...getAddonModuleAliases(subscriptionAddon)];
-    const primaryModuleKey = moduleKeys.includes('live_tracking')
-      ? 'live_tracking'
-      : normalizeAddonModuleKey(subscriptionAddon.module_key || moduleKeys[0] || subscriptionAddon.name);
+    const primaryModuleKey = moduleKeys.includes("live_tracking")
+      ? "live_tracking"
+      : normalizeAddonModuleKey(
+          subscriptionAddon.module_key ||
+            moduleKeys[0] ||
+            subscriptionAddon.name,
+        );
 
-    await trx('company_addon_user_assignments')
+    await trx("company_addon_user_assignments")
       .where({
         company_id: companyId,
-        subscription_addon_id: subscriptionAddon.id
+        subscription_addon_id: subscriptionAddon.id,
       })
       .del();
 
     if (employeeIds.length > 0) {
-      await trx('company_addon_user_assignments').insert(
+      await trx("company_addon_user_assignments").insert(
         employeeIds.map((employeeId) => ({
           company_id: companyId,
           subscription_addon_id: subscriptionAddon.id,
@@ -1658,20 +1826,20 @@ const updateAddonUserAssignments = async (req, res) => {
           employee_id: employeeId,
           module_key: primaryModuleKey,
           created_at: new Date(),
-          updated_at: new Date()
-        }))
+          updated_at: new Date(),
+        })),
       );
     }
 
-    if (moduleKeys.includes('live_tracking')) {
-      await trx('employees')
-        .where('company_id', companyId)
+    if (moduleKeys.includes("live_tracking")) {
+      await trx("employees")
+        .where("company_id", companyId)
         .update({ location_tracking_enabled: 0 });
 
       if (employeeIds.length > 0) {
-        await trx('employees')
-          .where('company_id', companyId)
-          .whereIn('id', employeeIds)
+        await trx("employees")
+          .where("company_id", companyId)
+          .whereIn("id", employeeIds)
           .update({ location_tracking_enabled: 1 });
       }
     }
@@ -1680,19 +1848,21 @@ const updateAddonUserAssignments = async (req, res) => {
 
     return res.json({
       success: true,
-      message: 'Add-on users updated successfully',
+      message: "Add-on users updated successfully",
       data: {
         subscription_addon_id: Number(subscriptionAddon.id),
         assigned_users: employeeIds.length,
-        max_users: seatLimit
-      }
+        max_users: seatLimit,
+      },
     });
   } catch (error) {
-    console.error('Error updating add-on user assignments:', error);
-    try { await trx.rollback(); } catch (e) {}
+    console.error("Error updating add-on user assignments:", error);
+    try {
+      await trx.rollback();
+    } catch (e) {}
     return res.status(500).json({
       success: false,
-      message: 'Failed to update add-on users'
+      message: "Failed to update add-on users",
     });
   }
 };
@@ -1708,48 +1878,59 @@ const getCompanySubscription = async (req, res) => {
     if (!companyId) {
       return res.status(400).json({
         success: false,
-        message: 'Company context not found for current user'
+        message: "Company context not found for current user",
       });
     }
-    
-    const subscription = await db('company_subscriptions')
+
+    const subscription = await db("company_subscriptions")
       .select(
-        'company_subscriptions.*',
-        'subscription_plans.name as plan_name',
-        'subscription_plans.description as plan_description',
+        "company_subscriptions.*",
+        "subscription_plans.name as plan_name",
+        "subscription_plans.description as plan_description",
         `${monthlyPriceField} as plan_price`,
-        'company_subscriptions.max_users as plan_max_users',
-        storageField ? `subscription_plans.${storageField} as plan_storage_gb` : db.raw('NULL as plan_storage_gb')
+        "company_subscriptions.max_users as plan_max_users",
+        storageField
+          ? `subscription_plans.${storageField} as plan_storage_gb`
+          : db.raw("NULL as plan_storage_gb"),
       )
-      .join('subscription_plans', 'company_subscriptions.plan_id', 'subscription_plans.id')
-      .where('company_subscriptions.company_id', companyId)
-      .orderBy('company_subscriptions.created_at', 'desc')
+      .join(
+        "subscription_plans",
+        "company_subscriptions.plan_id",
+        "subscription_plans.id",
+      )
+      .where("company_subscriptions.company_id", companyId)
+      .orderBy("company_subscriptions.created_at", "desc")
       .first();
 
     if (!subscription) {
       return res.json({
         success: true,
         data: null,
-        message: 'No active subscription found'
+        message: "No active subscription found",
       });
     }
 
     const today = moment();
-    const isTrialSubscription = subscription.status === 'trial' && !!subscription.trial_end_date;
-    const trialEndMoment = subscription.trial_end_date ? moment(subscription.trial_end_date) : null;
-    const regularEndMoment = subscription.end_date ? moment(subscription.end_date) : null;
+    const isTrialSubscription =
+      subscription.status === "trial" && !!subscription.trial_end_date;
+    const trialEndMoment = subscription.trial_end_date
+      ? moment(subscription.trial_end_date)
+      : null;
+    const regularEndMoment = subscription.end_date
+      ? moment(subscription.end_date)
+      : null;
 
     const isTrialActive =
       isTrialSubscription &&
       trialEndMoment &&
-      moment().startOf('day').isBefore(trialEndMoment.clone().startOf('day'));
+      moment().startOf("day").isBefore(trialEndMoment.clone().startOf("day"));
 
     const effectiveEndMoment =
-      isTrialSubscription && trialEndMoment
-        ? trialEndMoment
-        : regularEndMoment;
+      isTrialSubscription && trialEndMoment ? trialEndMoment : regularEndMoment;
 
-    const daysRemaining = effectiveEndMoment ? effectiveEndMoment.diff(today, 'days') : 0;
+    const daysRemaining = effectiveEndMoment
+      ? effectiveEndMoment.diff(today, "days")
+      : 0;
 
     res.json({
       success: true,
@@ -1758,16 +1939,24 @@ const getCompanySubscription = async (req, res) => {
         addons: await getSubscriptionAddons(subscription.id),
         days_remaining: Math.max(0, daysRemaining),
         is_trial_active: isTrialActive,
-        trial_days_remaining: trialEndMoment ? Math.max(0, trialEndMoment.diff(today, 'days')) : 0,
-        storage_usage_percentage: subscription.storage_gb > 0 ? 
-          Math.round((subscription.used_storage_mb || 0) / (subscription.storage_gb * 1024) * 100) : 0
-      }
+        trial_days_remaining: trialEndMoment
+          ? Math.max(0, trialEndMoment.diff(today, "days"))
+          : 0,
+        storage_usage_percentage:
+          subscription.storage_gb > 0
+            ? Math.round(
+                ((subscription.used_storage_mb || 0) /
+                  (subscription.storage_gb * 1024)) *
+                  100,
+              )
+            : 0,
+      },
     });
   } catch (error) {
-    console.error('Error fetching company subscription:', error);
+    console.error("Error fetching company subscription:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch subscription details'
+      message: "Failed to fetch subscription details",
     });
   }
 };
@@ -1779,27 +1968,25 @@ const startTrial = async (req, res) => {
     const companyId = req.user.company_id;
 
     // Check if company already has an active trial or subscription
-    const existingSubscription = await db('company_subscriptions')
-      .where('company_id', companyId)
-      .whereIn('status', ['trial', 'active'])
+    const existingSubscription = await db("company_subscriptions")
+      .where("company_id", companyId)
+      .whereIn("status", ["trial", "active"])
       .first();
 
     if (existingSubscription) {
       return res.status(400).json({
         success: false,
-        message: 'Company already has an active subscription or trial'
+        message: "Company already has an active subscription or trial",
       });
     }
 
     // Get plan details
-    const plan = await db('subscription_plans')
-      .where('id', plan_id)
-      .first();
+    const plan = await db("subscription_plans").where("id", plan_id).first();
 
     if (!plan) {
       return res.status(404).json({
         success: false,
-        message: 'Subscription plan not found'
+        message: "Subscription plan not found",
       });
     }
 
@@ -1807,37 +1994,39 @@ const startTrial = async (req, res) => {
     const pricing = computePricing(plan, selectedUsers, billing_cycle);
 
     const startDate = moment().toDate();
-    const trialEndDate = moment(startDate).add(plan.trial_days, 'days').toDate();
+    const trialEndDate = moment(startDate)
+      .add(plan.trial_days, "days")
+      .toDate();
     const endDate = trialEndDate;
 
     // Create trial subscription
-    const [subscriptionId] = await db('company_subscriptions').insert({
+    const [subscriptionId] = await db("company_subscriptions").insert({
       company_id: companyId,
       plan_id: plan_id,
       start_date: startDate,
       end_date: endDate,
       trial_end_date: trialEndDate,
-      status: 'trial',
+      status: "trial",
       max_users: selectedUsers,
       storage_gb: plan.storage_gb || 1,
       billing_cycle: pricing.billing_cycle,
-      next_billing_date: trialEndDate
+      next_billing_date: trialEndDate,
     });
 
     res.status(201).json({
       success: true,
-      message: `Free trial started successfully. Trial ends on ${moment(trialEndDate).format('DD MMM YYYY')}`,
+      message: `Free trial started successfully. Trial ends on ${moment(trialEndDate).format("DD MMM YYYY")}`,
       data: {
         subscription_id: subscriptionId,
         trial_end_date: trialEndDate,
-        plan_name: plan.name
-      }
+        plan_name: plan.name,
+      },
     });
   } catch (error) {
-    console.error('Error starting trial:', error);
+    console.error("Error starting trial:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to start free trial'
+      message: "Failed to start free trial",
     });
   }
 };
@@ -1845,25 +2034,29 @@ const startTrial = async (req, res) => {
 // Upgrade/Change subscription plan
 const upgradeSubscription = async (req, res) => {
   try {
-    const { plan_id, payment_method, payment_details, users_count, billing_cycle } = req.body;
+    const {
+      plan_id,
+      payment_method,
+      payment_details,
+      users_count,
+      billing_cycle,
+    } = req.body;
     const companyId = req.user.company_id;
 
     // Get plan details
-    const plan = await db('subscription_plans')
-      .where('id', plan_id)
-      .first();
+    const plan = await db("subscription_plans").where("id", plan_id).first();
 
     if (!plan) {
       return res.status(404).json({
         success: false,
-        message: 'Subscription plan not found'
+        message: "Subscription plan not found",
       });
     }
 
     // Get current subscription
-    const currentSubscription = await db('company_subscriptions')
-      .where('company_id', companyId)
-      .orderBy('created_at', 'desc')
+    const currentSubscription = await db("company_subscriptions")
+      .where("company_id", companyId)
+      .orderBy("created_at", "desc")
       .first();
 
     const selectedUsers = resolveSelectedUsers(users_count);
@@ -1874,69 +2067,69 @@ const upgradeSubscription = async (req, res) => {
     const endDate = getEndDateForPlan(startDate, pricing.billing_cycle);
 
     let subscriptionId;
-    
+
     if (currentSubscription) {
       // Update existing subscription
-      await db('company_subscriptions')
-        .where('id', currentSubscription.id)
+      await db("company_subscriptions")
+        .where("id", currentSubscription.id)
         .update({
           plan_id: plan_id,
           start_date: startDate,
           end_date: endDate,
-          status: 'active',
+          status: "active",
           max_users: selectedUsers,
           storage_gb: plan.storage_gb || 1,
           billing_cycle: pricing.billing_cycle,
           paid_amount: paidAmount,
           last_payment_date: new Date(),
           next_billing_date: endDate,
-          updated_at: new Date()
+          updated_at: new Date(),
         });
       subscriptionId = currentSubscription.id;
     } else {
       // Create new subscription
-      [subscriptionId] = await db('company_subscriptions').insert({
+      [subscriptionId] = await db("company_subscriptions").insert({
         company_id: companyId,
         plan_id: plan_id,
         start_date: startDate,
         end_date: endDate,
-        status: 'active',
+        status: "active",
         max_users: selectedUsers,
         storage_gb: plan.storage_gb || 1,
         billing_cycle: pricing.billing_cycle,
         paid_amount: paidAmount,
         last_payment_date: new Date(),
-        next_billing_date: endDate
+        next_billing_date: endDate,
       });
     }
 
     // Record payment
-    await db('subscription_payments').insert({
+    await db("subscription_payments").insert({
       company_id: companyId,
       subscription_id: subscriptionId,
       amount: paidAmount,
       payment_method: payment_method,
       transaction_id: `TXN${Date.now()}`,
       payment_reference: payment_details,
-      status: 'completed',
-      payment_date: new Date()
+      status: "completed",
+      payment_date: new Date(),
     });
 
     res.json({
       success: true,
-      message: 'Subscription upgraded successfully',
+      message: "Subscription upgraded successfully",
       data: {
         subscription_id: subscriptionId,
         plan_name: plan.name,
         amount_paid: paidAmount,
-        next_billing_date: endDate
-      }
+        next_billing_date: endDate,
+      },
     });
   } catch (error) {
-    console.error('Error upgrading subscription:', error);
+    console.error("Error upgrading subscription:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upgrade subscription'
+      message: "Failed to upgrade subscription",
     });
   }
 };
@@ -1945,20 +2138,20 @@ const upgradeSubscription = async (req, res) => {
 const getPaymentHistory = async (req, res) => {
   try {
     const companyId = req.user.company_id;
-    
-    const payments = await db('subscription_payments')
-      .where('company_id', companyId)
-      .orderBy('payment_date', 'desc');
+
+    const payments = await db("subscription_payments")
+      .where("company_id", companyId)
+      .orderBy("payment_date", "desc");
 
     res.json({
       success: true,
-      data: payments
+      data: payments,
     });
   } catch (error) {
-    console.error('Error fetching payment history:', error);
+    console.error("Error fetching payment history:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch payment history'
+      message: "Failed to fetch payment history",
     });
   }
 };
@@ -1967,14 +2160,22 @@ const getPaymentHistory = async (req, res) => {
 const checkSubscriptionStatus = async (req, res, next) => {
   try {
     const companyId = req.user.company_id;
-    
-    const subscription = await db('company_subscriptions')
-      .where('company_id', companyId)
+
+    const subscription = await db("company_subscriptions")
+      .where("company_id", companyId)
       .where(function () {
         this.where(function () {
-          this.where('status', 'trial').andWhere('trial_end_date', '>=', db.fn.now());
+          this.where("status", "trial").andWhere(
+            "trial_end_date",
+            ">=",
+            db.fn.now(),
+          );
         }).orWhere(function () {
-          this.where('status', 'active').andWhere('end_date', '>=', db.fn.now());
+          this.where("status", "active").andWhere(
+            "end_date",
+            ">=",
+            db.fn.now(),
+          );
         });
       })
       .first();
@@ -1982,15 +2183,16 @@ const checkSubscriptionStatus = async (req, res, next) => {
     if (!subscription) {
       return res.status(403).json({
         success: false,
-        message: 'No active subscription found. Please upgrade to continue using the service.',
-        requires_subscription: true
+        message:
+          "No active subscription found. Please upgrade to continue using the service.",
+        requires_subscription: true,
       });
     }
 
     // Check user limit
-    const currentUsers = await db('employees')
-      .where('company_id', companyId)
-      .count('* as count')
+    const currentUsers = await db("employees")
+      .where("company_id", companyId)
+      .count("* as count")
       .first();
 
     const currentUserCount = parseInt(currentUsers.count, 10) || 0;
@@ -2000,17 +2202,17 @@ const checkSubscriptionStatus = async (req, res, next) => {
       return res.status(403).json({
         success: false,
         message: `User limit exceeded. Your plan allows ${maxUsers} users, but you have ${currentUserCount}. Please upgrade your plan.`,
-        user_limit_exceeded: true
+        user_limit_exceeded: true,
       });
     }
 
     req.subscription = subscription;
     next();
   } catch (error) {
-    console.error('Error checking subscription status:', error);
+    console.error("Error checking subscription status:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to verify subscription status'
+      message: "Failed to verify subscription status",
     });
   }
 };
@@ -2019,15 +2221,21 @@ const checkSubscriptionStatus = async (req, res, next) => {
 const updateStorageUsage = async (companyId) => {
   try {
     // Calculate total storage used by company uploads
-    const fs = require('fs').promises;
-    const path = require('path');
-    
-    const companyUploadsPath = path.join(__dirname, '../uploads/company_', companyId);
+    const fs = require("fs").promises;
+    const path = require("path");
+
+    const companyUploadsPath = path.join(
+      __dirname,
+      "../uploads/company_",
+      companyId,
+    );
     let totalSizeMB = 0;
 
     try {
-      const files = await fs.readdir(companyUploadsPath, { withFileTypes: true });
-      
+      const files = await fs.readdir(companyUploadsPath, {
+        withFileTypes: true,
+      });
+
       for (const file of files) {
         if (file.isFile()) {
           const filePath = path.join(companyUploadsPath, file.name);
@@ -2042,36 +2250,36 @@ const updateStorageUsage = async (companyId) => {
       }
     } catch (error) {
       // Directory doesn't exist or is not accessible
-      console.log(`Upload directory not found for company ${companyId}, assuming 0 MB used`);
+      console.log(
+        `Upload directory not found for company ${companyId}, assuming 0 MB used`,
+      );
     }
 
     // Update the subscription with current storage usage
-    await db('company_subscriptions')
-      .where('company_id', companyId)
-      .update({
-        used_storage_mb: totalSizeMB,
-        updated_at: new Date()
-      });
+    await db("company_subscriptions").where("company_id", companyId).update({
+      used_storage_mb: totalSizeMB,
+      updated_at: new Date(),
+    });
 
     return totalSizeMB;
   } catch (error) {
-    console.error('Error updating storage usage:', error);
+    console.error("Error updating storage usage:", error);
     throw error;
   }
 };
 
 // Helper function to calculate directory size recursively
 const calculateDirectorySize = async (dirPath) => {
-  const fs = require('fs').promises;
-  const path = require('path');
+  const fs = require("fs").promises;
+  const path = require("path");
   let totalSize = 0;
 
   try {
     const items = await fs.readdir(dirPath, { withFileTypes: true });
-    
+
     for (const item of items) {
       const itemPath = path.join(dirPath, item.name);
-      
+
       if (item.isFile()) {
         const stats = await fs.stat(itemPath);
         totalSize += stats.size;
@@ -2091,18 +2299,18 @@ const calculateDirectorySize = async (dirPath) => {
 const checkStorageLimit = async (req, res, next) => {
   try {
     const companyId = req.user.company_id;
-    
+
     // Get current subscription
-    const subscription = await db('company_subscriptions')
-      .where('company_id', companyId)
-      .whereIn('status', ['trial', 'active'])
+    const subscription = await db("company_subscriptions")
+      .where("company_id", companyId)
+      .whereIn("status", ["trial", "active"])
       .first();
 
     if (!subscription) {
       return res.status(403).json({
         success: false,
-        message: 'No active subscription found.',
-        requires_subscription: true
+        message: "No active subscription found.",
+        requires_subscription: true,
       });
     }
 
@@ -2119,26 +2327,26 @@ const checkStorageLimit = async (req, res, next) => {
       const availableMB = maxStorageMB - currentUsageMB;
       return res.status(413).json({
         success: false,
-        message: `Storage limit exceeded. Your plan allows ${subscription.storage_gb}GB, but you're currently using ${Math.round(currentUsageMB / 1024 * 100) / 100}GB. Only ${Math.round(availableMB)}MB available. Please upgrade your plan for more storage.`,
+        message: `Storage limit exceeded. Your plan allows ${subscription.storage_gb}GB, but you're currently using ${Math.round((currentUsageMB / 1024) * 100) / 100}GB. Only ${Math.round(availableMB)}MB available. Please upgrade your plan for more storage.`,
         storage_limit_exceeded: true,
         current_usage: currentUsageMB,
         max_storage: maxStorageMB,
-        available_storage: availableMB
+        available_storage: availableMB,
       });
     }
 
     req.storageInfo = {
       current_usage_mb: currentUsageMB,
       max_storage_mb: maxStorageMB,
-      available_mb: maxStorageMB - currentUsageMB
+      available_mb: maxStorageMB - currentUsageMB,
     };
 
     next();
   } catch (error) {
-    console.error('Error checking storage limit:', error);
+    console.error("Error checking storage limit:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to check storage limit'
+      message: "Failed to check storage limit",
     });
   }
 };
@@ -2170,5 +2378,5 @@ module.exports = {
   getPaymentHistory,
   checkSubscriptionStatus,
   updateStorageUsage,
-  checkStorageLimit
+  checkStorageLimit,
 };

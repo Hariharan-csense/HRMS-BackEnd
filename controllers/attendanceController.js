@@ -170,10 +170,7 @@ const syncApprovedOverrideToAttendance = async ({
   override,
   fallbackDate,
 }) => {
-  if (
-    !override ||
-    String(override.status || "").toLowerCase() !== "approved"
-  ) {
+  if (!override || String(override.status || "").toLowerCase() !== "approved") {
     return null;
   }
 
@@ -1282,9 +1279,8 @@ const getAttendanceLogs = async (req, res) => {
       "attendance",
       "client_id",
     );
-    const hasClientAttendanceTable = await knex.schema.hasTable(
-      "client_attendance",
-    );
+    const hasClientAttendanceTable =
+      await knex.schema.hasTable("client_attendance");
 
     let baseQuery = knex("attendance as a")
       .leftJoin("employees as e", "a.employee_id", "e.id")
@@ -2738,7 +2734,10 @@ const exportLocationHistory = async (req, res) => {
             message: "Not allowed to view this employee history",
           });
         }
-      } else if (isAllEmployeesExport || requestedEmployeeId !== loggedInUser.id) {
+      } else if (
+        isAllEmployeesExport ||
+        requestedEmployeeId !== loggedInUser.id
+      ) {
         return res.status(403).json({
           success: false,
           message: "Not allowed to view this employee history",
@@ -2816,7 +2815,8 @@ const exportLocationHistory = async (req, res) => {
             : "N/A";
           const address = (point.address || "").replace(/"/g, '""');
           const deviceInfo = (point.device_info || "").replace(/"/g, '""');
-          const employeeName = `${point.first_name || ""} ${point.last_name || ""}`.trim();
+          const employeeName =
+            `${point.first_name || ""} ${point.last_name || ""}`.trim();
 
           csv += `"${point.employee_id || ""}","${employeeName}","${point.email || ""}","${point.department_name || ""}","'${dateStr}","${timeStr}","${address}",${accuracy},${latitude},${longitude},"${deviceInfo}"\n`;
         });

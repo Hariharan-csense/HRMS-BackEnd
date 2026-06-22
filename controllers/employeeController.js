@@ -171,8 +171,10 @@ const assertLiveTrackingSeatLimit = async ({
     return "Live tracking is not available in this subscription. Please buy a live tracking add-on or upgrade the plan.";
   }
 
-  const enabledQuery = knex("employees")
-    .where({ company_id: companyId, location_tracking_enabled: 1 });
+  const enabledQuery = knex("employees").where({
+    company_id: companyId,
+    location_tracking_enabled: 1,
+  });
 
   if (targetEmployeeId) {
     enabledQuery.whereNot({ id: targetEmployeeId });

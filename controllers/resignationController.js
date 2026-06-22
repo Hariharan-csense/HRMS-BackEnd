@@ -1,4 +1,4 @@
-const knex = require('../db/db');
+const knex = require("../db/db");
 
 /**
  * GET all resignations (logged-in user's company)
@@ -7,24 +7,24 @@ const getAllResignations = async (req, res) => {
   const company_id = req.user.company_id;
 
   try {
-    const resignations = await knex('resignations')
+    const resignations = await knex("resignations")
       .select(
-        'id',
-        'employee_id',
-        'employee_name',
-        'resignation_date',
-        'last_working_day',
-        'reason',
-        'approval_status',
-        'created_at'
+        "id",
+        "employee_id",
+        "employee_name",
+        "resignation_date",
+        "last_working_day",
+        "reason",
+        "approval_status",
+        "created_at",
       )
       .where({ company_id })
-      .orderBy('created_at', 'desc');
+      .orderBy("created_at", "desc");
 
     res.json(resignations);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -40,27 +40,29 @@ const createResignation = async (req, res) => {
     resignation_date,
     last_working_day,
     reason,
-    approval_status = 'pending'
+    approval_status = "pending",
   } = req.body;
 
   if (!employee_name || !resignation_date || !last_working_day) {
-    return res.status(400).json({ error: 'Missing required fields' });
+    return res.status(400).json({ error: "Missing required fields" });
   }
 
   try {
     // ✅ employee belongs to company check (if id provided)
     if (employee_id) {
-      const employee = await knex('employees')
+      const employee = await knex("employees")
         .where({ id: employee_id, company_id })
         .first();
 
       if (!employee) {
-        return res.status(403).json({ error: 'Employee does not belong to your company' });
+        return res
+          .status(403)
+          .json({ error: "Employee does not belong to your company" });
       }
     }
 
     // 🔹 Insert resignation
-    const [resignation_id] = await knex('resignations').insert({
+    const [resignation_id] = await knex("resignations").insert({
       company_id,
       employee_id: employee_id || null,
       employee_name,
@@ -68,16 +70,16 @@ const createResignation = async (req, res) => {
       last_working_day,
       reason,
       approval_status,
-      created_at: new Date().toISOString().slice(0, 10)
+      created_at: new Date().toISOString().slice(0, 10),
     });
 
-    const createdResignation = await knex('resignations')
+    const createdResignation = await knex("resignations")
       .where({ id: resignation_id, company_id })
       .first();
 
     // 🔹 Auto-create offboarding checklist only if resignation is approved
-    if (approval_status === 'approved') {
-      await knex('offboarding_checklists').insert({
+    if (approval_status === "approved") {
+      await knex("offboarding_checklists").insert({
         company_id,
         resignation_id,
         hr_clearance: false,
@@ -85,18 +87,17 @@ const createResignation = async (req, res) => {
         asset_return: false,
         it_clearance: false,
         final_settlement: false,
-        status: 'in-progress',
-        completed_date: null
+        status: "in-progress",
+        completed_date: null,
       });
     }
 
     res.status(201).json(createdResignation);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
-
 
 /**
  * UPDATE resignation (company protected)
@@ -106,34 +107,34 @@ const updateResignation = async (req, res) => {
   const { id } = req.params;
 
   const {
-    employee_id,        // optional
+    employee_id, // optional
     employee_name,
     resignation_date,
     last_working_day,
     reason,
     approval_status,
-    status              // frontend sends status, map to approval_status
+    status, // frontend sends status, map to approval_status
   } = req.body;
 
   try {
     // 🔍 check resignation exists for company
-    const resignation = await knex('resignations')
+    const resignation = await knex("resignations")
       .where({ id, company_id })
       .first();
 
     if (!resignation) {
-      return res.status(404).json({ error: 'Resignation not found' });
+      return res.status(404).json({ error: "Resignation not found" });
     }
 
     // ✅ if employee_id provided, validate company ownership
     if (employee_id) {
-      const employee = await knex('employees')
+      const employee = await knex("employees")
         .where({ id: employee_id, company_id })
         .first();
 
       if (!employee) {
         return res.status(403).json({
-          error: 'Employee does not belong to your company'
+          error: "Employee does not belong to your company",
         });
       }
     }
@@ -146,28 +147,27 @@ const updateResignation = async (req, res) => {
       ...(resignation_date && { resignation_date }),
       ...(last_working_day && { last_working_day }),
       ...(reason && { reason }),
-      ...(finalApprovalStatus && { approval_status: finalApprovalStatus })
+      ...(finalApprovalStatus && { approval_status: finalApprovalStatus }),
     };
 
     // 🚫 no valid fields
     if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: 'No valid fields to update' });
+      return res.status(400).json({ error: "No valid fields to update" });
     }
 
-    await knex('resignations')
-      .where({ id, company_id })
-      .update(updates);
+    await knex("resignations").where({ id, company_id }).update(updates);
 
     // Create the offboarding checklist whenever the saved status is approved.
     // This also heals older approved resignations that were missing a checklist.
-    const savedApprovalStatus = finalApprovalStatus || resignation.approval_status;
-    if (savedApprovalStatus === 'approved') {
-      const existingChecklist = await knex('offboarding_checklists')
+    const savedApprovalStatus =
+      finalApprovalStatus || resignation.approval_status;
+    if (savedApprovalStatus === "approved") {
+      const existingChecklist = await knex("offboarding_checklists")
         .where({ resignation_id: id, company_id })
         .first();
 
       if (!existingChecklist) {
-        await knex('offboarding_checklists').insert({
+        await knex("offboarding_checklists").insert({
           company_id,
           resignation_id: id,
           hr_clearance: false,
@@ -175,27 +175,28 @@ const updateResignation = async (req, res) => {
           asset_return: false,
           it_clearance: false,
           final_settlement: false,
-          status: 'in-progress',
-          completed_date: null
+          status: "in-progress",
+          completed_date: null,
         });
-        console.log(`Offboarding checklist created for approved resignation ${id}`);
+        console.log(
+          `Offboarding checklist created for approved resignation ${id}`,
+        );
       }
     }
 
-    const updated = await knex('resignations')
+    const updated = await knex("resignations")
       .where({ id, company_id })
       .first();
 
     res.json(updated);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
-
 
 module.exports = {
   getAllResignations,
   createResignation,
-  updateResignation
+  updateResignation,
 };

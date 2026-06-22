@@ -55,7 +55,10 @@ const buildRecipientsQuery = async ({
 
   if (recipientType === "department" && selectedDepartment.length > 0) {
     const ids = selectedDepartment.filter(isNumeric).map((x) => Number(x));
-    const names = selectedDepartment.filter((x) => !isNumeric(x)).map((x) => String(x).trim()).filter(Boolean);
+    const names = selectedDepartment
+      .filter((x) => !isNumeric(x))
+      .map((x) => String(x).trim())
+      .filter(Boolean);
 
     if (ids.length > 0) {
       query.whereIn("employees.department_id", ids);
@@ -74,7 +77,10 @@ const buildRecipientsQuery = async ({
 
   if (recipientType === "designation" && selectedDesignation.length > 0) {
     const ids = selectedDesignation.filter(isNumeric).map((x) => Number(x));
-    const names = selectedDesignation.filter((x) => !isNumeric(x)).map((x) => String(x).trim()).filter(Boolean);
+    const names = selectedDesignation
+      .filter((x) => !isNumeric(x))
+      .map((x) => String(x).trim())
+      .filter(Boolean);
 
     if (ids.length > 0) {
       query.whereIn("employees.designation_id", ids);
@@ -99,12 +105,10 @@ const getEmployeeName = (employee) =>
   employee.email ||
   "Employee";
 
-const getUserRoleNames = (user) => [
-  ...(Array.isArray(user?.roles) ? user.roles : []),
-  user?.role,
-]
-  .map((role) => String(role || "").toLowerCase())
-  .filter(Boolean);
+const getUserRoleNames = (user) =>
+  [...(Array.isArray(user?.roles) ? user.roles : []), user?.role]
+    .map((role) => String(role || "").toLowerCase())
+    .filter(Boolean);
 
 const isAdminSurveyUser = (user) => {
   const roles = getUserRoleNames(user);
@@ -114,7 +118,9 @@ const isAdminSurveyUser = (user) => {
 const getSurveyEmployeeId = (user) => {
   const mappedEmployeeId = Number(user?.employee_id || 0);
   if (mappedEmployeeId) return mappedEmployeeId;
-  return String(user?.type || "").toLowerCase() === "employee" ? Number(user?.id || 0) : 0;
+  return String(user?.type || "").toLowerCase() === "employee"
+    ? Number(user?.id || 0)
+    : 0;
 };
 
 const SURVEY_LOGIN_URL = "https://hrms.procease.co/login";
@@ -192,7 +198,9 @@ const sendSurveyEmails = async ({ recipients, surveyId, title, message }) => {
     const batch = recipients.slice(i, i + concurrency);
     // eslint-disable-next-line no-await-in-loop
     const results = await Promise.allSettled(
-      batch.map((employee) => sendSurveyEmail({ employee, surveyId, title, message })),
+      batch.map((employee) =>
+        sendSurveyEmail({ employee, surveyId, title, message }),
+      ),
     );
 
     results.forEach((result, index) => {
@@ -215,7 +223,13 @@ const sendSurveyEmails = async ({ recipients, surveyId, title, message }) => {
   return summary;
 };
 
-const createSurveyNotifications = async ({ recipients, surveyId, title, message, companyId }) => {
+const createSurveyNotifications = async ({
+  recipients,
+  surveyId,
+  title,
+  message,
+  companyId,
+}) => {
   if (!recipients.length) return 0;
 
   const now = new Date();
@@ -223,7 +237,9 @@ const createSurveyNotifications = async ({ recipients, surveyId, title, message,
   const rows = recipients.map((employee) => ({
     user_id: String(employee.id),
     title: "New Pulse Survey",
-    description: String(message || title || "Please complete your new survey.").slice(0, 1000),
+    description: String(
+      message || title || "Please complete your new survey.",
+    ).slice(0, 1000),
     type: "info",
     module_id: "pulse_surveys",
     action_url: actionUrl,
@@ -265,7 +281,8 @@ const createPulseSurvey = async (req, res) => {
   const companyId = req.user.company_id;
   const createdByUserId = req.user.id;
 
-  if (!companyId) return res.status(400).json({ message: "Missing company_id" });
+  if (!companyId)
+    return res.status(400).json({ message: "Missing company_id" });
   if (!title || !String(title).trim()) {
     return res.status(400).json({ message: "Title is required" });
   }
@@ -336,7 +353,9 @@ const createPulseSurvey = async (req, res) => {
     const pushSummaryPromise = sendPushToUsers({
       userIds: recipients.map((employee) => employee.id),
       title: "New Pulse Survey",
-      body: String(message || title || "Please complete your new survey.").slice(0, 1000),
+      body: String(
+        message || title || "Please complete your new survey.",
+      ).slice(0, 1000),
       data: {
         surveyId,
         moduleId: "pulse_surveys",
@@ -366,7 +385,9 @@ const createPulseSurvey = async (req, res) => {
 
     const pushSummary = await pushSummaryPromise;
     const pushSkipReasons = [
-      ...(Array.isArray(pushSummary?.skipReasons) ? pushSummary.skipReasons : []),
+      ...(Array.isArray(pushSummary?.skipReasons)
+        ? pushSummary.skipReasons
+        : []),
       ...(Array.isArray(pushSummary?.errors)
         ? pushSummary.errors.map((entry) => entry?.reason).filter(Boolean)
         : []),
@@ -488,11 +509,15 @@ const getAdminPulseOverview = async (req, res) => {
       .select("score", "responded_at");
 
     const scores = responses.map((r) => clampScore(r.score));
-    const avgHappiness = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+    const avgHappiness = scores.length
+      ? scores.reduce((a, b) => a + b, 0) / scores.length
+      : 0;
 
     const latest = responses
       .slice()
-      .sort((a, b) => String(b.responded_at).localeCompare(String(a.responded_at)))[0];
+      .sort((a, b) =>
+        String(b.responded_at).localeCompare(String(a.responded_at)),
+      )[0];
     const avgScoreTrend = latest ? clampScore(latest.score) : 0;
 
     const [{ departments }] = await db("employees")
@@ -512,7 +537,9 @@ const getAdminPulseOverview = async (req, res) => {
 
     const normalizeGender = (g) => String(g || "").toLowerCase();
     const maleRow = byGender.find((x) => normalizeGender(x.gender) === "male");
-    const femaleRow = byGender.find((x) => normalizeGender(x.gender) === "female");
+    const femaleRow = byGender.find(
+      (x) => normalizeGender(x.gender) === "female",
+    );
 
     const deptDetails = await db("departments as d")
       .leftJoin("employees as e", "e.department_id", "d.id")
@@ -538,22 +565,49 @@ const getAdminPulseOverview = async (req, res) => {
 
       const dayKey = d.toISOString().slice(0, 10);
       const dayLabel = d.toLocaleDateString(undefined, { weekday: "short" });
-      const dayPrev = byDay.get(dayKey) || { label: dayLabel, sum: 0, count: 0 };
-      byDay.set(dayKey, { label: dayPrev.label, sum: dayPrev.sum + score, count: dayPrev.count + 1 });
+      const dayPrev = byDay.get(dayKey) || {
+        label: dayLabel,
+        sum: 0,
+        count: 0,
+      };
+      byDay.set(dayKey, {
+        label: dayPrev.label,
+        sum: dayPrev.sum + score,
+        count: dayPrev.count + 1,
+      });
 
       const year = d.getFullYear();
       const first = new Date(Date.UTC(year, 0, 1));
-      const days = Math.floor((Date.UTC(year, d.getMonth(), d.getDate()) - first.getTime()) / 86400000);
+      const days = Math.floor(
+        (Date.UTC(year, d.getMonth(), d.getDate()) - first.getTime()) /
+          86400000,
+      );
       const week = Math.floor(days / 7) + 1;
       const weekKey = `${year}-W${String(week).padStart(2, "0")}`;
       const weekLabel = `W${week}`;
-      const weekPrev = byWeek.get(weekKey) || { label: weekLabel, sum: 0, count: 0 };
-      byWeek.set(weekKey, { label: weekPrev.label, sum: weekPrev.sum + score, count: weekPrev.count + 1 });
+      const weekPrev = byWeek.get(weekKey) || {
+        label: weekLabel,
+        sum: 0,
+        count: 0,
+      };
+      byWeek.set(weekKey, {
+        label: weekPrev.label,
+        sum: weekPrev.sum + score,
+        count: weekPrev.count + 1,
+      });
 
       const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
       const monthLabel = d.toLocaleDateString(undefined, { month: "short" });
-      const monthPrev = byMonth.get(monthKey) || { label: monthLabel, sum: 0, count: 0 };
-      byMonth.set(monthKey, { label: monthPrev.label, sum: monthPrev.sum + score, count: monthPrev.count + 1 });
+      const monthPrev = byMonth.get(monthKey) || {
+        label: monthLabel,
+        sum: 0,
+        count: 0,
+      };
+      byMonth.set(monthKey, {
+        label: monthPrev.label,
+        sum: monthPrev.sum + score,
+        count: monthPrev.count + 1,
+      });
     }
 
     const dayTrend = [...byDay.entries()]
@@ -584,11 +638,13 @@ const getAdminPulseOverview = async (req, res) => {
       gender: {
         male: {
           employees: Number(maleRow?.employees || 0),
-          score: maleRow?.avgScore === null ? 0 : Number(maleRow?.avgScore || 0),
+          score:
+            maleRow?.avgScore === null ? 0 : Number(maleRow?.avgScore || 0),
         },
         female: {
           employees: Number(femaleRow?.employees || 0),
-          score: femaleRow?.avgScore === null ? 0 : Number(femaleRow?.avgScore || 0),
+          score:
+            femaleRow?.avgScore === null ? 0 : Number(femaleRow?.avgScore || 0),
         },
       },
       departmentsDetails: deptDetails.map((d) => ({
@@ -621,13 +677,7 @@ const getAdminPulseSurveyResponses = async (req, res) => {
       .where("r.company_id", companyId)
       .andWhere("r.survey_id", Number(id))
       .orderBy("r.responded_at", "desc")
-      .select(
-        "r.*",
-        "e.first_name",
-        "e.last_name",
-        "e.email",
-        "e.gender",
-      );
+      .select("r.*", "e.first_name", "e.last_name", "e.email", "e.gender");
 
     return res.json(
       responses.map((r) => ({
@@ -640,13 +690,15 @@ const getAdminPulseSurveyResponses = async (req, res) => {
         isAnonymous: Boolean(r.is_anonymous),
         respondedAt: r.responded_at,
         updatedAt: r.updated_at,
-        employee: Boolean(r.is_anonymous) || Boolean(survey.allow_anonymous) && Boolean(r.is_anonymous)
-          ? null
-          : {
-              name: `${r.first_name} ${r.last_name || ""}`.trim(),
-              email: r.email,
-              gender: r.gender,
-            },
+        employee:
+          Boolean(r.is_anonymous) ||
+          (Boolean(survey.allow_anonymous) && Boolean(r.is_anonymous))
+            ? null
+            : {
+                name: `${r.first_name} ${r.last_name || ""}`.trim(),
+                email: r.email,
+                gender: r.gender,
+              },
       })),
     );
   } catch (error) {
@@ -666,7 +718,11 @@ const getMyPulseSurveys = async (req, res) => {
   try {
     const surveysQuery = canSeeAllCompanySurveys
       ? db("pulse_surveys as s")
-      : db("pulse_survey_recipients as pr").join("pulse_surveys as s", "s.id", "pr.survey_id");
+      : db("pulse_survey_recipients as pr").join(
+          "pulse_surveys as s",
+          "s.id",
+          "pr.survey_id",
+        );
 
     const surveys = await surveysQuery
       .leftJoin("pulse_survey_responses as r", function () {
@@ -676,7 +732,10 @@ const getMyPulseSurveys = async (req, res) => {
           db.raw("?", [employeeId || 0]),
         );
       })
-      .where(canSeeAllCompanySurveys ? "s.company_id" : "pr.company_id", companyId)
+      .where(
+        canSeeAllCompanySurveys ? "s.company_id" : "pr.company_id",
+        companyId,
+      )
       .modify((query) => {
         if (!canSeeAllCompanySurveys) {
           query.andWhere("pr.employee_id", employeeId);
@@ -732,13 +791,22 @@ const getPulseSurveyForEmployee = async (req, res) => {
   try {
     if (!canSeeAllCompanySurveys) {
       if (!employeeId) {
-        return res.status(400).json({ message: "Employee profile is required to view this survey" });
+        return res
+          .status(400)
+          .json({
+            message: "Employee profile is required to view this survey",
+          });
       }
 
       const assigned = await db("pulse_survey_recipients")
-        .where({ company_id: companyId, employee_id: employeeId, survey_id: Number(id) })
+        .where({
+          company_id: companyId,
+          employee_id: employeeId,
+          survey_id: Number(id),
+        })
         .first();
-      if (!assigned) return res.status(404).json({ message: "Survey not found" });
+      if (!assigned)
+        return res.status(404).json({ message: "Survey not found" });
     }
 
     const survey = await db("pulse_surveys")
@@ -748,7 +816,11 @@ const getPulseSurveyForEmployee = async (req, res) => {
 
     const response = employeeId
       ? await db("pulse_survey_responses")
-          .where({ company_id: companyId, survey_id: Number(id), employee_id: employeeId })
+          .where({
+            company_id: companyId,
+            survey_id: Number(id),
+            employee_id: employeeId,
+          })
           .first()
       : null;
 
@@ -782,11 +854,20 @@ const respondPulseSurvey = async (req, res) => {
   const companyId = req.user.company_id;
   const employeeId = getSurveyEmployeeId(req.user);
   const { id } = req.params;
-  const { score, label = "", comment = "", isAnonymous = false } = req.body || {};
+  const {
+    score,
+    label = "",
+    comment = "",
+    isAnonymous = false,
+  } = req.body || {};
   const canSeeAllCompanySurveys = isAdminSurveyUser(req.user);
 
   if (!employeeId) {
-    return res.status(400).json({ message: "Admin needs a linked employee profile to respond to surveys" });
+    return res
+      .status(400)
+      .json({
+        message: "Admin needs a linked employee profile to respond to surveys",
+      });
   }
 
   const numericScore = clampScore(score);
@@ -802,7 +883,11 @@ const respondPulseSurvey = async (req, res) => {
 
     if (!canSeeAllCompanySurveys) {
       const assigned = await db("pulse_survey_recipients")
-        .where({ company_id: companyId, employee_id: employeeId, survey_id: Number(id) })
+        .where({
+          company_id: companyId,
+          employee_id: employeeId,
+          survey_id: Number(id),
+        })
         .first();
       if (!assigned) return res.status(403).json({ message: "Not allowed" });
     }
@@ -811,7 +896,11 @@ const respondPulseSurvey = async (req, res) => {
     const anonymousFlag = allowAnonymous ? Boolean(isAnonymous) : false;
 
     const existing = await db("pulse_survey_responses")
-      .where({ company_id: companyId, survey_id: Number(id), employee_id: employeeId })
+      .where({
+        company_id: companyId,
+        survey_id: Number(id),
+        employee_id: employeeId,
+      })
       .first();
 
     const now = new Date();
@@ -838,7 +927,9 @@ const respondPulseSurvey = async (req, res) => {
       });
     }
 
-    return res.json({ message: existing ? "Response updated" : "Response submitted" });
+    return res.json({
+      message: existing ? "Response updated" : "Response submitted",
+    });
   } catch (error) {
     console.error("respondPulseSurvey error:", error);
     return res.status(500).json({ message: "Failed to submit response" });
@@ -883,7 +974,13 @@ const createPulseSurveyTemplate = async (req, res) => {
 
   const companyId = req.user.company_id;
   const createdByUserId = req.user.id;
-  const { name, title, message = "", category = "general", isActive = true } = req.body || {};
+  const {
+    name,
+    title,
+    message = "",
+    category = "general",
+    isActive = true,
+  } = req.body || {};
 
   if (!name || !String(name).trim()) {
     return res.status(400).json({ message: "Template name is required" });
@@ -906,7 +1003,14 @@ const createPulseSurveyTemplate = async (req, res) => {
     };
 
     const [id] = await db("pulse_survey_templates").insert(payload);
-    return res.status(201).json({ id, ...payload, company_id: undefined, created_by_user_id: undefined });
+    return res
+      .status(201)
+      .json({
+        id,
+        ...payload,
+        company_id: undefined,
+        created_by_user_id: undefined,
+      });
   } catch (error) {
     console.error("createPulseSurveyTemplate error:", error);
     if (error?.code === "ER_DUP_ENTRY") {
@@ -927,7 +1031,8 @@ const updatePulseSurveyTemplate = async (req, res) => {
     const existing = await db("pulse_survey_templates")
       .where({ id: Number(id), company_id: companyId })
       .first();
-    if (!existing) return res.status(404).json({ message: "Template not found" });
+    if (!existing)
+      return res.status(404).json({ message: "Template not found" });
 
     const next = {
       updated_at: new Date(),
@@ -935,7 +1040,8 @@ const updatePulseSurveyTemplate = async (req, res) => {
     if (name !== undefined) next.name = String(name).trim();
     if (title !== undefined) next.title = String(title).trim();
     if (message !== undefined) next.message = message ? String(message) : null;
-    if (category !== undefined) next.category = String(category || "general").trim() || "general";
+    if (category !== undefined)
+      next.category = String(category || "general").trim() || "general";
     if (isActive !== undefined) next.is_active = Boolean(isActive);
 
     await db("pulse_survey_templates")
@@ -963,7 +1069,8 @@ const deletePulseSurveyTemplate = async (req, res) => {
       .where({ id: Number(id), company_id: companyId })
       .del();
 
-    if (!deleted) return res.status(404).json({ message: "Template not found" });
+    if (!deleted)
+      return res.status(404).json({ message: "Template not found" });
     return res.json({ message: "Template deleted" });
   } catch (error) {
     console.error("deletePulseSurveyTemplate error:", error);

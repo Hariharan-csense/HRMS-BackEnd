@@ -89,10 +89,14 @@ const sendEmail = async ({ to, subject, template, data }) => {
         rows: [
           { label: "Employee", value: data.employeeName },
           { label: "Employee Code", value: data.employeeCode },
-          { label: "Resignation Date", value: formatDate(data.resignationDate) },
+          {
+            label: "Resignation Date",
+            value: formatDate(data.resignationDate),
+          },
           { label: "Last Working Day", value: formatDate(data.lastWorkingDay) },
         ],
-        outro: "Please review the settlement and complete the next action in HRMS.",
+        outro:
+          "Please review the settlement and complete the next action in HRMS.",
       });
       break;
     case "settlement-completed":
@@ -100,13 +104,15 @@ const sendEmail = async ({ to, subject, template, data }) => {
       html = renderTemplate("settlementCompleted.hbs", {
         title: "F&F Settlement Completed",
         greeting: `Dear ${data.employeeName},`,
-        intro: "Your full and final settlement has been completed successfully.",
+        intro:
+          "Your full and final settlement has been completed successfully.",
         rows: [
           { label: "Net Amount", value: formatAmount(data.netAmount) },
           { label: "Payment Mode", value: humanize(data.paymentMode) },
           { label: "Settlement Date", value: formatDate(data.settlementDate) },
         ],
-        outro: "Thank you for your contribution. Please reach out to HR if you need any clarification.",
+        outro:
+          "Thank you for your contribution. Please reach out to HR if you need any clarification.",
       });
       break;
     case "settlement-update":

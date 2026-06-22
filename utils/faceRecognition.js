@@ -55,7 +55,11 @@ if (process.env.FACE_LOAD_MODELS_ON_STARTUP === "1") {
 }
 
 const calculateEuclideanDistance = (descriptorA, descriptorB) => {
-  if (!descriptorA || !descriptorB || descriptorA.length !== descriptorB.length) {
+  if (
+    !descriptorA ||
+    !descriptorB ||
+    descriptorA.length !== descriptorB.length
+  ) {
     return Number.POSITIVE_INFINITY;
   }
 

@@ -572,7 +572,10 @@ const sumLeaveCreditByDate = (creditByDate) =>
 
 const mergeCreditByDate = (target, source) => {
   for (const [dateKey, credit] of source.entries()) {
-    target.set(dateKey, Math.max(Number(target.get(dateKey) || 0), Number(credit || 0)));
+    target.set(
+      dateKey,
+      Math.max(Number(target.get(dateKey) || 0), Number(credit || 0)),
+    );
   }
   return target;
 };
@@ -1120,20 +1123,23 @@ const processPayroll = async (req, res) => {
       }
 
       const nonWorkingDay = isNonWorkingDay(dayObj, dayKey);
-      if (
-        nonWorkingDay &&
-        !["present", "late", "half"].includes(status)
-      ) {
+      if (nonWorkingDay && !["present", "late", "half"].includes(status)) {
         continue;
       }
 
       let credit = 0;
 
       if (status === "absent") {
-        lopCreditByDate.set(dayKey, Math.max(Number(lopCreditByDate.get(dayKey) || 0), 1));
+        lopCreditByDate.set(
+          dayKey,
+          Math.max(Number(lopCreditByDate.get(dayKey) || 0), 1),
+        );
         credit = 0;
       } else if (status === "half") {
-        lopCreditByDate.set(dayKey, Math.max(Number(lopCreditByDate.get(dayKey) || 0), 0.5));
+        lopCreditByDate.set(
+          dayKey,
+          Math.max(Number(lopCreditByDate.get(dayKey) || 0), 0.5),
+        );
         credit = 0.5;
       } else if (status === "present" || status === "late") {
         credit = 1;
@@ -2259,11 +2265,9 @@ const deletePayrollProcessing = async (req, res) => {
       .first();
 
     if (!record) {
-      return res
-        .status(404)
-        .json({
-          message: "Payroll processing record not found or access denied",
-        });
+      return res.status(404).json({
+        message: "Payroll processing record not found or access denied",
+      });
     }
 
     await knex("payroll_processing").where({ id, company_id: companyId }).del();

@@ -5,7 +5,9 @@ const path = require("path");
 const resolveEmployeeIdFromAuth = async (req) => {
   const companyId = Number(req.user?.company_id);
   if (!companyId) return null;
-  const userType = String(req.user?.type || "").toLowerCase().trim();
+  const userType = String(req.user?.type || "")
+    .toLowerCase()
+    .trim();
 
   if (req.user?.employee_id) {
     const direct = await knex("employees")

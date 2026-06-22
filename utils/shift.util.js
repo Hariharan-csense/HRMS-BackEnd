@@ -1,4 +1,4 @@
-const knex = require('../db/db');
+const knex = require("../db/db");
 
 /**
  * Fetch the active shift for an employee
@@ -16,7 +16,7 @@ async function getEmployeeShift(employeeId, companyId) {
   }
 
   try {
-    const employee = await knex('employees')
+    const employee = await knex("employees")
       .where({ id: empId, company_id: compId })
       .first();
 
@@ -30,9 +30,7 @@ async function getEmployeeShift(employeeId, companyId) {
       return null;
     }
 
-    const shift = await knex('shifts')
-      .where({ id: employee.shift_id })
-      .first();
+    const shift = await knex("shifts").where({ id: employee.shift_id }).first();
 
     if (!shift) {
       console.log(`Shift not found for shift_id ${employee.shift_id}`);
@@ -40,15 +38,11 @@ async function getEmployeeShift(employeeId, companyId) {
     }
 
     return shift;
-
   } catch (err) {
-    console.error('getEmployeeShift error:', err);
+    console.error("getEmployeeShift error:", err);
     return null;
   }
 }
-
-
-
 
 /**
  * Calculate standard hours from a shift object
@@ -58,8 +52,8 @@ async function getEmployeeShift(employeeId, companyId) {
 function calculateStandardHours(shift) {
   if (!shift?.start_time || !shift?.end_time) return 8;
 
-  const [sh, sm] = shift.start_time.split(':').map(Number);
-  const [eh, em] = shift.end_time.split(':').map(Number);
+  const [sh, sm] = shift.start_time.split(":").map(Number);
+  const [eh, em] = shift.end_time.split(":").map(Number);
 
   const start = new Date();
   start.setHours(sh, sm, 0, 0);
@@ -80,11 +74,11 @@ function calculateStandardHours(shift) {
  */
 function determineShiftType(date, shift) {
   // Placeholder: always return 'regular'
-  return 'regular';
+  return "regular";
 }
 
 module.exports = {
   getEmployeeShift,
   calculateStandardHours,
-  determineShiftType
+  determineShiftType,
 };

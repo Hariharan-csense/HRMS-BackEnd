@@ -187,8 +187,6 @@ app.use("/backend/api/pulse-surveys", pulseSurveyRoutes);
 app.use("/backend/api/geocode", geocodeRoutes);
 app.use("/backend/api", esslRoutes);
 
-
-
 // Root route
 app.get("/", (req, res) => {
   res.send("Hello from HRMS Backend! 🚀");
