@@ -16,6 +16,35 @@ const enabledPermissions = (enabledActions = RBAC_ACTIONS) => {
   return permissions;
 };
 
+const normalizeKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+const findCatalogEntry = (entries, wanted) => {
+  const normalizedWanted = normalizeKey(wanted);
+  return (entries || []).find(
+    (entry) =>
+      normalizeKey(entry?.key) === normalizedWanted ||
+      normalizeKey(entry?.label) === normalizedWanted,
+  );
+};
+
+const resolveModuleKey = (moduleKeyOrLabel) =>
+  findCatalogEntry(RBAC_MODULE_CATALOG, moduleKeyOrLabel)?.key ||
+  moduleKeyOrLabel;
+
+const resolveSubmoduleKey = (moduleKeyOrLabel, submoduleKeyOrLabel) => {
+  const moduleEntry = findCatalogEntry(RBAC_MODULE_CATALOG, moduleKeyOrLabel);
+  if (!moduleEntry) return submoduleKeyOrLabel;
+
+  return (
+    findCatalogEntry(moduleEntry.submodules || [], submoduleKeyOrLabel)?.key ||
+    submoduleKeyOrLabel
+  );
+};
+
 const createCatalogModules = (basePermissions = emptyPermissions()) => {
   const modules = {};
 
@@ -40,14 +69,81 @@ const createCatalogModules = (basePermissions = emptyPermissions()) => {
 };
 
 const setModulePermissions = (modules, moduleKey, actions) => {
-  if (!modules[moduleKey]) return;
-  modules[moduleKey].permissions = enabledPermissions(actions);
+  const resolvedModuleKey = resolveModuleKey(moduleKey);
+  if (!modules[resolvedModuleKey]) return;
+  modules[resolvedModuleKey].permissions = enabledPermissions(actions);
 };
 
 const setSubmodulePermissions = (modules, moduleKey, submoduleKey, actions) => {
-  const submodule = modules[moduleKey]?.submodules?.[submoduleKey];
+  const resolvedModuleKey = resolveModuleKey(moduleKey);
+  const resolvedSubmoduleKey = resolveSubmoduleKey(moduleKey, submoduleKey);
+  const submodule =
+    modules[resolvedModuleKey]?.submodules?.[resolvedSubmoduleKey];
   if (!submodule) return;
   submodule.permissions = enabledPermissions(actions);
+};
+
+const isEmptyPermissionSet = (permissions = {}) =>
+  RBAC_ACTIONS.every((action) => Number(permissions?.[action] || 0) === 0);
+
+const mergeDefaultModules = (currentModules = {}, defaultModules = {}) => {
+  const mergedModules = createCatalogModules(emptyPermissions());
+
+  Object.entries(currentModules || {}).forEach(([moduleKey, moduleEntry]) => {
+    const resolvedModuleKey = resolveModuleKey(moduleKey);
+    if (!mergedModules[resolvedModuleKey]) return;
+
+    if (moduleEntry?.permissions) {
+      mergedModules[resolvedModuleKey].permissions = {
+        ...emptyPermissions(),
+        ...moduleEntry.permissions,
+      };
+    }
+
+    Object.entries(moduleEntry?.submodules || {}).forEach(
+      ([submoduleKey, submoduleEntry]) => {
+        const resolvedSubmoduleKey = resolveSubmoduleKey(
+          resolvedModuleKey,
+          submoduleKey,
+        );
+        const targetSubmodule =
+          mergedModules[resolvedModuleKey].submodules?.[resolvedSubmoduleKey];
+        if (!targetSubmodule) return;
+
+        targetSubmodule.permissions = {
+          ...emptyPermissions(),
+          ...submoduleEntry?.permissions,
+        };
+      },
+    );
+  });
+
+  Object.entries(defaultModules || {}).forEach(([moduleKey, moduleEntry]) => {
+    const targetModule = mergedModules[moduleKey];
+    if (!targetModule) return;
+
+    if (
+      moduleEntry?.permissions &&
+      isEmptyPermissionSet(targetModule.permissions)
+    ) {
+      targetModule.permissions = { ...moduleEntry.permissions };
+    }
+
+    Object.entries(moduleEntry?.submodules || {}).forEach(
+      ([submoduleKey, submoduleEntry]) => {
+        const targetSubmodule = targetModule.submodules?.[submoduleKey];
+        if (
+          targetSubmodule &&
+          submoduleEntry?.permissions &&
+          isEmptyPermissionSet(targetSubmodule.permissions)
+        ) {
+          targetSubmodule.permissions = { ...submoduleEntry.permissions };
+        }
+      },
+    );
+  });
+
+  return mergedModules;
 };
 
 const EMPLOYEE_DEFAULTS = [
@@ -106,6 +202,29 @@ const EMPLOYEE_DEFAULTS = [
     submodule: "feedback",
     actions: ["view", "create", "update", "delete"],
   },
+
+  { module: "kpi", actions: ["view", "create", "update", "delete"] },
+  { module: "kpi", submodule: "dashboard", actions: ["view"] },
+  {
+    module: "kpi",
+    submodule: "scorecard",
+    actions: ["view"],
+  },
+  {
+    module: "kpi",
+    submodule: "review",
+    actions: ["view", "create", "update", "delete"],
+  },
+  {
+    module: "kpi",
+    submodule: "corrective_actions",
+    actions: ["view", "create", "update", "delete"],
+  },
+  {
+    module: "kpi",
+    submodule: "reports",
+    actions: ["view", "create", "update", "delete"],
+  },
 ];
 
 const buildEmployeeDefaultModules = () => {
@@ -133,15 +252,25 @@ const getDefaultModulesForRoleName = (roleName) => {
     return buildEmployeeDefaultModules();
   }
 
-  if (normalizedRoleName === "ceo") {
+  if (normalizedRoleName === "admin" || normalizedRoleName === "ceo") {
     return buildFullAccessModules();
   }
 
   return null;
 };
 
+const mergeDefaultModulesForRoleName = (roleName, currentModules = {}) => {
+  const defaultModules = getDefaultModulesForRoleName(roleName);
+  if (!defaultModules) {
+    return mergeDefaultModules(currentModules, {});
+  }
+
+  return mergeDefaultModules(currentModules, defaultModules);
+};
+
 module.exports = {
   buildEmployeeDefaultModules,
   buildFullAccessModules,
   getDefaultModulesForRoleName,
+  mergeDefaultModulesForRoleName,
 };

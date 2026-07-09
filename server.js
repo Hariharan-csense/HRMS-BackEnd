@@ -114,6 +114,8 @@ const leavePolicyRoutes = require("./routes/leavePolicyRoutes");
 const reportsRoutes = require("./routes/reports.routes");
 const shiftRoutes = require("./routes/shiftRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
+const kpiDashboardRoutes = require("./routes/kpiDashboardRoutes");
+const kpiRoutes = require("./routes/kpiRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const clientRoutes = require("./routes/clientRoutes");
 const clientAttendanceRoutes = require("./routes/clientAttendanceRoutes");
@@ -161,7 +163,9 @@ app.use("/backend/api/fiscalyears", fiscalYearRoutes);
 app.use("/backend/api/leavepolicy", leavePolicyRoutes);
 app.use("/backend/api/reports", reportsRoutes);
 app.use("/backend/api/shifts", shiftRoutes);
+app.use("/backend/api/dashboard", kpiDashboardRoutes);
 app.use("/backend/api/dashboard", dashboardRoutes);
+app.use("/backend/api/kpi", kpiRoutes);
 app.use("/backend/api/notifications", notificationRoutes);
 app.use("/backend/api/clients", clientRoutes);
 app.use("/backend/api/client-attendance", clientAttendanceRoutes);
@@ -186,6 +190,20 @@ app.use("/backend/api/surveys", surveyRoutes);
 app.use("/backend/api/pulse-surveys", pulseSurveyRoutes);
 app.use("/backend/api/geocode", geocodeRoutes);
 app.use("/backend/api", esslRoutes);
+
+app.get("/backend/api/config/maps", (req, res) => {
+  const googleMapsApiKey =
+    process.env.GOOGLE_MAPS_BROWSER_API_KEY ||
+    process.env.GOOGLE_MAPS_API_KEY ||
+    process.env.VITE_GOOGLE_MAPS_API_KEY ||
+    "";
+
+  res.set("Cache-Control", "no-store");
+  res.json({
+    googleMapsApiKey,
+    hasGoogleMapsApiKey: Boolean(googleMapsApiKey),
+  });
+});
 
 // Root route
 app.get("/", (req, res) => {

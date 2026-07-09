@@ -81,6 +81,8 @@
       let userType = null;
       let companyId = null;
       let mappedEmployeeId = null;
+      let mappedDepartmentId = null;
+      let mappedDesignationId = null;
 
       // 1. Admin login (from users table)
       if (decoded.type === 'admin') {
@@ -103,6 +105,8 @@
             .first();
           if (employeeProfile) {
             mappedEmployeeId = Number(employeeProfile.id);
+            mappedDepartmentId = employeeProfile.department_id || null;
+            mappedDesignationId = employeeProfile.designation_id || null;
           }
         }
       } 
@@ -133,6 +137,8 @@
         userType = 'employee';
         companyId = user.company_id;
         mappedEmployeeId = Number(user.id);
+        mappedDepartmentId = user.department_id || null;
+        mappedDesignationId = user.designation_id || null;
       } else {
         return res.status(401).json({ message: 'Invalid user type' });
       }
@@ -153,6 +159,10 @@
         roles: mergedRoles,
         type: userType,
         company_id: companyId,
+        department_id:
+          mappedDepartmentId || user.department_id || decoded.department_id || null,
+        designation_id:
+          mappedDesignationId || user.designation_id || decoded.designation_id || null,
         first_name: user.first_name || null,
         last_name: user.last_name || null,
         name: user.first_name 

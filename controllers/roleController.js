@@ -12,26 +12,75 @@ const {
   parseModulesFromDb,
 } = require("../utils/rbac");
 
+const getRolesColumnInfo = async () => {
+  try {
+    return await knex("roles").columnInfo();
+  } catch (error) {
+    console.error("Failed to inspect roles schema:", error);
+    return {};
+  }
+};
+
+const withRoleCompanyScope = (query, companyId, roleColumns = {}) => {
+  if (companyId && roleColumns.company_id) {
+    query.where({ company_id: companyId });
+  }
+  return query;
+};
+
+const getRoleSelectColumns = (roleColumns = {}) => {
+  const selectColumns = [
+    "id",
+    "role_id",
+    "name",
+    "approval_authority",
+    "data_visibility",
+    "modules",
+    "description",
+    "created_at",
+    "updated_at",
+  ];
+
+  return selectColumns.filter((column) => roleColumns[column]);
+};
+
 // Auto generate Role ID: ROLE001, ROLE002... per company
 const generateRoleId = async (companyId) => {
-  const lastRole = await knex("roles")
-    .where({ company_id: companyId })
-    .orderBy("id", "desc")
-    .first();
+  const roleColumns = await getRolesColumnInfo();
+  const roleQuery = knex("roles").orderBy("id", "desc");
+  withRoleCompanyScope(roleQuery, companyId, roleColumns);
+  const lastRole = await roleQuery.first();
 
   if (!lastRole) return "ROLE001";
 
-  const num = parseInt(lastRole.role_id.replace("ROLE", "")) + 1;
+  const currentRoleId = String(lastRole.role_id || "ROLE000");
+  const num = parseInt(currentRoleId.replace("ROLE", ""), 10) + 1;
   return `ROLE${String(num).padStart(3, "0")}`;
 };
 
 const syncHardcodedDefaultRoles = async (companyId) => {
-  const roles = await knex("roles")
-    .where({ company_id: companyId })
-    .select("id", "name", "modules");
+  const roleColumns = await getRolesColumnInfo();
+  const selectColumns = ["id", "name", "modules", "created_at", "updated_at"];
+  if (roleColumns.use_new_rbac) {
+    selectColumns.push("use_new_rbac");
+  }
+
+  const rolesQuery = knex("roles").select(...selectColumns);
+  withRoleCompanyScope(rolesQuery, companyId, roleColumns);
+  const roles = await rolesQuery;
 
   await Promise.all(
     roles.map(async (role) => {
+      // If the role has been edited/customized, never overwrite it with defaults.
+      if (roleColumns.use_new_rbac && role.use_new_rbac) return;
+      if (
+        role.created_at &&
+        role.updated_at &&
+        new Date(role.updated_at).getTime() !== new Date(role.created_at).getTime()
+      ) {
+        return;
+      }
+
       const defaultModules = getDefaultModulesForRoleName(role.name);
       if (!defaultModules) return;
 
@@ -46,26 +95,32 @@ const syncHardcodedDefaultRoles = async (companyId) => {
       }
 
       await knex("roles")
-        .where({ id: role.id, company_id: companyId })
+        .modify((queryBuilder) => {
+          queryBuilder.where({ id: role.id });
+          if (companyId && roleColumns.company_id) {
+            queryBuilder.andWhere({ company_id: companyId });
+          }
+        })
         .update({
           modules: JSON.stringify(normalizedDefaultModules),
-          updated_at: knex.fn.now(),
+          ...(roleColumns.use_new_rbac ? { use_new_rbac: true } : {}),
+          ...(roleColumns.updated_at ? { updated_at: knex.fn.now() } : {}),
         });
     }),
   );
 };
 
 const ensureDefaultSystemRoles = async (companyId) => {
+  const roleColumns = await getRolesColumnInfo();
   const defaultRoleDefinitions = [
     { name: "Admin", modules: buildFullAccessModules() },
     { name: "CEO", modules: buildFullAccessModules() },
     { name: "Employee", modules: buildEmployeeDefaultModules() },
   ];
 
-  const lastRole = await knex("roles")
-    .where({ company_id: companyId })
-    .orderBy("id", "desc")
-    .first();
+  const lastRoleQuery = knex("roles").orderBy("id", "desc");
+  withRoleCompanyScope(lastRoleQuery, companyId, roleColumns);
+  const lastRole = await lastRoleQuery.first();
 
   let nextRoleNumber = lastRole?.role_id
     ? parseInt(String(lastRole.role_id).replace("ROLE", ""), 10) + 1
@@ -73,10 +128,12 @@ const ensureDefaultSystemRoles = async (companyId) => {
 
   for (const defaultRole of defaultRoleDefinitions) {
     const existingRole = await knex("roles")
-      .whereRaw("LOWER(name) = ? AND company_id = ?", [
-        defaultRole.name.toLowerCase(),
-        companyId,
-      ])
+      .modify((queryBuilder) => {
+        queryBuilder.whereRaw("LOWER(name) = ?", [defaultRole.name.toLowerCase()]);
+        if (companyId && roleColumns.company_id) {
+          queryBuilder.andWhere("company_id", companyId);
+        }
+      })
       .first();
 
     if (existingRole) continue;
@@ -84,25 +141,29 @@ const ensureDefaultSystemRoles = async (companyId) => {
     const role_id = `ROLE${String(nextRoleNumber).padStart(3, "0")}`;
     nextRoleNumber += 1;
 
-    await knex("roles").insert({
-      company_id: companyId,
+    const insertPayload = {
       role_id,
       name: defaultRole.name,
-      approval_authority: "",
-      data_visibility: "",
       modules: JSON.stringify(normalizeModulesPayload(defaultRole.modules)),
-      description: null,
-      created_at: knex.fn.now(),
-      updated_at: knex.fn.now(),
-    });
+    };
+
+    if (roleColumns.company_id) insertPayload.company_id = companyId;
+    if (roleColumns.approval_authority) insertPayload.approval_authority = "";
+    if (roleColumns.data_visibility) insertPayload.data_visibility = "";
+    if (roleColumns.description) insertPayload.description = null;
+    if (roleColumns.created_at) insertPayload.created_at = knex.fn.now();
+    if (roleColumns.updated_at) insertPayload.updated_at = knex.fn.now();
+
+    await knex("roles").insert(insertPayload);
   }
 };
 
 // Add Role (Admin only - scoped to company)
 const addRole = async (req, res) => {
   const companyId = req.user.company_id;
+  const roleColumns = await getRolesColumnInfo();
 
-  if (!companyId) {
+  if (!companyId && roleColumns.company_id) {
     return res
       .status(400)
       .json({ message: "You are not assigned to any company" });
@@ -134,10 +195,12 @@ const addRole = async (req, res) => {
   try {
     // Check duplicate role name within the same company
     const existing = await knex("roles")
-      .whereRaw("LOWER(name) = ? AND company_id = ?", [
-        name.trim().toLowerCase(),
-        companyId,
-      ])
+      .modify((queryBuilder) => {
+        queryBuilder.whereRaw("LOWER(name) = ?", [name.trim().toLowerCase()]);
+        if (companyId && roleColumns.company_id) {
+          queryBuilder.andWhere("company_id", companyId);
+        }
+      })
       .first();
 
     if (existing) {
@@ -151,15 +214,26 @@ const addRole = async (req, res) => {
       roleDefaultModules || modules,
     );
 
-    const [newId] = await knex("roles").insert({
-      company_id: companyId,
+    const insertPayload = {
       role_id,
       name: name.trim(),
-      approval_authority: (approval_authority || "").trim(),
-      data_visibility: (data_visibility || "").trim(),
       modules: JSON.stringify(structuredModules),
-      description: description?.trim() || null,
-    });
+    };
+
+    if (roleColumns.company_id) insertPayload.company_id = companyId;
+    if (roleColumns.approval_authority) {
+      insertPayload.approval_authority = (approval_authority || "").trim();
+    }
+    if (roleColumns.data_visibility) {
+      insertPayload.data_visibility = (data_visibility || "").trim();
+    }
+    if (roleColumns.description) {
+      insertPayload.description = description?.trim() || null;
+    }
+    if (roleColumns.created_at) insertPayload.created_at = knex.fn.now();
+    if (roleColumns.updated_at) insertPayload.updated_at = knex.fn.now();
+
+    const [newId] = await knex("roles").insert(insertPayload);
 
     const newRole = await knex("roles").where({ id: newId }).first();
 
@@ -179,8 +253,9 @@ const addRole = async (req, res) => {
 // Get All Roles (only from user's company)
 const getRoles = async (req, res) => {
   const companyId = req.user.company_id;
+  const roleColumns = await getRolesColumnInfo();
 
-  if (!companyId) {
+  if (!companyId && roleColumns.company_id) {
     return res
       .status(400)
       .json({ message: "You are not assigned to any company" });
@@ -190,20 +265,11 @@ const getRoles = async (req, res) => {
     await ensureDefaultSystemRoles(companyId);
     await syncHardcodedDefaultRoles(companyId);
 
-    let roles = await knex("roles")
-      .where({ company_id: companyId })
-      .select(
-        "id",
-        "role_id",
-        "name",
-        "approval_authority",
-        "data_visibility",
-        "modules",
-        "description",
-        "created_at",
-        "updated_at",
-      )
+    let rolesQuery = knex("roles")
+      .select(...getRoleSelectColumns(roleColumns))
       .orderBy("name");
+    withRoleCompanyScope(rolesQuery, companyId, roleColumns);
+    let roles = await rolesQuery;
 
     if (!roles || roles.length === 0) {
       const role_id = await generateRoleId(companyId);
@@ -212,34 +278,28 @@ const getRoles = async (req, res) => {
         buildFullAccessModules(),
       );
 
-      await knex("roles").insert({
-        company_id: companyId,
+      const insertPayload = {
         role_id,
         name: "Admin",
-        approval_authority: "",
-        data_visibility: "",
         modules: JSON.stringify(structuredModules),
-        description: null,
-        created_at: knex.fn.now(),
-        updated_at: knex.fn.now(),
-      });
+      };
+
+      if (roleColumns.company_id) insertPayload.company_id = companyId;
+      if (roleColumns.approval_authority) insertPayload.approval_authority = "";
+      if (roleColumns.data_visibility) insertPayload.data_visibility = "";
+      if (roleColumns.description) insertPayload.description = null;
+      if (roleColumns.created_at) insertPayload.created_at = knex.fn.now();
+      if (roleColumns.updated_at) insertPayload.updated_at = knex.fn.now();
+
+      await knex("roles").insert(insertPayload);
 
       await syncHardcodedDefaultRoles(companyId);
 
-      roles = await knex("roles")
-        .where({ company_id: companyId })
-        .select(
-          "id",
-          "role_id",
-          "name",
-          "approval_authority",
-          "data_visibility",
-          "modules",
-          "description",
-          "created_at",
-          "updated_at",
-        )
+      rolesQuery = knex("roles")
+        .select(...getRoleSelectColumns(roleColumns))
         .orderBy("name");
+      withRoleCompanyScope(rolesQuery, companyId, roleColumns);
+      roles = await rolesQuery;
     }
 
     const parsedRoles = roles.map((role) => ({
@@ -324,7 +384,9 @@ const updateRole = async (req, res) => {
             ? data_visibility.trim()
             : role.data_visibility || "",
         modules: JSON.stringify(updatedModules),
+        use_new_rbac: true,
         description: description?.trim() || null,
+        updated_at: knex.fn.now(),
       });
 
     const updated = await knex("roles").where({ id }).first();

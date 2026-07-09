@@ -36,6 +36,7 @@ const getAddonModuleAliases = (addon = {}) => {
   if (key === 'payroll' || text.includes('payroll')) modules.add('payroll');
   if (key === 'hr_management' || text.includes('recruitment') || text.includes('rms')) modules.add('hr_management');
   if (key === 'exit' || text.includes('offboarding')) modules.add('exit');
+  if (key === 'kpi' || text.includes('kpi')) modules.add('kpi');
 
   return modules;
 };

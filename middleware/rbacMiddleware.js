@@ -48,6 +48,7 @@ const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
   const normalizedSubmodule = String(submoduleKey || "").toLowerCase();
 
   if (normalizedModule === "payroll") return true;
+  if (normalizedModule === "kpi") return true;
   if (normalizedModule === "employees" && normalizedSubmodule === "profile") return true;
   if (normalizedModule === "expenses" && normalizedSubmodule === "claims") return true;
   if (

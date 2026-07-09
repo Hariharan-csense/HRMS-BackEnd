@@ -109,6 +109,17 @@ const RBAC_MODULE_CATALOG = [
       { key: "employee_reports", label: "Employee Reports" },
     ],
   },
+  {
+    key: "kpi",
+    label: "KPI Management",
+    submodules: [
+      { key: "dashboard", label: "Dashboard" },
+      { key: "scorecard", label: "KPI Scorecard" },
+      { key: "review", label: "KPI Review" },
+      { key: "corrective_actions", label: "Corrective Action Plans" },
+      { key: "reports", label: "Reports" },
+    ],
+  },
   { key: "tickets", label: "Tickets", submodules: [] },
   {
     key: "pulse_surveys",

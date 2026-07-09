@@ -135,6 +135,7 @@ const inferAddonModuleKey = (addon = {}) => {
   )
     return "hr_management";
   if (text.includes("exit") || text.includes("offboarding")) return "exit";
+  if (text.includes("kpi")) return "kpi";
   return normalizeModuleKey(addon.module_key || addon.name);
 };
 
