@@ -566,7 +566,7 @@ const addEmployee = async (req, res) => {
           office_email: office_email || null,
           emergency_contact_name: emergency_contact_name || null,
           emergency_contact_phone: emergency_contact_phone || null,
-          doj,
+          doj: doj || null,
           employment_type: employment_type || "Full-Time",
           shift_id: finalShiftId, // ✅ SAFE
           department_id: depId,
@@ -651,7 +651,7 @@ const addEmployee = async (req, res) => {
         office_email: office_email || null,
         emergency_contact_name: emergency_contact_name || null,
         emergency_contact_phone: emergency_contact_phone || null,
-        doj,
+        doj: doj || null,
         employment_type: employment_type || "Full-Time",
         shift_id: finalShiftId, // ✅ SAFE
         department_id: depId,
@@ -848,11 +848,13 @@ const getEmployees = async (req, res) => {
       .leftJoin("departments as d", "e.department_id", "d.id")
       .leftJoin("designations as des", "e.designation_id", "des.id")
       .leftJoin("branches as b", "e.branch_id", "b.id")
+      .leftJoin("shifts as sh", "e.shift_id", "sh.id")
       .select(
         "e.*",
         "d.name as department_name",
         "des.name as designation_name",
         "b.name as branch_name",
+        "sh.name as shift_name",
       )
       .where("e.company_id", companyId);
 

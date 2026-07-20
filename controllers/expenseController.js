@@ -14,6 +14,7 @@ const {
   getAssignedClientCountForEmployee,
   isClientAssignedToEmployee,
 } = require("../utils/clientAssignments");
+const { validateExpensePolicy } = require("../services/companyPolicyService");
 
 const isPrivilegedExpenseRole = (user) =>
   hasAnyRole(user, ["admin", "finance", "ceo", "superadmin"]);
@@ -544,6 +545,15 @@ const submitExpense = async (req, res) => {
     }
     expense_date = parsedDate.format("YYYY-MM-DD");
 
+    const expensePolicyError = await validateExpensePolicy({
+      companyId,
+      employeeId,
+      expenseRows: [{ category, amount, expense_date }],
+    });
+    if (expensePolicyError) {
+      return res.status(400).json({ message: expensePolicyError });
+    }
+
     // Optional: validate assigned client (if provided)
     const clientId = client_id ? Number(client_id) : null;
     if (clientId) {
@@ -669,6 +679,23 @@ const submitExpensesBulk = async (req, res) => {
       return res
         .status(400)
         .json({ message: "Too many expenses in one request (max 25)" });
+    }
+
+    const policyRows = items.map((row) => ({
+      category: normalizeExpenseCategory(row?.category),
+      amount: Number(row?.amount),
+      expense_date:
+        parseExpenseDateToISO(row?.expense_date || row?.date) ||
+        moment().format("YYYY-MM-DD"),
+    }));
+
+    const expensePolicyError = await validateExpensePolicy({
+      companyId,
+      employeeId,
+      expenseRows: policyRows,
+    });
+    if (expensePolicyError) {
+      return res.status(400).json({ message: expensePolicyError });
     }
 
     const files = Array.isArray(req.files) ? req.files : [];
@@ -1001,6 +1028,22 @@ const updateExpenseStatus = async (req, res) => {
 
       if (Object.keys(updates).length === 0) {
         return res.status(400).json({ message: "No fields to update" });
+      }
+
+      const expensePolicyError = await validateExpensePolicy({
+        companyId,
+        employeeId: expense.employee_id,
+        expenseRows: [
+          {
+            category: updates.category ?? expense.category,
+            amount: updates.amount ?? expense.amount,
+            expense_date: updates.expense_date ?? expense.expense_date,
+          },
+        ],
+        excludedExpenseIds: [expense.expense_id],
+      });
+      if (expensePolicyError) {
+        return res.status(400).json({ message: expensePolicyError });
       }
 
       await knex("expenses")

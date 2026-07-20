@@ -1123,7 +1123,7 @@ const processPayroll = async (req, res) => {
       }
 
       const nonWorkingDay = isNonWorkingDay(dayObj, dayKey);
-      if (nonWorkingDay && !["present", "late", "half"].includes(status)) {
+      if (nonWorkingDay && !["present", "late", "grace", "half"].includes(status)) {
         continue;
       }
 
@@ -1141,7 +1141,7 @@ const processPayroll = async (req, res) => {
           Math.max(Number(lopCreditByDate.get(dayKey) || 0), 0.5),
         );
         credit = 0.5;
-      } else if (status === "present" || status === "late") {
+      } else if (status === "present" || status === "late" || status === "grace") {
         credit = 1;
       } else if (status === "leave") {
         const leaveName = String(row.flag_reason || row.status || "");

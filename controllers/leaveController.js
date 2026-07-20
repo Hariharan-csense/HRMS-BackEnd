@@ -13,6 +13,7 @@ const {
   backfillLeaveBalancesForLeaveType,
   reconcileMissingLeaveBalances,
 } = require("../services/leaveBalanceService");
+const { validateLeavePolicy } = require("../services/companyPolicyService");
 
 const normalizeWorkflowText = (value) =>
   String(value || "")
@@ -579,6 +580,18 @@ const applyLeave = async (req, res) => {
             .status(400)
             .json({ message: "Insufficient leave balance" });
         }
+      }
+
+      const leavePolicyError = await validateLeavePolicy({
+        companyId,
+        employee,
+        leaveType,
+        requestedDays: days,
+        fromDate: from_date,
+      });
+      if (leavePolicyError) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: leavePolicyError });
       }
 
       // ===============================

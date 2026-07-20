@@ -99,7 +99,12 @@ const isHalfDayStatus = (value) => {
 
 const isPresentLikeStatus = (value) => {
   const status = normalizeStatus(value).replace(/[\s-]+/g, "_");
-  return status === "present" || status === "late" || isHalfDayStatus(status);
+  return (
+    status === "present" ||
+    status === "late" ||
+    status === "grace" ||
+    isHalfDayStatus(status)
+  );
 };
 
 const isHalfDayLeave = (leave) => {
@@ -807,7 +812,7 @@ const getAttendanceReport = async (req, res) => {
         knex.raw("DATE_FORMAT(a.check_in, '%Y-%m') as ym_key"),
         knex.raw("DATE_FORMAT(a.check_in, '%M') as month_name"),
         knex.raw(
-          "SUM(CASE WHEN LOWER(a.status) IN ('present', 'late') THEN 1 ELSE 0 END) as present",
+          "SUM(CASE WHEN LOWER(a.status) IN ('present', 'late', 'grace') THEN 1 ELSE 0 END) as present",
         ),
         knex.raw(
           "SUM(CASE WHEN LOWER(a.status) = 'absent' THEN 1 ELSE 0 END) as absent",
@@ -863,7 +868,7 @@ const getAttendanceReport = async (req, res) => {
       .whereNotNull("a.check_in")
       .select(
         knex.raw(
-          "SUM(CASE WHEN LOWER(a.status) IN ('present', 'late') THEN 1 WHEN LOWER(a.status) IN ('half', 'half_day', 'half-day') THEN 0.5 ELSE 0 END) / COUNT(*) * 100 as avg_att",
+          "SUM(CASE WHEN LOWER(a.status) IN ('present', 'late', 'grace') THEN 1 WHEN LOWER(a.status) IN ('half', 'half_day', 'half-day') THEN 0.5 ELSE 0 END) / COUNT(*) * 100 as avg_att",
         ),
       )
       .first();

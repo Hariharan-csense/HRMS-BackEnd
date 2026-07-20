@@ -6,6 +6,7 @@ const {
   buildEmployeeDefaultModules,
   buildFullAccessModules,
   getDefaultModulesForRoleName,
+  mergeDefaultModulesForRoleName,
 } = require("../config/rbacDefaults");
 const {
   normalizeModulesPayload,
@@ -71,25 +72,17 @@ const syncHardcodedDefaultRoles = async (companyId) => {
 
   await Promise.all(
     roles.map(async (role) => {
-      // If the role has been edited/customized, never overwrite it with defaults.
-      if (roleColumns.use_new_rbac && role.use_new_rbac) return;
-      if (
-        role.created_at &&
-        role.updated_at &&
-        new Date(role.updated_at).getTime() !== new Date(role.created_at).getTime()
-      ) {
-        return;
-      }
-
       const defaultModules = getDefaultModulesForRoleName(role.name);
       if (!defaultModules) return;
 
-      const normalizedDefaultModules = normalizeModulesPayload(defaultModules);
       const currentModules = parseModulesFromDb(role.modules);
+      const mergedDefaultModules = normalizeModulesPayload(
+        mergeDefaultModulesForRoleName(role.name, currentModules),
+      );
 
       if (
         JSON.stringify(currentModules) ===
-        JSON.stringify(normalizedDefaultModules)
+        JSON.stringify(mergedDefaultModules)
       ) {
         return;
       }
@@ -102,7 +95,7 @@ const syncHardcodedDefaultRoles = async (companyId) => {
           }
         })
         .update({
-          modules: JSON.stringify(normalizedDefaultModules),
+          modules: JSON.stringify(mergedDefaultModules),
           ...(roleColumns.use_new_rbac ? { use_new_rbac: true } : {}),
           ...(roleColumns.updated_at ? { updated_at: knex.fn.now() } : {}),
         });

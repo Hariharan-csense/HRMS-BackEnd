@@ -354,7 +354,7 @@ exports.updateParameterReviewStatus = async (req, res) => {
       }
 
       if (recipients.length) {
-        await Promise.all(
+        const sendResults = await Promise.all(
           recipients.map((recipient) =>
             sendKpiCorrectiveActionStatusUpdateNotification({
               recipientName: recipient.name,
@@ -369,6 +369,16 @@ exports.updateParameterReviewStatus = async (req, res) => {
             }),
           ),
         );
+        const sentCount = sendResults.filter(Boolean).length;
+        if (sentCount !== recipients.length) {
+          console.warn(
+            `[KPI status] notification partial id=${id} status=${status} sent=${sentCount}/${recipients.length}`,
+          );
+        } else if (process.env.OWNCHAT_DEBUG === "1") {
+          console.log(
+            `[KPI status] notification sent id=${id} status=${status} sent=${sentCount}/${recipients.length}`,
+          );
+        }
       } else {
         console.warn(
           `[KPI status] notification skipped id=${id} status=${status} ownerMobile=${ownerMobile || "missing"} reviewerMobile=${reviewerMobile || "missing"}`,

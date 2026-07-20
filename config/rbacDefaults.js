@@ -83,64 +83,71 @@ const setSubmodulePermissions = (modules, moduleKey, submoduleKey, actions) => {
   submodule.permissions = enabledPermissions(actions);
 };
 
-const isEmptyPermissionSet = (permissions = {}) =>
-  RBAC_ACTIONS.every((action) => Number(permissions?.[action] || 0) === 0);
+const findCurrentModuleKey = (modules, wantedModuleKey) =>
+  Object.keys(modules || {}).find(
+    (moduleKey) => resolveModuleKey(moduleKey) === wantedModuleKey,
+  );
+
+const findCurrentSubmoduleKey = (submodules, moduleKey, wantedSubmoduleKey) =>
+  Object.keys(submodules || {}).find(
+    (submoduleKey) =>
+      resolveSubmoduleKey(moduleKey, submoduleKey) === wantedSubmoduleKey,
+  );
 
 const mergeDefaultModules = (currentModules = {}, defaultModules = {}) => {
-  const mergedModules = createCatalogModules(emptyPermissions());
+  const mergedModules = {};
 
-  Object.entries(currentModules || {}).forEach(([moduleKey, moduleEntry]) => {
-    const resolvedModuleKey = resolveModuleKey(moduleKey);
-    if (!mergedModules[resolvedModuleKey]) return;
+  RBAC_MODULE_CATALOG.forEach((moduleEntry) => {
+    if (!moduleEntry?.key) return;
 
-    if (moduleEntry?.permissions) {
-      mergedModules[resolvedModuleKey].permissions = {
-        ...emptyPermissions(),
-        ...moduleEntry.permissions,
+    const currentModuleKey = findCurrentModuleKey(
+      currentModules,
+      moduleEntry.key,
+    );
+    const currentModule = currentModuleKey
+      ? currentModules[currentModuleKey]
+      : null;
+    const defaultModule = defaultModules[moduleEntry.key];
+
+    const submodules = {};
+    (moduleEntry.submodules || []).forEach((subEntry) => {
+      if (!subEntry?.key) return;
+
+      const currentSubmoduleKey = findCurrentSubmoduleKey(
+        currentModule?.submodules,
+        moduleEntry.key,
+        subEntry.key,
+      );
+      const currentSubmodule = currentSubmoduleKey
+        ? currentModule.submodules[currentSubmoduleKey]
+        : null;
+      const defaultSubmodule = defaultModule?.submodules?.[subEntry.key];
+
+      submodules[subEntry.key] = {
+        permissions: currentSubmodule
+          ? {
+              ...emptyPermissions(),
+              ...currentSubmodule.permissions,
+            }
+          : {
+              ...emptyPermissions(),
+              ...(defaultSubmodule?.permissions || {}),
+            },
       };
-    }
+    });
 
-    Object.entries(moduleEntry?.submodules || {}).forEach(
-      ([submoduleKey, submoduleEntry]) => {
-        const resolvedSubmoduleKey = resolveSubmoduleKey(
-          resolvedModuleKey,
-          submoduleKey,
-        );
-        const targetSubmodule =
-          mergedModules[resolvedModuleKey].submodules?.[resolvedSubmoduleKey];
-        if (!targetSubmodule) return;
-
-        targetSubmodule.permissions = {
-          ...emptyPermissions(),
-          ...submoduleEntry?.permissions,
-        };
-      },
-    );
-  });
-
-  Object.entries(defaultModules || {}).forEach(([moduleKey, moduleEntry]) => {
-    const targetModule = mergedModules[moduleKey];
-    if (!targetModule) return;
-
-    if (
-      moduleEntry?.permissions &&
-      isEmptyPermissionSet(targetModule.permissions)
-    ) {
-      targetModule.permissions = { ...moduleEntry.permissions };
-    }
-
-    Object.entries(moduleEntry?.submodules || {}).forEach(
-      ([submoduleKey, submoduleEntry]) => {
-        const targetSubmodule = targetModule.submodules?.[submoduleKey];
-        if (
-          targetSubmodule &&
-          submoduleEntry?.permissions &&
-          isEmptyPermissionSet(targetSubmodule.permissions)
-        ) {
-          targetSubmodule.permissions = { ...submoduleEntry.permissions };
-        }
-      },
-    );
+    mergedModules[moduleEntry.key] = {
+      permissions: currentModule
+        ? {
+            ...emptyPermissions(),
+            ...currentModule.permissions,
+          }
+        : {
+            ...emptyPermissions(),
+            ...(defaultModule?.permissions || {}),
+          },
+      submodules,
+    };
   });
 
   return mergedModules;

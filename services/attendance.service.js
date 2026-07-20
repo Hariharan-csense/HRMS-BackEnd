@@ -2,6 +2,7 @@ const knex = require('../db/db');
 const { determineShiftType } = require('../utils/shift.util');
 const { verifyFace, saveImage } = require('../utils/face.util');
 const { getEmployeeShift } = require('../utils/shift.util');
+const { getCompanyPolicy } = require('./companyPolicyService');
 const path = require('path');
 
 const resolveStoredImageUrl = (imageData, companyId) => {
@@ -21,6 +22,17 @@ const getDayWindow = (date) => {
   return { start, end };
 };
 
+const getMonthWindow = (date) => {
+  const start = new Date(date);
+  start.setDate(1);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+
+  return { start, end };
+};
+
 const formatDateOnly = (date) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -33,6 +45,40 @@ const formatTimeOnly = (date) => {
   const minutes = String(date.getMinutes()).padStart(2, '0');
   const seconds = String(date.getSeconds()).padStart(2, '0');
   return `${hours}:${minutes}:${seconds}`;
+};
+
+const timeToMinutes = (value) => {
+  const match = String(value || '').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+};
+
+const calculateStandardHours = (startTime, endTime, fallback = 8) => {
+  const startMinutes = timeToMinutes(startTime);
+  const endMinutes = timeToMinutes(endTime);
+  if (startMinutes === null || endMinutes === null) return fallback;
+
+  let durationMinutes = endMinutes - startMinutes;
+  if (durationMinutes <= 0) durationMinutes += 24 * 60;
+  return durationMinutes / 60;
+};
+
+const getAttendancePolicyShift = async (companyId) => {
+  const policy = await getCompanyPolicy(companyId);
+  const attendancePolicy = policy?.attendance;
+  if (!attendancePolicy?.gracePolicyEnabled) return null;
+
+  return {
+    start_time: attendancePolicy.workStartTime,
+    end_time: attendancePolicy.workEndTime,
+    grace_period: attendancePolicy.gracePeriodMinutes,
+    grace_days_per_month: attendancePolicy.graceDaysPerMonth,
+    half_day_threshold: attendancePolicy.halfDayThresholdHours,
+    standard_hours: calculateStandardHours(
+      attendancePolicy.workStartTime,
+      attendancePolicy.workEndTime,
+    ),
+  };
 };
 
 const getActivePermissionForPunch = async ({ companyId, employeeId, punchTime }) => {
@@ -51,6 +97,30 @@ const getActivePermissionForPunch = async ({ companyId, employeeId, punchTime })
     .orderByRaw("CASE WHEN status = 'approved' THEN 0 ELSE 1 END")
     .orderBy('created_at', 'desc')
     .first();
+};
+
+const hasGraceDayAvailable = async ({
+  companyId,
+  employeeId,
+  punchTime,
+  graceDaysPerMonth,
+}) => {
+  const monthlyLimit = Number(graceDaysPerMonth || 0);
+  if (monthlyLimit <= 0) return true;
+
+  const { start, end } = getMonthWindow(punchTime);
+  const row = await knex('attendance')
+    .where({
+      company_id: companyId,
+      employee_id: employeeId,
+      status: 'grace'
+    })
+    .where('check_in', '>=', start)
+    .where('check_in', '<', end)
+    .count({ count: '*' })
+    .first();
+
+  return Number(row?.count || 0) < monthlyLimit;
 };
 
 async function doCheckIn({
@@ -106,6 +176,9 @@ async function doCheckIn({
   if (!employeeShift) {
     employeeShift = await getEmployeeShift(employeeId, companyId);
   }
+
+  const policyShift = await getAttendancePolicyShift(companyId);
+  const attendanceShift = policyShift || employeeShift;
   
   // Convert shift type to numeric value if it's a string
   if (typeof finalShiftType === 'string') {
@@ -127,8 +200,8 @@ async function doCheckIn({
     punchTime: checkInTime
   });
 
-  if (!activePermission && employeeShift?.start_time) {
-    const [startHour, startMin] = employeeShift.start_time
+  if (!activePermission && attendanceShift?.start_time) {
+    const [startHour, startMin] = attendanceShift.start_time
       .split(':')
       .slice(0, 2)
       .map(Number);
@@ -136,8 +209,8 @@ async function doCheckIn({
     const shiftStart = new Date(checkInTime);
     shiftStart.setHours(startHour, startMin, 0, 0);
 
-    if (employeeShift?.end_time) {
-      const [endHour, endMin] = employeeShift.end_time
+    if (attendanceShift?.end_time) {
+      const [endHour, endMin] = attendanceShift.end_time
         .split(':')
         .slice(0, 2)
         .map(Number);
@@ -151,11 +224,14 @@ async function doCheckIn({
       }
     }
 
-    const gracePeriodMinutes = Number(employeeShift?.grace_period) > 0
-      ? Number(employeeShift.grace_period)
+    const gracePeriodMinutes = Number(attendanceShift?.grace_period) > 0
+      ? Number(attendanceShift.grace_period)
       : 0;
-    const halfDayThresholdHours = Number(employeeShift?.half_day_threshold) > 0
-      ? Number(employeeShift.half_day_threshold)
+    const graceDaysPerMonth = Number(attendanceShift?.grace_days_per_month) > 0
+      ? Number(attendanceShift.grace_days_per_month)
+      : 0;
+    const halfDayThresholdHours = Number(attendanceShift?.half_day_threshold) > 0
+      ? Number(attendanceShift.half_day_threshold)
       : 4;
 
     const lateCutoff = new Date(shiftStart.getTime() + gracePeriodMinutes * 60 * 1000);
@@ -165,6 +241,15 @@ async function doCheckIn({
       attendanceStatus = 'half_day';
     } else if (checkInTime > lateCutoff) {
       attendanceStatus = 'late';
+    } else if (checkInTime > shiftStart && gracePeriodMinutes > 0) {
+      attendanceStatus = await hasGraceDayAvailable({
+        companyId,
+        employeeId,
+        punchTime: checkInTime,
+        graceDaysPerMonth
+      })
+        ? 'grace'
+        : 'late';
     }
   }
 
@@ -231,9 +316,11 @@ async function doCheckOut({
   if (hoursWorked < 0.0167) hoursWorked = 0.0167;
 
   const employeeShift = await getEmployeeShift(employeeId, companyId);
+  const policyShift = await getAttendancePolicyShift(companyId);
+  const attendanceShift = policyShift || employeeShift;
   const standardHours =
-    Number(employeeShift?.standard_hours) > 0
-      ? Number(employeeShift.standard_hours)
+    Number(attendanceShift?.standard_hours) > 0
+      ? Number(attendanceShift.standard_hours)
       : 8;
   // Keep day status determined at check-in by shift start + grace + half-day cutoff.
   // Checkout should only finalize hours/overtime, not downgrade/upgrade attendance status.

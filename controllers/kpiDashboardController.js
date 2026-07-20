@@ -63,13 +63,13 @@ const resolveEmployeeScope = async ({
   const isManager = currentRole === "MANAGER";
   const effectiveDepartmentId = isManager
     ? departmentId || null
-    : canViewOrganization && requestedDepartmentId
+    : canViewOrg && requestedDepartmentId
       ? requestedDepartmentId
       : null;
   const effectiveEmployeeId =
-    requestedEmployeeId && (canViewOrganization || isManager)
+    requestedEmployeeId && (canViewOrg || isManager)
       ? requestedEmployeeId
-      : !canViewOrganization && !isManager
+      : !canViewOrg && !isManager
         ? currentEmployeeId || null
         : null;
 
@@ -197,6 +197,92 @@ const getAvailableDepartments = async ({ companyId, canViewOrganization }) => {
     .orderBy(nameCol, "asc");
   if (companyCol && companyId) query.where(companyCol, companyId);
   return query;
+};
+
+const getEmployeeDepartmentLookup = async ({
+  employeeTable,
+  employeeColumns,
+  companyId,
+  employeeIds,
+}) => {
+  const lookup = new Map();
+  if (!employeeTable || !employeeIds.length) return lookup;
+
+  const idCol = firstColumn(employeeColumns, ["id", "employee_id"]);
+  const companyCol = firstColumn(employeeColumns, [
+    "company_id",
+    "organizationId",
+    "organization_id",
+  ]);
+  const departmentIdCol = firstColumn(employeeColumns, [
+    "department_id",
+    "departmentId",
+  ]);
+  const employeeDepartmentNameCol = firstColumn(employeeColumns, [
+    "department_name",
+    "departmentName",
+    "department",
+  ]);
+  if (!idCol) return lookup;
+
+  const departmentTable = await firstExistingTable(["departments", "department"]);
+  const departmentColumns = await getColumnInfo(departmentTable);
+  const departmentTableIdCol = firstColumn(departmentColumns, ["id"]);
+  const departmentTableNameCol = firstColumn(departmentColumns, [
+    "name",
+    "department_name",
+  ]);
+
+  const query = knex(employeeTable)
+    .select(`${employeeTable}.${idCol} as id`)
+    .whereIn(`${employeeTable}.${idCol}`, employeeIds);
+
+  if (departmentIdCol) {
+    query.select(`${employeeTable}.${departmentIdCol} as departmentId`);
+  } else {
+    query.select(knex.raw("NULL as departmentId"));
+  }
+
+  if (
+    departmentTable &&
+    departmentIdCol &&
+    departmentTableIdCol &&
+    departmentTableNameCol
+  ) {
+    query
+      .leftJoin(
+        departmentTable,
+        `${employeeTable}.${departmentIdCol}`,
+        `${departmentTable}.${departmentTableIdCol}`,
+      )
+      .select(`${departmentTable}.${departmentTableNameCol} as departmentName`);
+  } else if (employeeDepartmentNameCol) {
+    query.select(
+      `${employeeTable}.${employeeDepartmentNameCol} as departmentName`,
+    );
+  } else {
+    query.select(knex.raw("? as departmentName", ["Unassigned"]));
+  }
+
+  if (companyCol && companyId) query.where(`${employeeTable}.${companyCol}`, companyId);
+
+  const rows = await query;
+  rows.forEach((row) => {
+    const employeeId = Number(row.id);
+    if (!employeeId) return;
+
+    const departmentId = Number(row.departmentId || 0) || 0;
+    const departmentName =
+      String(row.departmentName || "").trim() ||
+      (departmentId ? `Department ${departmentId}` : "Unassigned");
+
+    lookup.set(employeeId, {
+      id: departmentId,
+      name: departmentName,
+    });
+  });
+
+  return lookup;
 };
 
 const getKpiTemplateData = async ({ employeeIds }) => {
@@ -374,6 +460,109 @@ const getCompetencyGrowthPct = async ({ employeeTable, employeeColumns, employee
   return round2(row?.avg);
 };
 
+const buildKpiPerformanceTrend = (scorecards = []) => {
+  if (!scorecards.length) return [];
+
+  const latestTime = scorecards.reduce(
+    (latest, item) => Math.max(latest, item.monthDate.getTime()),
+    0,
+  );
+  const latestDate = latestTime ? new Date(latestTime) : new Date();
+  const endMonth = new Date(
+    Date.UTC(latestDate.getUTCFullYear(), latestDate.getUTCMonth(), 1),
+  );
+  const monthBuckets = [];
+
+  for (let offset = 5; offset >= 0; offset -= 1) {
+    const bucketDate = new Date(endMonth);
+    bucketDate.setUTCMonth(endMonth.getUTCMonth() - offset);
+    const month = `${bucketDate.getUTCFullYear()}-${String(
+      bucketDate.getUTCMonth() + 1,
+    ).padStart(2, "0")}`;
+    const monthLabel = new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    }).format(bucketDate);
+
+    monthBuckets.push({
+      month,
+      monthLabel,
+      totalScore: 0,
+      scorecardCount: 0,
+      lowKpiCount: 0,
+      topPerformerCount: 0,
+    });
+  }
+
+  const bucketByMonth = new Map(monthBuckets.map((bucket) => [bucket.month, bucket]));
+  scorecards.forEach((item) => {
+    const month = `${item.monthDate.getUTCFullYear()}-${String(
+      item.monthDate.getUTCMonth() + 1,
+    ).padStart(2, "0")}`;
+    const bucket = bucketByMonth.get(month);
+    if (!bucket) return;
+
+    bucket.totalScore += item.score;
+    bucket.scorecardCount += 1;
+    if (item.score < 70) bucket.lowKpiCount += 1;
+    if (item.score >= 70) bucket.topPerformerCount += 1;
+  });
+
+  return monthBuckets.map((bucket) => ({
+    month: bucket.month,
+    monthLabel: bucket.monthLabel,
+    averageScore: bucket.scorecardCount
+      ? round2(bucket.totalScore / bucket.scorecardCount)
+      : 0,
+    scorecardCount: bucket.scorecardCount,
+    lowKpiCount: bucket.lowKpiCount,
+    topPerformerCount: bucket.topPerformerCount,
+  }));
+};
+
+const buildDepartmentKpiPerformance = (scorecards = []) => {
+  const groups = new Map();
+
+  scorecards.forEach((item) => {
+    const departmentName = String(item.departmentName || "Unassigned").trim() || "Unassigned";
+    const departmentId = Number(item.departmentId || 0) || 0;
+    const key = departmentId ? String(departmentId) : departmentName.toLowerCase();
+    const group = groups.get(key) || {
+      departmentId,
+      departmentName,
+      totalScore: 0,
+      scorecardCount: 0,
+      lowKpiCount: 0,
+      topPerformerCount: 0,
+    };
+
+    group.totalScore += item.score;
+    group.scorecardCount += 1;
+    if (item.score < 70) group.lowKpiCount += 1;
+    if (item.score >= 70) group.topPerformerCount += 1;
+    groups.set(key, group);
+  });
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      departmentId: group.departmentId,
+      departmentName: group.departmentName,
+      averageScore: group.scorecardCount
+        ? round2(group.totalScore / group.scorecardCount)
+        : 0,
+      scorecardCount: group.scorecardCount,
+      lowKpiCount: group.lowKpiCount,
+      topPerformerCount: group.topPerformerCount,
+    }))
+    .sort(
+      (a, b) =>
+        b.averageScore - a.averageScore ||
+        b.scorecardCount - a.scorecardCount ||
+        a.departmentName.localeCompare(b.departmentName),
+    );
+};
+
 const getKpiDashboardWidgets = async (req, res) => {
   try {
     const companyId = Number(req.user?.company_id || 0) || null;
@@ -415,15 +604,29 @@ const getKpiDashboardWidgets = async (req, res) => {
     const { templates, templateIds } = await getKpiTemplateData({
       employeeIds: scope.employeeIds,
     });
+    const employeeDepartmentLookup = await getEmployeeDepartmentLookup({
+      employeeTable: scope.employeeTable,
+      employeeColumns: scope.employeeColumns,
+      companyId,
+      employeeIds: scope.employeeIds,
+    });
 
     const validScorecards = templates
       .map((template) => {
         const monthDate = new Date(template.createdAt);
+        const ownerId = Number(template.ownerId || 0);
+        const department = employeeDepartmentLookup.get(ownerId) || {
+          id: 0,
+          name: "Unassigned",
+        };
+
         return {
           id: template.id,
           monthDate,
-          ownerId: Number(template.ownerId || 0),
+          ownerId,
           ownerName: template.ownerName || template.title || "Unassigned",
+          departmentId: department.id,
+          departmentName: department.name,
           score: round2(template.totalScore),
         };
       })
@@ -435,6 +638,8 @@ const getKpiDashboardWidgets = async (req, res) => {
             validScorecards.length,
         )
       : 0;
+    const kpiPerformanceTrend = buildKpiPerformanceTrend(validScorecards);
+    const departmentKpiPerformance = buildDepartmentKpiPerformance(validScorecards);
 
     const bestScoreByPerson = new Map();
     validScorecards.forEach((item) => {
@@ -526,7 +731,9 @@ const getKpiDashboardWidgets = async (req, res) => {
       topPerformerCount: topPerformers.filter((item) => item.score >= 70).length,
       monthlyTopPerformers,
       lowKpiAlerts: validScorecards.filter((item) => item.score < 70).length,
-      kpiTrend: [],
+      kpiTrend: kpiPerformanceTrend,
+      kpiPerformanceTrend,
+      departmentKpiPerformance,
       competencyGrowthPct,
       correctiveActionStatus,
       correctiveActionTotal,

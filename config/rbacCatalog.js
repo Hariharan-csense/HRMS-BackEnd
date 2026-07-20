@@ -11,6 +11,7 @@ const RBAC_MODULE_CATALOG = [
       { key: "branches", label: "Branches" },
       { key: "departments", label: "Departments" },
       { key: "designations", label: "Designations" },
+      { key: "policies", label: "Company Policy" },
       { key: "role_management", label: "Role Management" },
     ],
   },

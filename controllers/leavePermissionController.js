@@ -7,6 +7,7 @@ const {
   sendLeavePermissionNotification,
   sendLeavePermissionStatusNotification,
 } = require("../utils/sendLeavePermissionStatusNotification");
+const { validatePermissionPolicy } = require("../services/companyPolicyService");
 //const { generateAutoNumber } = require("../utils/generateAutoNumber");
 
 const normalizeText = (value) =>
@@ -616,6 +617,18 @@ const applyLeavePermission = async (req, res) => {
       if (permissionDateWindowError) {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(400).json({ message: permissionDateWindowError });
+      }
+
+      const permissionPolicyError = await validatePermissionPolicy({
+        companyId,
+        employeeId: employee.id,
+        permissionDate: permission_date,
+        permissionTimeFrom: permission_time_from,
+        permissionTimeTo: permission_time_to,
+      });
+      if (permissionPolicyError) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ message: permissionPolicyError });
       }
 
       // ===============================

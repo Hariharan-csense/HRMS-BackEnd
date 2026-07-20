@@ -1,17 +1,17 @@
 const express = require("express");
 const path = require("path");
 const cors = require("cors");
-require("dotenv").config();
+const dotenv = require("dotenv");
+dotenv.config();
+dotenv.config({ path: path.join(__dirname, ".env"), override: false });
 const fs = require("fs");
 const http = require("http");
 const { Server } = require("socket.io");
 const { setIo } = require("./socket");
 const { initializeFirebaseAdmin } = require("./services/firebaseAdmin");
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 const server = http.createServer(app);
-
 const io = new Server(server, {
   path: "/backend/socket.io",
   cors: {
@@ -95,6 +95,7 @@ const authRoutes = require("./routes/authRoutes");
 const branchRoutes = require("./routes/branchRoutes");
 const departmentRoutes = require("./routes/departmentRoutes");
 const companyRoutes = require("./routes/company");
+const companyPolicyRoutes = require("./routes/companyPolicyRoutes");
 const designationRoutes = require("./routes/designationRoutes");
 const assetRoutes = require("./routes/assetRoutes");
 const attendanceRoutes = require("./routes/attendanceRoutes");
@@ -102,7 +103,6 @@ const expenseRoutes = require("./routes/expenseRoutes");
 const employeeRoutes = require("./routes/employeeRoutes");
 const leaveRoutes = require("./routes/leaveRoutes");
 const roleRoutes = require("./routes/roleRoutes");
-
 const payrollRoutes = require("./routes/payrollRoutes");
 const autoNumberRoutes = require("./routes/autoNumberroutes");
 const resignationRoutes = require("./routes/resignations");
@@ -146,13 +146,13 @@ app.use("/backend/api/auth", authRoutes);
 app.use("/backend/api/branch", branchRoutes);
 app.use("/backend/api/department", departmentRoutes);
 app.use("/backend/api/company", companyRoutes);
+app.use("/backend/api/company-policy", companyPolicyRoutes);
 app.use("/backend/api/designation", designationRoutes);
 app.use("/backend/api/asset", assetRoutes);
 app.use("/backend/api/attendance", attendanceRoutes);
 app.use("/backend/api/employee", employeeRoutes);
 app.use("/backend/api/leave", leaveRoutes);
 app.use("/backend/api/role", roleRoutes);
-
 app.use("/backend/api/payroll", payrollRoutes);
 app.use("/backend/api/autonumber", autoNumberRoutes);
 app.use("/backend/api/resignations", resignationRoutes);
