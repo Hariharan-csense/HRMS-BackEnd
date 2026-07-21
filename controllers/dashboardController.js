@@ -1,5 +1,6 @@
 // src/controllers/adminDashboardController.js
 const knex = require("../db/db"); // Adjust path if needed
+const { getCompanyPolicy } = require("../services/companyPolicyService");
 
 const getRelativeTime = (dateString) => {
   if (!dateString) return "Unknown time";
@@ -38,6 +39,23 @@ const resolveEmployeeIdFromUser = async (req) => {
   }
 
   return null;
+};
+
+const timeToMinutes = (value) => {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+};
+
+const getPermissionUnits = (fromTime, toTime, hoursPerPermission) => {
+  const fromMinutes = timeToMinutes(fromTime);
+  const toMinutes = timeToMinutes(toTime);
+  if (fromMinutes === null || toMinutes === null || toMinutes <= fromMinutes) {
+    return 1;
+  }
+
+  const durationHours = (toMinutes - fromMinutes) / 60;
+  return Math.max(1, Math.ceil(durationHours / hoursPerPermission));
 };
 
 const monthsForPeriod = (period = "6months") => {
@@ -686,6 +704,40 @@ const getEmployeeDashboardData = async (req, res) => {
       .sum("available as total_available")
       .first();
 
+    // Get monthly permission balance from company policy
+    const policy = await getCompanyPolicy(companyId);
+    const permissionLimit = policy.permission.enabled
+      ? Number(policy.permission.maxPerMonth || 0)
+      : 0;
+    const permissionStatuses = policy.permission.includePendingInUsage
+      ? ["pending", "approved"]
+      : ["approved"];
+    const permissionRows = permissionLimit
+      ? await knex("leave_permissions")
+          .where({
+            company_id: companyId,
+            employee_id: employeeId,
+          })
+          .whereIn("status", permissionStatuses)
+          .whereRaw(
+            "MONTH(permission_date) = ? AND YEAR(permission_date) = ?",
+            [currentMonth, currentYear],
+          )
+          .select("permission_time_from", "permission_time_to")
+      : [];
+    const hoursPerPermission =
+      Number(policy.permission.hoursPerPermission || 1) || 1;
+    const usedPermissionUnits = permissionRows.reduce(
+      (total, permission) =>
+        total +
+        getPermissionUnits(
+          permission.permission_time_from,
+          permission.permission_time_to,
+          hoursPerPermission,
+        ),
+      0,
+    );
+
     // Get working hours today
     const workingHours = await knex("attendance")
       .where({
@@ -766,6 +818,14 @@ const getEmployeeDashboardData = async (req, res) => {
       leaveBalance: {
         totalDays: Number(leaveBalance?.total_available || 0),
         description: "Days remaining this year",
+      },
+      permissionBalance: {
+        remaining: Math.max(permissionLimit - usedPermissionUnits, 0),
+        used: usedPermissionUnits,
+        limit: permissionLimit,
+        description: permissionLimit
+          ? `${usedPermissionUnits}/${permissionLimit} used this month`
+          : "No monthly permission limit configured",
       },
       workingHours: {
         hours: hoursWorked || "0",
