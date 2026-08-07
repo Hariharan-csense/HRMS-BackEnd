@@ -103,6 +103,7 @@ const hasPermission = ({ modules = {}, moduleKey, action, submoduleKey }) => {
       const submodulePermissions = moduleEntry.submodules[matchedSubmoduleKey]?.permissions || {};
       return Number(submodulePermissions[wantedAction] || 0) === 1;
     }
+    return false;
   }
 
   return Number(moduleEntry.permissions[wantedAction] || 0) === 1;

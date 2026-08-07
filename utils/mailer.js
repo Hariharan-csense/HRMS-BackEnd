@@ -4,14 +4,24 @@ const handlebars = require("handlebars");
 const fs = require("fs");
 const path = require("path");
 
+const emailUser = process.env.EMAIL_USER || process.env.SMTP_USER;
+const emailPass = process.env.EMAIL_PASS || process.env.SMTP_PASS;
+const emailHost = process.env.EMAIL_HOST || process.env.SMTP_HOST || "smtp.gmail.com";
+const parsedEmailPort = Number.parseInt(
+  String(process.env.EMAIL_PORT || process.env.SMTP_PORT || "587").trim(),
+  10,
+);
+const emailPort = Number.isFinite(parsedEmailPort) ? parsedEmailPort : 587;
+const emailFrom = process.env.EMAIL_FROM || emailUser;
+
 // Create transporter once (singleton)
 const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || "smtp.gmail.com",
-  port: parseInt(process.env.EMAIL_PORT) || 587,
-  secure: false, // true for 465, false for other ports
+  host: emailHost,
+  port: emailPort,
+  secure: emailPort === 465,
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    user: emailUser,
+    pass: emailPass,
   },
   tls: {
     rejectUnauthorized: false,
@@ -35,7 +45,7 @@ const sendEmailWithAttachment = async (
   filename,
 ) => {
   return transporter.sendMail({
-    from: `"HRMS" <${process.env.SMTP_USER}>`,
+    from: `"HRMS" <${emailFrom}>`,
     to,
     subject,
     text,
@@ -135,7 +145,7 @@ const sendEmail = async ({ to, subject, template, data }) => {
   }
 
   return transporter.sendMail({
-    from: `"HRMS" <${process.env.EMAIL_USER}>`,
+    from: `"HRMS" <${emailFrom}>`,
     to,
     subject,
     text,

@@ -192,6 +192,7 @@ const EMPLOYEE_DEFAULTS = [
   { module: "leave", submodule: "leave_types", actions: ["view"] },
   { module: "leave", submodule: "permission", actions: ["view", "create"] },
   { module: "payroll", submodule: "payslips", actions: ["view"] },
+  { module: "payroll", submodule: "loans", actions: ["view", "create"] },
   { module: "expenses", actions: ["view", "create", "update", "delete"] },
   {
     module: "expenses",
@@ -210,28 +211,6 @@ const EMPLOYEE_DEFAULTS = [
     actions: ["view", "create", "update", "delete"],
   },
 
-  { module: "kpi", actions: ["view", "create", "update", "delete"] },
-  { module: "kpi", submodule: "dashboard", actions: ["view"] },
-  {
-    module: "kpi",
-    submodule: "scorecard",
-    actions: ["view"],
-  },
-  {
-    module: "kpi",
-    submodule: "review",
-    actions: ["view", "create", "update", "delete"],
-  },
-  {
-    module: "kpi",
-    submodule: "corrective_actions",
-    actions: ["view", "create", "update", "delete"],
-  },
-  {
-    module: "kpi",
-    submodule: "reports",
-    actions: ["view", "create", "update", "delete"],
-  },
 ];
 
 const buildEmployeeDefaultModules = () => {

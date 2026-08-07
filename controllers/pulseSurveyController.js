@@ -553,6 +553,25 @@ const getAdminPulseOverview = async (req, res) => {
       )
       .orderBy("d.name", "asc");
 
+    const branchDetails = await db("employees as e")
+      .join("branches as b", "e.branch_id", "b.id")
+      .leftJoin("pulse_survey_responses as r", function () {
+        this.on("r.employee_id", "=", "e.id").andOn(
+          "r.company_id",
+          "=",
+          "e.company_id",
+        );
+      })
+      .where("e.company_id", companyId)
+      .whereNotNull("e.branch_id")
+      .groupBy("b.id", "b.name")
+      .select(
+        "b.name as name",
+        db.raw("COUNT(DISTINCT e.id) as employees"),
+        db.raw("AVG(r.score) as avgScore"),
+      )
+      .orderBy("name", "asc");
+
     const toPoint = (label, score) => ({ label, score: Number(score || 0) });
 
     // Trend buckets computed in JS (last N)
@@ -652,6 +671,11 @@ const getAdminPulseOverview = async (req, res) => {
         employees: Number(d.employees || 0),
         score: d.avgScore === null ? 0 : Number(d.avgScore || 0),
       })),
+      branchesDetails: branchDetails.map((b) => ({
+        name: b.name,
+        employees: Number(b.employees || 0),
+        score: b.avgScore === null ? 0 : Number(b.avgScore || 0),
+      })),
     });
   } catch (error) {
     console.error("getAdminPulseOverview error:", error);
@@ -674,10 +698,20 @@ const getAdminPulseSurveyResponses = async (req, res) => {
 
     const responses = await db("pulse_survey_responses as r")
       .join("employees as e", "e.id", "r.employee_id")
+      .leftJoin("departments as d", "e.department_id", "d.id")
+      .leftJoin("branches as b", "e.branch_id", "b.id")
       .where("r.company_id", companyId)
       .andWhere("r.survey_id", Number(id))
       .orderBy("r.responded_at", "desc")
-      .select("r.*", "e.first_name", "e.last_name", "e.email", "e.gender");
+      .select(
+        "r.*",
+        "e.first_name",
+        "e.last_name",
+        "e.email",
+        "e.gender",
+        "d.name as department",
+        "b.name as branch",
+      );
 
     return res.json(
       responses.map((r) => ({
@@ -690,6 +724,8 @@ const getAdminPulseSurveyResponses = async (req, res) => {
         isAnonymous: Boolean(r.is_anonymous),
         respondedAt: r.responded_at,
         updatedAt: r.updated_at,
+        department: r.department || null,
+        branch: r.branch || null,
         employee:
           Boolean(r.is_anonymous) ||
           (Boolean(survey.allow_anonymous) && Boolean(r.is_anonymous))

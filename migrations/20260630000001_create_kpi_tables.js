@@ -59,6 +59,9 @@ exports.up = async function (knex) {
       table.integer("kpi_template_id").unsigned().notNullable();
       table.integer("kpi_parameter_id").unsigned().nullable();
       table.integer("reviewer_employee_id").unsigned().nullable();
+      table.text("what_went_wrong").nullable();
+      table.text("lesson_learned").nullable();
+      table.text("corrective_actions").nullable();
       table.text("feedback").nullable();
       table.date("target_date").nullable();
       table.enu("status", ["PENDING", "IN_PROGRESS", "COMPLETED"]).notNullable().defaultTo("PENDING");

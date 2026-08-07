@@ -15,8 +15,11 @@ const {
 } = require('../controllers/payrollController');
 const { protect } = require('../middleware/authMiddleware');
 const { requirePermission } = require("../middleware/rbacMiddleware");
+const loanRoutes = require("./loanRoutes");
 
 const router = express.Router();
+
+router.use('/loans', loanRoutes);
 
 // Salary Structure routes
 router.route('/salary-structure')

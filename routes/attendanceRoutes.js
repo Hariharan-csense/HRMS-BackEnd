@@ -30,14 +30,14 @@ const {
 router.get(
   "/status",
   protect,
-  requirePermission("attendance", "view"),
+  requirePermission("attendance", "view", { submodule: "capture" }),
   getAttendanceStatus,
 );
 
 router.get(
   "/assigned-clients",
   protect,
-  requirePermission("attendance", "view"),
+  requirePermission("attendance", "view", { submodule: "capture" }),
   getAssignedAttendanceClients,
 );
 
@@ -113,7 +113,7 @@ router.put(
 router.get(
   "/summary/employee/:employeeId",
   protect,
-  requirePermission("attendance", "view"),
+  requirePermission("attendance", "view", { submodule: "log" }),
   getEmployeeSummary,
 );
 router.get(
@@ -131,19 +131,19 @@ router.post(
 router.get(
   "/locations",
   protect,
-  requirePermission("attendance", "view"),
+  requirePermission("live_tracking", "view"),
   getLiveLocations,
 );
 router.get(
   "/locations/:employeeId/history",
   protect,
-  requirePermission("attendance", "view"),
+  requirePermission("live_tracking", "view"),
   getLiveLocationHistory,
 );
 router.get(
   "/locations/:employeeId/export",
   protect,
-  requirePermission("attendance", "view"),
+  requirePermission("live_tracking", "view"),
   exportLocationHistory,
 );
 

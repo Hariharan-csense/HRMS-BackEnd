@@ -32,6 +32,14 @@ const DEFAULT_POLICY = {
       miscellaneous: { perClaimLimit: 0, monthlyLimit: 0 },
     },
   },
+  loan: {
+    enabled: true,
+    maxRequestsPerYear: 1,
+    maxAmountPerRequest: 0,
+    maxTenureMonths: 12,
+    requireOnePaidInstallmentBeforeNext: true,
+    includePendingInYearlyUsage: true,
+  },
 };
 
 const cloneDefaultPolicy = () => JSON.parse(JSON.stringify(DEFAULT_POLICY));
@@ -57,6 +65,7 @@ const normalizePolicy = (raw = {}) => {
   const permission = { ...defaults.permission, ...(raw.permission || {}) };
   const attendance = { ...defaults.attendance, ...(raw.attendance || {}) };
   const expenseRaw = { ...defaults.expense, ...(raw.expense || {}) };
+  const loan = { ...defaults.loan, ...(raw.loan || {}) };
   const categories = {
     ...defaults.expense.categories,
     ...(expenseRaw.categories || {}),
@@ -102,6 +111,16 @@ const normalizePolicy = (raw = {}) => {
       monthlyOverallLimit: normalizeNumber(expenseRaw.monthlyOverallLimit),
       categories,
     },
+    loan: {
+      ...loan,
+      enabled: loan.enabled !== false,
+      maxRequestsPerYear: normalizeNumber(loan.maxRequestsPerYear, 1),
+      maxAmountPerRequest: normalizeNumber(loan.maxAmountPerRequest),
+      maxTenureMonths: normalizeNumber(loan.maxTenureMonths, 12) || 12,
+      requireOnePaidInstallmentBeforeNext:
+        loan.requireOnePaidInstallmentBeforeNext !== false,
+      includePendingInYearlyUsage: loan.includePendingInYearlyUsage !== false,
+    },
   };
 };
 
@@ -117,6 +136,15 @@ const ensureCompanyPolicyTable = async () => {
         table.text("attendance_policy").nullable();
       });
     }
+    const hasLoanPolicy = await knex.schema.hasColumn(
+      "company_policies",
+      "loan_policy",
+    );
+    if (!hasLoanPolicy) {
+      await knex.schema.alterTable("company_policies", (table) => {
+        table.text("loan_policy").nullable();
+      });
+    }
     return;
   }
 
@@ -127,6 +155,7 @@ const ensureCompanyPolicyTable = async () => {
     table.text("permission_policy").nullable();
     table.text("attendance_policy").nullable();
     table.text("expense_policy").nullable();
+    table.text("loan_policy").nullable();
     table.timestamps(true, true);
     table
       .foreign("company_id")
@@ -146,6 +175,7 @@ const getCompanyPolicy = async (companyId) => {
     permission: safeJsonParse(row.permission_policy, DEFAULT_POLICY.permission),
     attendance: safeJsonParse(row.attendance_policy, DEFAULT_POLICY.attendance),
     expense: safeJsonParse(row.expense_policy, DEFAULT_POLICY.expense),
+    loan: safeJsonParse(row.loan_policy, DEFAULT_POLICY.loan),
   });
 };
 
@@ -158,6 +188,7 @@ const saveCompanyPolicy = async (companyId, policy) => {
     permission_policy: JSON.stringify(normalized.permission),
     attendance_policy: JSON.stringify(normalized.attendance),
     expense_policy: JSON.stringify(normalized.expense),
+    loan_policy: JSON.stringify(normalized.loan),
     updated_at: knex.fn.now(),
   };
 
@@ -487,6 +518,89 @@ const validateExpensePolicy = async ({
   return null;
 };
 
+const validateLoanPolicy = async ({
+  companyId,
+  employeeId,
+  amount,
+  tenureMonths,
+  requestDate = new Date(),
+}) => {
+  const policy = await getCompanyPolicy(companyId);
+  if (!policy.loan.enabled) return null;
+
+  const requestedAmount = Number(amount || 0);
+  const requestedTenure = Number(tenureMonths || 0);
+
+  if (
+    policy.loan.maxAmountPerRequest &&
+    requestedAmount > policy.loan.maxAmountPerRequest
+  ) {
+    return `As per company policy Loan request limit is ${policy.loan.maxAmountPerRequest}.`;
+  }
+
+  if (
+    policy.loan.maxTenureMonths &&
+    requestedTenure > policy.loan.maxTenureMonths
+  ) {
+    return `As per company policy Loan tenure must be within ${policy.loan.maxTenureMonths} month(s).`;
+  }
+
+  const requestYear = new Date(requestDate).getFullYear();
+  const statuses = policy.loan.includePendingInYearlyUsage
+    ? ["pending", "approved", "disbursed", "closed"]
+    : ["approved", "disbursed", "closed"];
+  const usedRow = await knex("loan_requests")
+    .where({ company_id: companyId, employee_id: employeeId })
+    .whereIn("status", statuses)
+    .whereRaw("YEAR(request_date) = ?", [requestYear])
+    .count({ used: "*" })
+    .first();
+
+  const used = Number(usedRow?.used || 0);
+  if (
+    policy.loan.maxRequestsPerYear &&
+    used >= policy.loan.maxRequestsPerYear
+  ) {
+    return `As per company policy Loan request limit is ${policy.loan.maxRequestsPerYear} time(s) per year.`;
+  }
+
+  if (policy.loan.requireOnePaidInstallmentBeforeNext && used > 0) {
+    const activeLoans = await knex("loan_requests")
+      .where({ company_id: companyId, employee_id: employeeId })
+      .whereIn("status", ["approved", "disbursed"])
+      .select(
+        "id",
+        "request_no",
+        "tenure_months",
+        "paid_installments",
+        "remaining_installments",
+      );
+
+    for (const loan of activeLoans) {
+      const paidInstallments = Number(loan.paid_installments || 0);
+      const tenure = Number(loan.tenure_months || 0);
+      const remaining = Number(
+        loan.remaining_installments !== null &&
+          loan.remaining_installments !== undefined
+          ? loan.remaining_installments
+          : tenure - paidInstallments,
+      );
+
+      const allowedPendingInstallments = 1;
+      const minimumPaidInstallments = Math.max(
+        0,
+        tenure - allowedPendingInstallments,
+      );
+
+      if (paidInstallments < minimumPaidInstallments || remaining > 1) {
+        return `Previous loan ${loan.request_no || loan.id} must have only 1 installment pending before applying another loan.`;
+      }
+    }
+  }
+
+  return null;
+};
+
 module.exports = {
   DEFAULT_POLICY,
   getCompanyPolicy,
@@ -494,4 +608,5 @@ module.exports = {
   validateLeavePolicy,
   validatePermissionPolicy,
   validateExpensePolicy,
+  validateLoanPolicy,
 };

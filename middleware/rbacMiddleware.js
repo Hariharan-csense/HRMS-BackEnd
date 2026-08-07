@@ -2,7 +2,6 @@ const knex = require("../db/db");
 const { hasPermission, parseModulesFromDb } = require("../utils/rbac");
 const {
   companyHasActiveAddonModule,
-  employeeHasAddonModuleAssignment,
 } = require("../utils/subscriptionAddons");
 
 const isSuperAdmin = (user) => {
@@ -32,11 +31,7 @@ const hasAddonAccess = async (user, moduleKey) => {
   // Admin/CEO can manage/monitor purchased add-on modules for the company.
   if (isCompanyAdmin(user)) return true;
 
-  return employeeHasAddonModuleAssignment(
-    user.company_id,
-    user.employee_id || user.id,
-    moduleKey
-  );
+  return false;
 };
 
 const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
@@ -48,7 +43,6 @@ const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
   const normalizedSubmodule = String(submoduleKey || "").toLowerCase();
 
   if (normalizedModule === "payroll") return true;
-  if (normalizedModule === "kpi") return true;
   if (normalizedModule === "employees" && normalizedSubmodule === "profile") return true;
   if (normalizedModule === "expenses" && normalizedSubmodule === "claims") return true;
   if (
@@ -63,15 +57,32 @@ const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
 
 const getRoleNamesFromUser = (user) => {
   const roleNames = new Set();
-  if (user?.role) roleNames.add(String(user.role).toLowerCase());
+  const primaryRole = String(user?.role || "").trim().toLowerCase();
+  if (primaryRole) roleNames.add(primaryRole);
 
-  if (Array.isArray(user?.roles)) {
+  if (
+    primaryRole &&
+    !["employee", "admin", "ceo", "superadmin"].includes(primaryRole)
+  ) {
+    return [primaryRole];
+  }
+
+  // For employee-scoped users, role assignments are loaded from the DB below.
+  // Do not trust stale token/localStorage role arrays for permission decisions.
+  if (String(user?.type || "").toLowerCase() !== "employee" && Array.isArray(user?.roles)) {
     user.roles.forEach((roleName) => {
       if (roleName) roleNames.add(String(roleName).toLowerCase());
     });
   }
 
   return [...roleNames];
+};
+
+const hasCustomRoleName = (roleNames = []) => {
+  const systemRoles = new Set(["employee", "admin", "ceo", "superadmin"]);
+  return roleNames.some(
+    (roleName) => !systemRoles.has(String(roleName || "").toLowerCase()),
+  );
 };
 
 const fetchEffectiveRoles = async (user) => {
@@ -100,6 +111,13 @@ const fetchEffectiveRoles = async (user) => {
       .select("roles.id", "roles.name", "roles.modules");
 
     assignedRoles.forEach(appendRole);
+
+    const assignedRoleNames = assignedRoles.map((role) =>
+      String(role?.name || "").toLowerCase(),
+    );
+    if (hasCustomRoleName(assignedRoleNames)) {
+      return aggregatedRoles;
+    }
   }
 
   const roleNames = getRoleNamesFromUser(user);

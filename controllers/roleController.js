@@ -151,6 +151,52 @@ const ensureDefaultSystemRoles = async (companyId) => {
   }
 };
 
+const getEffectiveRoleNamesForRequest = async (user) => {
+  const roleNames = new Set();
+  const systemRoles = new Set(["employee", "admin", "ceo", "superadmin"]);
+  const applyCustomRoleOverride = () => {
+    const roles = [...roleNames];
+    const hasCustomRole = roles.some(
+      (roleName) => !systemRoles.has(String(roleName || "").toLowerCase()),
+    );
+    return hasCustomRole
+      ? roles.filter(
+          (roleName) => String(roleName || "").toLowerCase() !== "employee",
+        )
+      : roles;
+  };
+  const userType = String(user?.type || "").toLowerCase();
+  const primaryRole = String(user?.role || "").trim();
+  if (primaryRole) roleNames.add(primaryRole);
+
+  if (userType === "employee" && user?.id && user?.company_id) {
+    const assignedRoles = await knex("role_assignments")
+      .join("roles", "role_assignments.role_id", "roles.id")
+      .where({
+        "role_assignments.employee_id": user.id,
+        "role_assignments.company_id": user.company_id,
+        "role_assignments.status": "Active",
+      })
+      .select("roles.name");
+
+    assignedRoles.forEach((entry) => {
+      const roleName = String(entry?.name || "").trim();
+      if (roleName) roleNames.add(roleName);
+    });
+
+    return applyCustomRoleOverride();
+  }
+
+  if (Array.isArray(user?.roles)) {
+    user.roles.forEach((roleName) => {
+      const normalizedRole = String(roleName || "").trim();
+      if (normalizedRole) roleNames.add(normalizedRole);
+    });
+  }
+
+  return applyCustomRoleOverride();
+};
+
 // Add Role (Admin only - scoped to company)
 const addRole = async (req, res) => {
   const companyId = req.user.company_id;
@@ -299,10 +345,12 @@ const getRoles = async (req, res) => {
       ...role,
       modules: parseModulesFromDb(role.modules),
     }));
+    const currentUserRoles = await getEffectiveRoleNamesForRequest(req.user);
 
     res.json({
       success: true,
       count: parsedRoles.length,
+      currentUserRoles,
       roles: parsedRoles,
     });
   } catch (error) {

@@ -73,6 +73,7 @@ const RBAC_MODULE_CATALOG = [
       { key: "salary_structure", label: "Salary Structure" },
       { key: "processing", label: "Processing" },
       { key: "payslips", label: "Payslips" },
+      { key: "loans", label: "Loan Management" },
     ],
   },
   {

@@ -126,6 +126,9 @@ exports.getParameterReviews = async (req, res) => {
       .leftJoin("kpi_parameters as p", "r.kpi_parameter_id", "p.id")
       .leftJoin("employees as e", "t.owner_employee_id", "e.id")
       .select("r.id as id")
+      .select("r.what_went_wrong as whatWentWrong")
+      .select("r.lesson_learned as lessonLearned")
+      .select("r.corrective_actions as correctiveActions")
       .select("r.feedback as feedback")
       .select("r.target_date as targetDate")
       .select("r.status as status")
@@ -167,6 +170,9 @@ exports.getParameterReviews = async (req, res) => {
     const rows = await query;
     const payload = rows.map((row) => ({
       id: Number(row.id),
+      whatWentWrong: safeText(row.whatWentWrong),
+      lessonLearned: safeText(row.lessonLearned),
+      correctiveActions: safeText(row.correctiveActions) || safeText(row.feedback),
       feedback: safeText(row.feedback),
       targetDate: formatDateOnly(row.targetDate),
       status: safeText(row.status),
@@ -254,6 +260,7 @@ exports.updateParameterReviewStatus = async (req, res) => {
         })
         .select("t.owner_employee_id as ownerEmployeeId")
         .select("r.reviewer_employee_id as reviewerEmployeeId")
+        .select("r.corrective_actions as correctiveActions")
         .select("r.feedback as feedback")
         .select("r.target_date as targetDate")
         .select("reviewer.mobile as reviewerMobile")
@@ -275,7 +282,7 @@ exports.updateParameterReviewStatus = async (req, res) => {
         .first();
 
       const correctiveAction =
-        String(detail?.feedback || "").trim() ||
+        String(detail?.correctiveActions || detail?.feedback || "").trim() ||
         `KPI corrective action marked as ${statusDisplayLabel(status)}`;
       const reviewerMobile = getEmployeeMobile({
         mobile: detail?.reviewerMobile,
@@ -421,19 +428,34 @@ exports.saveParameterReview = async (req, res) => {
       return res.status(400).json({ message: "Submitted KPI review cannot be edited." });
     }
 
-    const feedback = safeText(req.body?.feedback) || null;
+    const correctiveActions =
+      safeText(req.body?.correctiveActions) || safeText(req.body?.feedback) || null;
+    const whatWentWrong = safeText(req.body?.whatWentWrong) || null;
+    const lessonLearned = safeText(req.body?.lessonLearned) || null;
+    const feedback = correctiveActions;
     const targetDateRaw = req.body?.targetDate;
     const targetDate = formatDateOnly(targetDateRaw);
 
     await knex("kpi_parameter_reviews")
       .where({ id })
       .update({
+        what_went_wrong: whatWentWrong,
+        lesson_learned: lessonLearned,
+        corrective_actions: correctiveActions,
         feedback,
         target_date: targetDate,
         updated_at: knex.fn.now(),
       });
 
-    return res.json({ success: true, id, feedback, targetDate });
+    return res.json({
+      success: true,
+      id,
+      whatWentWrong,
+      lessonLearned,
+      correctiveActions,
+      feedback,
+      targetDate,
+    });
   } catch (error) {
     console.error("KPI parameter review save error:", error);
     return res.status(500).json({ message: "Unable to save KPI review." });
@@ -485,6 +507,7 @@ exports.submitParameterReviews = async (req, res) => {
         .modify((query) => {
           if (companyId) query.andWhere("t.company_id", companyId);
         })
+        .select("r.corrective_actions as correctiveActions")
         .select("r.feedback as feedback")
         .select("r.target_date as targetDate")
         .select("owner.mobile as ownerMobile")
@@ -498,7 +521,7 @@ exports.submitParameterReviews = async (req, res) => {
 
       await Promise.all(
         rows.map(async (row) => {
-          const correctiveAction = String(row.feedback || "").trim();
+          const correctiveAction = String(row.correctiveActions || row.feedback || "").trim();
           const ownerMobile = String(row.ownerMobile || row.ownerOfficePhone || "").trim();
           if (!ownerMobile || !row.ownerName || !correctiveAction || !row.targetDate) {
             console.warn(

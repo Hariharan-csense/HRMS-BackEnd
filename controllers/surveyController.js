@@ -408,6 +408,8 @@ const submitFeedback = async (req, res) => {
   const { feedback, category = 'general', isAnonymous = true } = req.body;
   const employeeId = Number(req.user.employee_id || (req.user.type === 'employee' ? req.user.id : 0)) || null;
   const companyId = req.user.company_id;
+  const anonymous =
+    isAnonymous === true || String(isAnonymous).toLowerCase() === 'true';
 
   try {
     if (!companyId) {
@@ -421,24 +423,25 @@ const submitFeedback = async (req, res) => {
     let employeeName = null;
     let department = null;
 
-    // Only show identity if NOT anonymous.
-    if (!isAnonymous) {
-      if (employeeId) {
-        const employee = await db('employees as e')
-          .leftJoin('departments as d', 'e.department_id', 'd.id')
-          .where({ 'e.id': employeeId, 'e.company_id': companyId })
-          .select('e.first_name', 'e.last_name', 'd.name as department')
-          .first();
+    if (employeeId) {
+      const employee = await db('employees as e')
+        .leftJoin('departments as d', 'e.department_id', 'd.id')
+        .where({ 'e.id': employeeId, 'e.company_id': companyId })
+        .select('e.first_name', 'e.last_name', 'd.name as department')
+        .first();
 
-        if (!employee) {
-          return res.status(404).json({ error: 'Employee profile not found' });
-        }
+      if (!employee) {
+        return res.status(404).json({ error: 'Employee profile not found' });
+      }
 
+      department = employee.department || 'Unassigned';
+      if (!anonymous) {
         employeeName = `${employee.first_name} ${employee.last_name || ''}`.trim();
-        department = employee.department || null;
-      } else {
+      }
+    } else {
+      department = 'Admin';
+      if (!anonymous) {
         employeeName = req.user.name || req.user.email || 'Admin User';
-        department = 'Admin';
       }
     }
 
@@ -446,9 +449,9 @@ const submitFeedback = async (req, res) => {
       feedback: feedback.trim(),
       category,
       employeeId,
-      employeeName: isAnonymous ? null : employeeName,
-      department: isAnonymous ? null : department,
-      isAnonymous: isAnonymous ? 1 : 0,
+      employeeName: anonymous ? null : employeeName,
+      department,
+      isAnonymous: anonymous ? 1 : 0,
       companyId,
       status: 'submitted',
       createdAt: new Date(),
@@ -456,7 +459,7 @@ const submitFeedback = async (req, res) => {
     });
 
     res.status(201).json({
-      message: isAnonymous 
+      message: anonymous 
         ? 'Thank you! Your anonymous feedback has been submitted.' 
         : 'Thank you! Your feedback has been submitted.',
       feedbackId
@@ -473,9 +476,23 @@ const getFeedback = async (req, res) => {
   const companyId = req.user.company_id;
 
   try {
-    const feedback = await db('employee_feedback')
-      .where('companyId', companyId)
-      .orderBy('createdAt', 'desc');
+    const feedback = await db('employee_feedback as f')
+      .leftJoin('employees as e', function () {
+        this.on('e.id', '=', 'f.employeeId').andOn(
+          'e.company_id',
+          '=',
+          'f.companyId',
+        );
+      })
+      .leftJoin('departments as d', 'e.department_id', 'd.id')
+      .leftJoin('branches as b', 'e.branch_id', 'b.id')
+      .where('f.companyId', companyId)
+      .orderBy('f.createdAt', 'desc')
+      .select(
+        'f.*',
+        db.raw("COALESCE(f.department, d.name, 'Unassigned') as department"),
+        db.raw("COALESCE(b.name, e.location_office, 'Unassigned') as branch"),
+      );
 
     res.json({
       feedback,

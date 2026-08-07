@@ -1128,31 +1128,41 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
+const getPasswordResetUser = async (email) => {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  if (!normalizedEmail) return null;
+
+  const adminUser = await knex("users").where({ email: normalizedEmail }).first();
+  if (adminUser) {
+    return { user: adminUser, tableName: "users", email: normalizedEmail };
+  }
+
+  const employee = await knex("employees").where({ email: normalizedEmail }).first();
+  if (employee) {
+    return { user: employee, tableName: "employees", email: normalizedEmail };
+  }
+
+  return null;
+};
+
+const getMailerFromAddress = () =>
+  process.env.EMAIL_FROM ||
+  process.env.EMAIL_USER ||
+  process.env.SMTP_USER ||
+  "no-reply@hrms.procease.co";
+
 // Check if email exists and send OTP
 
 const initiateForgotPassword = async (req, res) => {
   try {
-    const { email } = req.body;
+    const normalizedEmail = String(req.body?.email || "").trim().toLowerCase();
 
-    if (!email) {
+    if (!normalizedEmail) {
       return res.status(400).json({ message: "Email is required" });
     }
 
-    // Check if email exists in users table (admins)
-
-    let user = await knex("users")
-      .where({ email: email.trim().toLowerCase() })
-      .first();
-
-    // If not found in users, check employees table
-
-    if (!user) {
-      user = await knex("employees")
-        .where({ email: email.trim().toLowerCase() })
-        .first();
-    }
-
-    if (!user) {
+    const resetUser = await getPasswordResetUser(normalizedEmail);
+    if (!resetUser) {
       return res.status(404).json({ message: "Email not found in system" });
     }
 
@@ -1161,45 +1171,18 @@ const initiateForgotPassword = async (req, res) => {
     const otp = generateOTP();
 
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-    // Check which table the user is in and update with OTP
-
-    let userFoundInTable = "users"; // default
-
-    const usersTableUser = await knex("users").where({ id: user.id }).first();
-
-    if (usersTableUser) {
-      // User is in users table (admin)
-
-      await knex("users").where({ id: user.id }).update({
-        reset_otp: otp,
-
-        otp_expiry: otpExpiry,
-
-        otp_verified: false,
-      });
-
-      userFoundInTable = "users";
-    } else {
-      // User is in employees table
-
-      await knex("employees").where({ id: user.id }).update({
-        reset_otp: otp,
-
-        otp_expiry: otpExpiry,
-
-        otp_verified: false,
-      });
-
-      userFoundInTable = "employees";
-    }
+    await knex(resetUser.tableName).where({ id: resetUser.user.id }).update({
+      reset_otp: otp,
+      otp_expiry: otpExpiry,
+      otp_verified: false,
+    });
 
     // Send OTP via email (using nodemailer)
 
     const mailOptions = {
-      from: `"HRMS Support" <${process.env.EMAIL_USER}>`,
+      from: `"HRMS Support" <${getMailerFromAddress()}>`,
 
-      to: email,
+      to: normalizedEmail,
 
       subject: "Password Reset OTP",
 
@@ -1232,7 +1215,17 @@ const initiateForgotPassword = async (req, res) => {
       `,
     };
 
-    await transporter.sendMail(mailOptions);
+    try {
+      await transporter.sendMail(mailOptions);
+    } catch (mailError) {
+      console.error("Forgot password OTP mail error:", {
+        code: mailError?.code,
+        command: mailError?.command,
+        response: mailError?.response,
+        message: mailError?.message,
+      });
+      throw mailError;
+    }
 
     res.json({
       success: true,
@@ -1240,7 +1233,12 @@ const initiateForgotPassword = async (req, res) => {
       message: "OTP sent successfully to your email",
     });
   } catch (error) {
-    console.error("Forgot password initiation error:", error);
+    console.error("Forgot password initiation error:", {
+      code: error?.code,
+      errno: error?.errno,
+      sqlMessage: error?.sqlMessage,
+      message: error?.message,
+    });
 
     res.status(500).json({ message: "Failed to send OTP. Please try again." });
   }
@@ -1250,29 +1248,19 @@ const initiateForgotPassword = async (req, res) => {
 
 const verifyOTP = async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { otp } = req.body;
+    const normalizedEmail = String(req.body?.email || "").trim().toLowerCase();
 
-    if (!email || !otp) {
+    if (!normalizedEmail || !otp) {
       return res.status(400).json({ message: "Email and OTP are required" });
     }
 
-    // Check users table (admins)
-
-    let user = await knex("users")
-      .where({ email: email.trim().toLowerCase() })
-      .first();
-
-    // If not found, check employees
-
-    if (!user) {
-      user = await knex("employees")
-        .where({ email: email.trim().toLowerCase() })
-        .first();
-    }
-
-    if (!user) {
+    const resetUser = await getPasswordResetUser(normalizedEmail);
+    if (!resetUser) {
       return res.status(404).json({ message: "User not found" });
     }
+
+    const { user, tableName } = resetUser;
 
     // Check if OTP exists and is valid
 
@@ -1288,23 +1276,9 @@ const verifyOTP = async (req, res) => {
         .json({ message: "OTP has expired. Please request a new one." });
     }
 
-    // Mark OTP as verified
-
-    const usersTableUser = await knex("users").where({ id: user.id }).first();
-
-    if (usersTableUser) {
-      // User is in users table
-
-      await knex("users").where({ id: user.id }).update({
-        otp_verified: true,
-      });
-    } else {
-      // User is in employees table
-
-      await knex("employees").where({ id: user.id }).update({
-        otp_verified: true,
-      });
-    }
+    await knex(tableName).where({ id: user.id }).update({
+      otp_verified: true,
+    });
 
     res.json({
       success: true,
@@ -1314,7 +1288,12 @@ const verifyOTP = async (req, res) => {
       userId: user.id,
     });
   } catch (error) {
-    console.error("OTP verification error:", error);
+    console.error("OTP verification error:", {
+      code: error?.code,
+      errno: error?.errno,
+      sqlMessage: error?.sqlMessage,
+      message: error?.message,
+    });
 
     res.status(500).json({ message: "Failed to verify OTP" });
   }
@@ -1324,9 +1303,10 @@ const verifyOTP = async (req, res) => {
 
 const resetPassword = async (req, res) => {
   try {
-    const { email, newPassword, confirmPassword } = req.body;
+    const { newPassword, confirmPassword } = req.body;
+    const normalizedEmail = String(req.body?.email || "").trim().toLowerCase();
 
-    if (!email || !newPassword || !confirmPassword) {
+    if (!normalizedEmail || !newPassword || !confirmPassword) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
@@ -1340,23 +1320,12 @@ const resetPassword = async (req, res) => {
         .json({ message: "Password must be at least 6 characters" });
     }
 
-    // Check users table (admins)
-
-    let user = await knex("users")
-      .where({ email: email.trim().toLowerCase() })
-      .first();
-
-    // If not found, check employees
-
-    if (!user) {
-      user = await knex("employees")
-        .where({ email: email.trim().toLowerCase() })
-        .first();
-    }
-
-    if (!user) {
+    const resetUser = await getPasswordResetUser(normalizedEmail);
+    if (!resetUser) {
       return res.status(404).json({ message: "User not found" });
     }
+
+    const { user, tableName } = resetUser;
 
     // Verify OTP was verified
 
@@ -1370,35 +1339,12 @@ const resetPassword = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-    // Update password and clear OTP
-
-    const usersTableUser = await knex("users").where({ id: user.id }).first();
-
-    if (usersTableUser) {
-      // User is in users table
-
-      await knex("users").where({ id: user.id }).update({
-        password: hashedPassword,
-
-        reset_otp: null,
-
-        otp_expiry: null,
-
-        otp_verified: false,
-      });
-    } else {
-      // User is in employees table
-
-      await knex("employees").where({ id: user.id }).update({
-        password: hashedPassword,
-
-        reset_otp: null,
-
-        otp_expiry: null,
-
-        otp_verified: false,
-      });
-    }
+    await knex(tableName).where({ id: user.id }).update({
+      password: hashedPassword,
+      reset_otp: null,
+      otp_expiry: null,
+      otp_verified: false,
+    });
 
     res.json({
       success: true,
@@ -1407,7 +1353,12 @@ const resetPassword = async (req, res) => {
         "Password reset successfully. Please login with your new password.",
     });
   } catch (error) {
-    console.error("Reset password error:", error);
+    console.error("Reset password error:", {
+      code: error?.code,
+      errno: error?.errno,
+      sqlMessage: error?.sqlMessage,
+      message: error?.message,
+    });
 
     res.status(500).json({ message: "Failed to reset password" });
   }

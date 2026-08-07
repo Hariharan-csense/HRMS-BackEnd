@@ -4,9 +4,9 @@ const { getAllShifts, createShift, updateShift, deleteShift} = require("../contr
 const { protect } = require("../middleware/authMiddleware");
 const { requirePermission } = require("../middleware/rbacMiddleware");
 
-router.get("/", protect, requirePermission("shift_management", "view"), getAllShifts);
-router.post("/", protect, requirePermission("shift_management", "create"), createShift);
-router.put("/:id", protect, requirePermission("shift_management", "update"), updateShift);
-router.delete("/:id", protect, requirePermission("shift_management", "delete"), deleteShift);
+router.get("/", protect, requirePermission("attendance", "view", { submodule: "shift" }), getAllShifts);
+router.post("/", protect, requirePermission("attendance", "create", { submodule: "shift" }), createShift);
+router.put("/:id", protect, requirePermission("attendance", "update", { submodule: "shift" }), updateShift);
+router.delete("/:id", protect, requirePermission("attendance", "delete", { submodule: "shift" }), deleteShift);
 
 module.exports = router;

@@ -27,6 +27,231 @@ const toNumber = (value, fallback = 0) => {
 
 const round2 = (value) => Math.round(toNumber(value) * 100) / 100;
 
+const parseNumber = (value) => {
+  const raw = String(value ?? "").replace(/,/g, "").trim();
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseJsonValue = (value, fallback) => {
+  if (value && typeof value === "object") return value;
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+};
+
+const legacyLeadIndicatorLines = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  return raw
+    .replace(/(\d+\.\d+)\s+/g, "\n$1 ")
+    .replace(/[;|]+/g, ",")
+    .split(/\r?\n|,/)
+    .map((item) => item.trim().replace(/^\d+\.\d+\s*/, "").trim())
+    .filter(Boolean);
+};
+
+const parseLeadIndicatorDefinitions = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+
+  if (raw.startsWith("[") || raw.startsWith("{")) {
+    const parsed = parseJsonValue(raw, null);
+    const items = Array.isArray(parsed) ? parsed : parsed?.items;
+    if (Array.isArray(items)) {
+      return items
+        .map((item) => ({
+          label: String(item?.label || "").trim(),
+          type: item?.type === "yesno" ? "yesno" : "number",
+          targetValue: String(item?.targetValue ?? item?.target ?? "").trim(),
+          minimumValue: String(item?.minimumValue ?? item?.minimum ?? "").trim(),
+        }))
+        .filter((item) => item.label);
+    }
+  }
+
+  return legacyLeadIndicatorLines(raw).map((label) => ({
+    label,
+    type: "number",
+    targetValue: "",
+    minimumValue: "",
+  }));
+};
+
+const evaluateLeadIndicatorStatus = (indicator, value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "missing";
+
+  if (indicator.type === "yesno") {
+    const normalized = raw.toLowerCase();
+    if (["yes", "y", "true", "1"].includes(normalized)) return "green";
+    if (["no", "n", "false", "0"].includes(normalized)) return "red";
+    return "yellow";
+  }
+
+  const numericValue = parseNumber(raw);
+  const target = parseNumber(indicator.targetValue);
+  const minimum = parseNumber(indicator.minimumValue);
+  if (numericValue === null) return "yellow";
+  if (minimum !== null && numericValue < minimum) return "red";
+  if (target !== null && numericValue < target) return "yellow";
+  return "green";
+};
+
+const getLeadIndicatorSignals = async ({ templateIds }) => {
+  const empty = {
+    green: 0,
+    yellow: 0,
+    red: 0,
+    missing: 0,
+    total: 0,
+    needsAttention: 0,
+    latestStatus: "green",
+    items: [],
+  };
+
+  if (!templateIds.length) return empty;
+
+  const parameterTable = await firstExistingTable([
+    "kpiparameter",
+    "kpi_parameters",
+    "kpi_parameter",
+  ]);
+  if (!parameterTable) return empty;
+
+  const columns = await getColumnInfo(parameterTable);
+  const idCol = firstColumn(columns, ["id"]);
+  const templateIdCol = firstColumn(columns, [
+    "kpiTemplateId",
+    "kpi_template_id",
+    "template_id",
+  ]);
+  const parameterCol = firstColumn(columns, ["parameter", "name", "title"]);
+  const leadCol = firstColumn(columns, ["lead_indicators", "leadIndicators"]);
+  const dailyCol = firstColumn(columns, ["daily_achievements", "dailyAchievements"]);
+  if (!idCol || !templateIdCol || !leadCol || !dailyCol) return empty;
+
+  const templateTable = await firstExistingTable([
+    "kpitemplate",
+    "kpi_templates",
+    "kpi_template",
+  ]);
+  const templateColumns = await getColumnInfo(templateTable);
+  const templateIdColumn = firstColumn(templateColumns, ["id"]);
+  const ownerColumn = firstColumn(templateColumns, [
+    "ownerUserId",
+    "owner_user_id",
+    "owner_employee_id",
+    "employee_id",
+    "user_id",
+  ]);
+  const yearColumn = firstColumn(templateColumns, ["year"]);
+  const monthColumn = firstColumn(templateColumns, ["month"]);
+  const createdColumn = firstColumn(templateColumns, ["createdAt", "created_at", "date"]);
+
+  const query = knex(`${parameterTable} as p`)
+    .select(`p.${idCol} as parameterId`)
+    .select(`p.${templateIdCol} as templateId`)
+    .select(`p.${leadCol} as leadIndicators`)
+    .select(`p.${dailyCol} as dailyAchievements`)
+    .select(parameterCol ? `p.${parameterCol} as parameterName` : knex.raw("'' as parameterName"))
+    .whereIn(`p.${templateIdCol}`, templateIds);
+
+  if (templateTable && templateIdColumn) {
+    query.leftJoin(`${templateTable} as t`, `p.${templateIdCol}`, `t.${templateIdColumn}`);
+    query.select(ownerColumn ? `t.${ownerColumn} as ownerId` : knex.raw("NULL as ownerId"));
+    query.select(yearColumn ? `t.${yearColumn} as year` : knex.raw("NULL as year"));
+    query.select(monthColumn ? `t.${monthColumn} as month` : knex.raw("NULL as month"));
+    query.select(createdColumn ? `t.${createdColumn} as createdAt` : knex.raw("NULL as createdAt"));
+  } else {
+    query.select(knex.raw("NULL as ownerId"));
+    query.select(knex.raw("NULL as year"));
+    query.select(knex.raw("NULL as month"));
+    query.select(knex.raw("NULL as createdAt"));
+  }
+
+  const rows = await query;
+
+  const summary = { ...empty, items: [] };
+
+  rows.forEach((row) => {
+    const indicators = parseLeadIndicatorDefinitions(row.leadIndicators);
+    if (!indicators.length) return;
+
+    const daily = parseJsonValue(row.dailyAchievements, {});
+    const createdDate = row.createdAt ? new Date(row.createdAt) : null;
+    const today = new Date();
+    const year =
+      Number(row.year || 0) ||
+      (createdDate && !Number.isNaN(createdDate.getTime())
+        ? createdDate.getFullYear()
+        : today.getFullYear());
+    const month =
+      Number(row.month || 0) ||
+      (createdDate && !Number.isNaN(createdDate.getTime())
+        ? createdDate.getMonth() + 1
+        : today.getMonth() + 1);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const isCurrentMonth =
+      year === today.getFullYear() && month === today.getMonth() + 1;
+    const isFutureMonth =
+      year > today.getFullYear() ||
+      (year === today.getFullYear() && month > today.getMonth() + 1);
+    const elapsedDays = isFutureMonth
+      ? 0
+      : isCurrentMonth
+        ? Math.min(today.getDate(), daysInMonth)
+        : daysInMonth;
+    const expectedDayKeys = Array.from({ length: elapsedDays }, (_, index) =>
+      String(index + 1),
+    );
+
+    indicators.forEach((indicator, indicatorIndex) => {
+      const rowDraft = daily?.[`li-${indicatorIndex}`] || {};
+      const dayEntries = rowDraft && typeof rowDraft === "object" ? rowDraft : {};
+      const dayKeys = expectedDayKeys.length
+        ? expectedDayKeys
+        : Object.keys(dayEntries).length
+          ? Object.keys(dayEntries)
+          : ["today"];
+
+      dayKeys.forEach((dayKey) => {
+        const status = evaluateLeadIndicatorStatus(indicator, dayEntries[dayKey]);
+        summary[status] += 1;
+        summary.total += 1;
+        if (status !== "green") summary.needsAttention += 1;
+
+        if (status !== "green" && summary.items.length < 12) {
+          summary.items.push({
+            status,
+            employeeId: Number(row.ownerId || 0) || null,
+            parameterId: Number(row.parameterId || 0) || null,
+            parameterName: row.parameterName || "KPI Parameter",
+            indicator: indicator.label,
+            day: dayKey === "today" ? "" : String(dayKey).padStart(2, "0"),
+            value: String(dayEntries[dayKey] ?? "").trim(),
+            targetValue: indicator.targetValue,
+            minimumValue: indicator.minimumValue,
+            type: indicator.type,
+            year,
+            month,
+          });
+        }
+      });
+    });
+  });
+
+  summary.latestStatus =
+    summary.red || summary.missing ? "red" : summary.yellow ? "yellow" : "green";
+
+  return summary;
+};
+
 const resolveEmployeeScope = async ({
   companyId,
   currentEmployeeId,
@@ -285,7 +510,7 @@ const getEmployeeDepartmentLookup = async ({
   return lookup;
 };
 
-const getKpiTemplateData = async ({ employeeIds }) => {
+const getKpiTemplateData = async ({ employeeIds, selectedYear, selectedMonth }) => {
   const templateTable = await firstExistingTable([
     "kpitemplate",
     "kpi_templates",
@@ -343,27 +568,63 @@ const getKpiTemplateData = async ({ employeeIds }) => {
     "template_id",
   ]);
   const scoreCol = firstColumn(parameterColumns, ["kpiScore", "kpi_score", "score"]);
+  const parameterCreatedCol = firstColumn(parameterColumns, [
+    "createdAt",
+    "created_at",
+    "date",
+  ]);
   if (!templateIdCol || !scoreCol) {
     return { templates: templates.map((template) => ({ ...template, totalScore: round2(template.totalScore) })), templateIds };
   }
 
-  const scoreRows = await knex(parameterTable)
+  const scoreQuery = knex(parameterTable)
     .select(`${templateIdCol} as templateId`)
     .sum({ score: scoreCol })
-    .whereIn(templateIdCol, templateIds)
-    .groupBy(templateIdCol);
+    .whereIn(templateIdCol, templateIds);
+  if (parameterCreatedCol) {
+    scoreQuery.max({ scoreDate: parameterCreatedCol });
+    if (selectedYear && selectedMonth) {
+      const start = new Date(Date.UTC(selectedYear, selectedMonth - 1, 1));
+      const end = new Date(Date.UTC(selectedYear, selectedMonth, 1));
+      scoreQuery.where(parameterCreatedCol, ">=", start).where(parameterCreatedCol, "<", end);
+    } else if (selectedYear) {
+      const start = new Date(Date.UTC(selectedYear, 0, 1));
+      const end = new Date(Date.UTC(selectedYear + 1, 0, 1));
+      scoreQuery.where(parameterCreatedCol, ">=", start).where(parameterCreatedCol, "<", end);
+    }
+  }
+  scoreQuery.groupBy(templateIdCol);
+
+  const scoreRows = await scoreQuery;
   const scoreByTemplate = new Map(
-    scoreRows.map((row) => [String(row.templateId), round2(row.score)]),
+    scoreRows.map((row) => [
+      String(row.templateId),
+      {
+        score: round2(row.score),
+        scoreDate: row.scoreDate || null,
+      },
+    ]),
   );
+  const filteredTemplateIds = new Set(scoreRows.map((row) => String(row.templateId)));
 
   return {
-    templateIds,
-    templates: templates.map((template) => ({
-      ...template,
-      totalScore: scoreByTemplate.has(String(template.id))
-        ? scoreByTemplate.get(String(template.id))
-        : round2(template.totalScore),
-    })),
+    templateIds: selectedYear && parameterCreatedCol
+      ? templateIds.filter((templateId) => filteredTemplateIds.has(String(templateId)))
+      : templateIds,
+    templates: templates
+      .filter((template) =>
+        selectedYear && parameterCreatedCol
+          ? filteredTemplateIds.has(String(template.id))
+          : true,
+      )
+      .map((template) => {
+        const scoreInfo = scoreByTemplate.get(String(template.id));
+        return {
+          ...template,
+          scoreDate: scoreInfo?.scoreDate || template.createdAt,
+          totalScore: scoreInfo ? scoreInfo.score : round2(template.totalScore),
+        };
+      }),
   };
 };
 
@@ -460,39 +721,63 @@ const getCompetencyGrowthPct = async ({ employeeTable, employeeColumns, employee
   return round2(row?.avg);
 };
 
-const buildKpiPerformanceTrend = (scorecards = []) => {
-  if (!scorecards.length) return [];
+const buildKpiPerformanceTrend = (scorecards = [], selectedYear = null) => {
+  if (!scorecards.length && !selectedYear) return [];
 
-  const latestTime = scorecards.reduce(
-    (latest, item) => Math.max(latest, item.monthDate.getTime()),
-    0,
-  );
-  const latestDate = latestTime ? new Date(latestTime) : new Date();
-  const endMonth = new Date(
-    Date.UTC(latestDate.getUTCFullYear(), latestDate.getUTCMonth(), 1),
-  );
   const monthBuckets = [];
 
-  for (let offset = 5; offset >= 0; offset -= 1) {
-    const bucketDate = new Date(endMonth);
-    bucketDate.setUTCMonth(endMonth.getUTCMonth() - offset);
-    const month = `${bucketDate.getUTCFullYear()}-${String(
-      bucketDate.getUTCMonth() + 1,
-    ).padStart(2, "0")}`;
-    const monthLabel = new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      year: "numeric",
-      timeZone: "UTC",
-    }).format(bucketDate);
+  if (selectedYear) {
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+      const bucketDate = new Date(Date.UTC(selectedYear, monthIndex, 1));
+      const month = `${bucketDate.getUTCFullYear()}-${String(
+        bucketDate.getUTCMonth() + 1,
+      ).padStart(2, "0")}`;
+      const monthLabel = new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        year: "numeric",
+        timeZone: "UTC",
+      }).format(bucketDate);
 
-    monthBuckets.push({
-      month,
-      monthLabel,
-      totalScore: 0,
-      scorecardCount: 0,
-      lowKpiCount: 0,
-      topPerformerCount: 0,
-    });
+      monthBuckets.push({
+        month,
+        monthLabel,
+        totalScore: 0,
+        scorecardCount: 0,
+        lowKpiCount: 0,
+        topPerformerCount: 0,
+      });
+    }
+  } else {
+    const latestTime = scorecards.reduce(
+      (latest, item) => Math.max(latest, item.monthDate.getTime()),
+      0,
+    );
+    const latestDate = latestTime ? new Date(latestTime) : new Date();
+    const endMonth = new Date(
+      Date.UTC(latestDate.getUTCFullYear(), latestDate.getUTCMonth(), 1),
+    );
+
+    for (let offset = 11; offset >= 0; offset -= 1) {
+      const bucketDate = new Date(endMonth);
+      bucketDate.setUTCMonth(endMonth.getUTCMonth() - offset);
+      const month = `${bucketDate.getUTCFullYear()}-${String(
+        bucketDate.getUTCMonth() + 1,
+      ).padStart(2, "0")}`;
+      const monthLabel = new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        year: "numeric",
+        timeZone: "UTC",
+      }).format(bucketDate);
+
+      monthBuckets.push({
+        month,
+        monthLabel,
+        totalScore: 0,
+        scorecardCount: 0,
+        lowKpiCount: 0,
+        topPerformerCount: 0,
+      });
+    }
   }
 
   const bucketByMonth = new Map(monthBuckets.map((bucket) => [bucket.month, bucket]));
@@ -573,6 +858,18 @@ const getKpiDashboardWidgets = async (req, res) => {
       Number.parseInt(String(req.query.departmentId || ""), 10) || null;
     const requestedEmployeeId =
       Number.parseInt(String(req.query.employeeId || ""), 10) || null;
+    const selectedYear =
+      Number.parseInt(String(req.query.year || ""), 10) || null;
+    const selectedMonth =
+      Number.parseInt(String(req.query.month || ""), 10) || null;
+    const normalizedYear =
+      selectedYear && selectedYear >= 2000 && selectedYear <= 2100
+        ? selectedYear
+        : null;
+    const normalizedMonth =
+      selectedMonth && selectedMonth >= 1 && selectedMonth <= 12
+        ? selectedMonth
+        : null;
 
     const currentEmployee = currentEmployeeId
       ? await knex("employees")
@@ -603,6 +900,8 @@ const getKpiDashboardWidgets = async (req, res) => {
 
     const { templates, templateIds } = await getKpiTemplateData({
       employeeIds: scope.employeeIds,
+      selectedYear: normalizedYear,
+      selectedMonth: normalizedMonth,
     });
     const employeeDepartmentLookup = await getEmployeeDepartmentLookup({
       employeeTable: scope.employeeTable,
@@ -613,7 +912,7 @@ const getKpiDashboardWidgets = async (req, res) => {
 
     const validScorecards = templates
       .map((template) => {
-        const monthDate = new Date(template.createdAt);
+        const monthDate = new Date(template.scoreDate || template.createdAt);
         const ownerId = Number(template.ownerId || 0);
         const department = employeeDepartmentLookup.get(ownerId) || {
           id: 0,
@@ -638,7 +937,10 @@ const getKpiDashboardWidgets = async (req, res) => {
             validScorecards.length,
         )
       : 0;
-    const kpiPerformanceTrend = buildKpiPerformanceTrend(validScorecards);
+    const kpiPerformanceTrend = buildKpiPerformanceTrend(
+      validScorecards,
+      normalizedYear,
+    );
     const departmentKpiPerformance = buildDepartmentKpiPerformance(validScorecards);
 
     const bestScoreByPerson = new Map();
@@ -701,6 +1003,7 @@ const getKpiDashboardWidgets = async (req, res) => {
       competencyGrowthPct,
       availableDepartments,
       availableEmployees,
+      leadIndicatorSignals,
     ] = await Promise.all([
       getPendingReviews({ templateIds, employeeIds: scope.employeeIds }),
       getCorrectiveActionStatus({ templateIds }),
@@ -716,6 +1019,7 @@ const getKpiDashboardWidgets = async (req, res) => {
         companyId,
         effectiveDepartmentId: scope.effectiveDepartmentId,
       }),
+      getLeadIndicatorSignals({ templateIds }),
     ]);
 
     const correctiveActionTotal =
@@ -737,6 +1041,7 @@ const getKpiDashboardWidgets = async (req, res) => {
       competencyGrowthPct,
       correctiveActionStatus,
       correctiveActionTotal,
+      leadIndicatorSignals,
       availableDepartments,
       availableEmployees,
     });

@@ -57,6 +57,11 @@ let employeeColumnsCache = null;
 
 const buildDuplicateMessage = (label) => `${label} already exists`;
 
+const normalizeBankAccountNumber = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/\s+/g, "");
+
 const getEmployeeColumns = async () => {
   if (!employeeColumnsCache) {
     employeeColumnsCache = await knex("employees").columnInfo();
@@ -233,9 +238,7 @@ const findBankDuplicateMessage = async ({
   excludeEmployeeId = null,
   accountNumber,
 }) => {
-  const normalizedAccountNumber = accountNumber
-    ? String(accountNumber).trim()
-    : null;
+  const normalizedAccountNumber = normalizeBankAccountNumber(accountNumber);
 
   if (!normalizedAccountNumber) return null;
 
@@ -247,9 +250,12 @@ const findBankDuplicateMessage = async ({
         queryBuilder.whereNot("ebd.employee_id", excludeEmployeeId);
       }
     })
-    .whereRaw("LOWER(TRIM(COALESCE(ebd.account_number, ''))) = ?", [
+    .whereRaw(
+      "LOWER(REPLACE(TRIM(COALESCE(ebd.account_number, '')), ' ', '')) = ?",
+      [
       normalizedAccountNumber.toLowerCase(),
-    ])
+      ],
+    )
     .first();
 
   if (existingBank) {
@@ -451,7 +457,8 @@ const addEmployee = async (req, res) => {
     // ✅ Only one HR per company
     if (normalizedRole === "hr") {
       const existingHR = await knex("employees")
-        .where({ company_id: companyId, role: "hr" })
+        .where({ company_id: companyId })
+        .whereRaw("LOWER(TRIM(role)) = ?", ["hr"])
         .whereNot(id ? { id } : {})
         .first();
 
@@ -1445,11 +1452,26 @@ const updateEmployee = async (req, res) => {
 
     // Handle bank details (optional update)
     if (hasBankUpdates) {
-      const bankDuplicateMessage = await findBankDuplicateMessage({
-        companyId,
-        excludeEmployeeId: id,
-        accountNumber: account_number,
-      });
+      const existingBank = await knex("employee_bank_details")
+        .where({ employee_id: id })
+        .first();
+
+      const incomingAccountNumber = normalizeBankAccountNumber(account_number);
+      const currentAccountNumber = normalizeBankAccountNumber(
+        existingBank?.account_number,
+      );
+      const bankAccountChanged =
+        incomingAccountNumber &&
+        incomingAccountNumber.toLowerCase() !==
+          currentAccountNumber.toLowerCase();
+
+      const bankDuplicateMessage = bankAccountChanged
+        ? await findBankDuplicateMessage({
+            companyId,
+            excludeEmployeeId: id,
+            accountNumber: incomingAccountNumber,
+          })
+        : null;
 
       if (bankDuplicateMessage) {
         cleanupFiles(req.files);
@@ -1461,13 +1483,9 @@ const updateEmployee = async (req, res) => {
         employee_id: id,
         account_holder_name: account_holder_name || null,
         bank_name: bank_name || null,
-        account_number: account_number || null,
+        account_number: incomingAccountNumber || null,
         ifsc_code: ifsc_code || null,
       };
-
-      const existingBank = await knex("employee_bank_details")
-        .where({ employee_id: id })
-        .first();
       if (existingBank) {
         await knex("employee_bank_details")
           .where({ employee_id: id })
