@@ -7,6 +7,7 @@ const {
   getCurrentEmployeeId,
   getKpiVisibilityScope,
 } = require("../utils/kpiAccess");
+const { sendPushToUsers } = require("../services/pushNotificationService");
 
 const monthLabelToNumber = {
   January: 1,
@@ -81,6 +82,122 @@ const normalizeDailyAchievements = (value) => {
 const serializeDailyAchievements = (value) => {
   const normalized = normalizeDailyAchievements(value);
   return JSON.stringify(normalized);
+};
+
+const parseLeadIndicatorDefinitions = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+
+  if (raw.startsWith("[") || raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw);
+      const items = Array.isArray(parsed) ? parsed : parsed?.items;
+      if (Array.isArray(items)) {
+        return items
+          .map((item) => ({
+            label: String(item?.label || "").trim(),
+            type: item?.type === "yesno" ? "yesno" : "number",
+            targetValue: String(item?.targetValue ?? item?.target ?? "").trim(),
+            minimumValue: String(item?.minimumValue ?? item?.minimum ?? "").trim(),
+            assignedEmployeeId:
+              Number(item?.assignedEmployeeId || item?.assigned_employee_id || 0) ||
+              null,
+          }))
+          .filter((item) => item.label);
+      }
+    } catch {
+      // Fall back to legacy text parsing.
+    }
+  }
+
+  return raw
+    .replace(/(\d+\.\d+)\s+/g, "\n$1 ")
+    .replace(/[;|]+/g, ",")
+    .split(/\r?\n|,/)
+    .map((item) => item.trim().replace(/^\d+\.\d+\s*/, ""))
+    .filter(Boolean)
+    .map((label) => ({
+      label,
+      type: "number",
+      targetValue: "",
+      minimumValue: "",
+      assignedEmployeeId: null,
+    }));
+};
+
+const getAssignedLeadIndicatorKeys = (parameters = []) => {
+  const keys = new Set();
+  parameters.forEach((parameter) => {
+    parseLeadIndicatorDefinitions(parameter.leadIndicators).forEach(
+      (indicator, index) => {
+        if (indicator.assignedEmployeeId) {
+          keys.add(
+            `${Number(parameter.id)}:${index}:${Number(indicator.assignedEmployeeId)}`,
+          );
+        }
+      },
+    );
+  });
+  return keys;
+};
+
+const createLeadIndicatorNotifications = async ({
+  companyId,
+  parameters = [],
+  previousKeys = new Set(),
+}) => {
+  const notifications = [];
+
+  parameters.forEach((parameter) => {
+    parseLeadIndicatorDefinitions(parameter.leadIndicators).forEach(
+      (indicator, index) => {
+        const employeeId = Number(indicator.assignedEmployeeId || 0);
+        if (!employeeId) return;
+
+        const key = `${Number(parameter.id)}:${index}:${employeeId}`;
+        if (previousKeys.has(key)) return;
+
+        notifications.push({
+          user_id: String(employeeId),
+          title: "KPI Lead Indicator Assigned",
+          description: `You have been assigned "${indicator.label}" for ${parameter.parameter || parameter.name || "KPI Parameter"}.`,
+          type: "info",
+          module_id: "kpi",
+          action_url: "/dashboard",
+          read: false,
+          created_at: new Date(),
+        });
+      },
+    );
+  });
+
+  if (!notifications.length) return { sent: 0, skipped: 0 };
+
+  try {
+    await knex("notifications").insert(notifications);
+  } catch (error) {
+    console.warn("[KPI lead indicator] in-app notification failed:", error);
+  }
+
+  try {
+    const uniqueEmployeeIds = [
+      ...new Set(notifications.map((item) => item.user_id).filter(Boolean)),
+    ];
+    const push = await sendPushToUsers({
+      userIds: uniqueEmployeeIds,
+      title: "KPI Lead Indicator Assigned",
+      body: "A KPI lead indicator has been assigned to you. Please update today's value.",
+      data: {
+        moduleId: "kpi",
+        actionUrl: "/dashboard",
+        companyId,
+      },
+    });
+    return { sent: notifications.length, push };
+  } catch (error) {
+    console.warn("[KPI lead indicator] push notification failed:", error);
+    return { sent: notifications.length, pushFailed: true };
+  }
 };
 
 const ownerNameExpr = () =>
@@ -326,6 +443,8 @@ exports.createScorecard = async (req, res) => {
     const createdParameters = await knex("kpi_parameters")
       .where({ kpi_template_id: templateId })
       .select("id")
+      .select("name as parameter")
+      .select("lead_indicators as leadIndicators")
       .orderBy("id", "asc");
 
     if (createdParameters.length) {
@@ -342,6 +461,11 @@ exports.createScorecard = async (req, res) => {
         })),
       );
     }
+
+    await createLeadIndicatorNotifications({
+      companyId,
+      parameters: createdParameters,
+    });
 
     const template = await knex("kpi_templates as t")
       .leftJoin("employees as e", "t.owner_employee_id", "e.id")
@@ -415,6 +539,13 @@ exports.updateScorecard = async (req, res) => {
     if (!existingTemplate) {
       return res.status(404).json({ message: "Scorecard not found." });
     }
+
+    const previousParameters = await knex("kpi_parameters")
+      .where({ kpi_template_id: templateId })
+      .select("id")
+      .select("lead_indicators as leadIndicators");
+    const previousAssignmentKeys =
+      getAssignedLeadIndicatorKeys(previousParameters);
 
     const totalScore = Number(
       cleanRows.reduce((sum, row) => sum + computeKpiScore(row), 0).toFixed(2),
@@ -493,6 +624,19 @@ exports.updateScorecard = async (req, res) => {
       }
     });
 
+    const finalAssignmentParameters = await knex("kpi_parameters")
+      .where({ kpi_template_id: templateId })
+      .select("id")
+      .select("name as parameter")
+      .select("lead_indicators as leadIndicators")
+      .orderBy("id", "asc");
+
+    await createLeadIndicatorNotifications({
+      companyId,
+      parameters: finalAssignmentParameters,
+      previousKeys: previousAssignmentKeys,
+    });
+
     const template = await knex("kpi_templates as t")
       .leftJoin("employees as e", "t.owner_employee_id", "e.id")
       .where("t.id", templateId)
@@ -534,6 +678,163 @@ exports.updateScorecard = async (req, res) => {
   } catch (error) {
     console.error("KPI scorecard update error:", error);
     return res.status(500).json({ message: "Unable to update KPI scorecard." });
+  }
+};
+
+exports.getAssignedLeadIndicators = async (req, res) => {
+  try {
+    const companyId = req.user?.company_id || null;
+    const employeeId = getCurrentEmployeeId(req.user);
+
+    if (!companyId || !employeeId) {
+      return res.status(400).json({ message: "Employee context missing." });
+    }
+
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+    const todayKey = String(now.getDate());
+
+    const rows = await knex("kpi_parameters as p")
+      .join("kpi_templates as t", "p.kpi_template_id", "t.id")
+      .leftJoin("employees as owner", "t.owner_employee_id", "owner.id")
+      .where("t.company_id", companyId)
+      .whereRaw("YEAR(t.created_at) = ? AND MONTH(t.created_at) = ?", [
+        currentYear,
+        currentMonth,
+      ])
+      .select("p.id as parameterId")
+      .select("p.kpi_template_id as scorecardId")
+      .select("p.name as parameterName")
+      .select("p.uom")
+      .select("p.lead_indicators as leadIndicators")
+      .select("p.daily_achievements as dailyAchievements")
+      .select("t.created_at as periodDate")
+      .select({
+        scorecardOwner: knex.raw(
+          "TRIM(CONCAT(COALESCE(owner.first_name,''), ' ', COALESCE(owner.last_name,'')))",
+        ),
+      })
+      .orderBy("t.created_at", "desc")
+      .orderBy("p.id", "asc");
+
+    const assignments = [];
+    rows.forEach((row) => {
+      const daily = normalizeDailyAchievements(row.dailyAchievements);
+      parseLeadIndicatorDefinitions(row.leadIndicators).forEach(
+        (indicator, index) => {
+          if (Number(indicator.assignedEmployeeId) !== Number(employeeId)) {
+            return;
+          }
+
+          const rowKey = `li-${index}`;
+          const values = daily[rowKey] || {};
+          assignments.push({
+            parameterId: String(row.parameterId),
+            scorecardId: String(row.scorecardId),
+            parameterName: row.parameterName || "KPI Parameter",
+            scorecardOwner: row.scorecardOwner || "Employee",
+            uom: row.uom || "",
+            indicatorIndex: index,
+            indicatorLabel: indicator.label,
+            type: indicator.type,
+            targetValue: indicator.targetValue,
+            minimumValue: indicator.minimumValue,
+            values,
+            todayKey,
+            todayValue: String(values?.[todayKey] || ""),
+            periodDate: row.periodDate,
+          });
+        },
+      );
+    });
+
+    return res.json(assignments);
+  } catch (error) {
+    console.error("Assigned KPI lead indicators load error:", error);
+    return res
+      .status(500)
+      .json({ message: "Unable to load assigned KPI lead indicators." });
+  }
+};
+
+exports.updateAssignedLeadIndicator = async (req, res) => {
+  try {
+    const companyId = req.user?.company_id || null;
+    const employeeId = getCurrentEmployeeId(req.user);
+    const parameterId = toNumber(req.params.parameterId);
+    const indicatorIndex = toNumber(req.params.indicatorIndex);
+
+    if (!companyId || !employeeId) {
+      return res.status(400).json({ message: "Employee context missing." });
+    }
+    if (!parameterId || indicatorIndex === null || indicatorIndex < 0) {
+      return res.status(400).json({ message: "Indicator id is required." });
+    }
+
+    const dayKey = String(req.body?.dayKey || new Date().getDate()).trim();
+    const value = String(req.body?.value ?? "").trim();
+    const submittedValues =
+      req.body?.values && typeof req.body.values === "object"
+        ? req.body.values
+        : null;
+
+    const parameter = await knex("kpi_parameters as p")
+      .join("kpi_templates as t", "p.kpi_template_id", "t.id")
+      .where("t.company_id", companyId)
+      .andWhere("p.id", parameterId)
+      .select("p.id")
+      .select("p.lead_indicators as leadIndicators")
+      .select("p.daily_achievements as dailyAchievements")
+      .first();
+
+    if (!parameter) {
+      return res.status(404).json({ message: "KPI parameter not found." });
+    }
+
+    const indicator = parseLeadIndicatorDefinitions(parameter.leadIndicators)[
+      indicatorIndex
+    ];
+    if (
+      !indicator ||
+      Number(indicator.assignedEmployeeId) !== Number(employeeId)
+    ) {
+      return res.status(403).json({ message: "This lead indicator is not assigned to you." });
+    }
+
+    const daily = normalizeDailyAchievements(parameter.dailyAchievements);
+    const rowKey = `li-${indicatorIndex}`;
+    daily[rowKey] = submittedValues
+      ? Object.fromEntries(
+          Object.entries(submittedValues).map(([key, entryValue]) => [
+            String(key),
+            String(entryValue ?? "").trim(),
+          ]),
+        )
+      : {
+          ...(daily[rowKey] || {}),
+          [dayKey]: value,
+        };
+
+    await knex("kpi_parameters")
+      .where({ id: parameterId })
+      .update({
+        daily_achievements: JSON.stringify(daily),
+        updated_at: knex.fn.now(),
+      });
+
+    return res.json({
+      parameterId: String(parameterId),
+      indicatorIndex,
+      dayKey,
+      value: daily[rowKey]?.[dayKey] || value,
+      values: daily[rowKey],
+    });
+  } catch (error) {
+    console.error("Assigned KPI lead indicator update error:", error);
+    return res
+      .status(500)
+      .json({ message: "Unable to update assigned KPI lead indicator." });
   }
 };
 

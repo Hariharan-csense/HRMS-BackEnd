@@ -160,14 +160,19 @@ const requirePermission = (moduleKey, action, options = {}) => {
       if (await hasAddonAccess(req.user, moduleKey)) return next();
       if (hasDefaultAdminAccess(req.user, moduleKey, options.submodule)) return next();
 
-      // Allow authenticated users with an employee profile to respond to pulse surveys even if the role
-      // assignment is missing the explicit "respond" permission. Responding should be
-      // available to anyone invited to a survey.
-      const isPulseRespond =
+      // Pulse self-service pages should be available to employees; controller logic still
+      // verifies the employee is invited to the requested survey before returning data.
+      const isPulseEmployeeSelfService =
         String(moduleKey).toLowerCase() === "pulse_surveys" &&
-        String(options.submodule || "").toLowerCase() === "respond" &&
-        ["create", "update"].includes(String(action).toLowerCase());
-      if (isPulseRespond && (req.user?.employee_id || String(req.user?.type || "").toLowerCase() === "employee")) {
+        ["my_surveys", "feedback", "respond"].includes(
+          String(options.submodule || "").toLowerCase(),
+        ) &&
+        ["view", "create", "update"].includes(String(action).toLowerCase());
+      if (
+        isPulseEmployeeSelfService &&
+        (req.user?.employee_id ||
+          String(req.user?.type || "").toLowerCase() === "employee")
+      ) {
         return next();
       }
 

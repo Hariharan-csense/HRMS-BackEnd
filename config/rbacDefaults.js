@@ -210,6 +210,11 @@ const EMPLOYEE_DEFAULTS = [
     submodule: "feedback",
     actions: ["view", "create", "update", "delete"],
   },
+  {
+    module: "pulse_surveys",
+    submodule: "respond",
+    actions: ["view", "create", "update"],
+  },
 
 ];
 

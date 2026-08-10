@@ -129,6 +129,7 @@ const RBAC_MODULE_CATALOG = [
     submodules: [
       { key: "dashboard", label: "Overview" },
       { key: "results", label: "Results" },
+      { key: "daily_log", label: "Daily Log" },
       { key: "create", label: "Create Survey" },
       { key: "templates", label: "Templates" },
       { key: "feedback_inbox", label: "Feedback Inbox" },

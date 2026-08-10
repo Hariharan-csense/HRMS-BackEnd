@@ -12,6 +12,7 @@ const {
   getMyPulseSurveys,
   getPulseSurveyForEmployee,
   respondPulseSurvey,
+  respondDailyPulseSurvey,
   createPulseSurveyTemplate,
   getPulseSurveyTemplates,
   updatePulseSurveyTemplate,
@@ -31,6 +32,7 @@ router.delete("/templates/:id", protect, requirePermission("pulse_surveys", "del
 
 // Employee
 router.get("/my", protect, requirePermission("pulse_surveys", "view", { submodule: "my_surveys" }), getMyPulseSurveys);
+router.post("/daily-log/respond", protect, requirePermission("pulse_surveys", "create", { submodule: "respond" }), respondDailyPulseSurvey);
 router.get("/:id", protect, requirePermission("pulse_surveys", "view", { submodule: "my_surveys" }), getPulseSurveyForEmployee);
 router.post("/:id/respond", protect, requirePermission("pulse_surveys", "create", { submodule: "respond" }), respondPulseSurvey);
 

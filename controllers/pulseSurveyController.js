@@ -123,6 +123,19 @@ const getSurveyEmployeeId = (user) => {
     : 0;
 };
 
+const getLocalDateKey = (value = new Date()) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  return date.toISOString().slice(0, 10);
+};
+
+const getPulseSurveyCategory = (survey) => {
+  const title = String(survey?.title || "").trim().toLowerCase();
+  return title.startsWith("daily log -") ? "daily_log" : "survey";
+};
+
 const SURVEY_LOGIN_URL = "https://hrms.procease.co/login";
 
 const buildSurveyUrl = (surveyId) => {
@@ -444,6 +457,7 @@ const getAdminPulseSurveys = async (req, res) => {
         updatedAt: s.updated_at,
         responseCount: Number(s.responseCount || 0),
         avgScore: s.avgScore === null ? 0 : Number(s.avgScore),
+        category: getPulseSurveyCategory(s),
       })),
     );
   } catch (error) {
@@ -972,6 +986,157 @@ const respondPulseSurvey = async (req, res) => {
   }
 };
 
+const resolveDailySurveyCreatorUserId = async ({ companyId, fallbackUserId }) => {
+  const fallbackUser = fallbackUserId
+    ? await db("users")
+        .where({ id: fallbackUserId, company_id: companyId })
+        .first()
+    : null;
+
+  if (fallbackUser) return fallbackUser.id;
+
+  const companyAdmin = await db("users")
+    .where({ company_id: companyId })
+    .whereIn("role", ["admin", "ceo", "Admin", "CEO"])
+    .orderBy("id", "asc")
+    .first();
+
+  if (companyAdmin) return companyAdmin.id;
+
+  const companyUser = await db("users")
+    .where({ company_id: companyId })
+    .orderBy("id", "asc")
+    .first();
+
+  return companyUser?.id || null;
+};
+
+const ensureDailyPulseSurvey = async ({ companyId, employeeId, createdByUserId }) => {
+  const dateKey = getLocalDateKey();
+  const title = `Daily Log - ${dateKey}`;
+  const message = "How are you feeling today?";
+
+  let survey = await db("pulse_surveys")
+    .where({ company_id: companyId, title })
+    .first();
+
+  if (!survey) {
+    const creatorUserId = await resolveDailySurveyCreatorUserId({
+      companyId,
+      fallbackUserId: createdByUserId,
+    });
+
+    if (!creatorUserId) {
+      throw new Error("No company user available to create daily survey");
+    }
+
+    const [surveyId] = await db("pulse_surveys").insert({
+      company_id: companyId,
+      created_by_user_id: creatorUserId,
+      title,
+      message,
+      recipient_type: "employee",
+      allow_anonymous: false,
+      status: "sent",
+      total_sent: 0,
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+
+    survey = await db("pulse_surveys")
+      .where({ company_id: companyId, id: surveyId })
+      .first();
+  }
+
+  const recipient = await db("pulse_survey_recipients")
+    .where({
+      company_id: companyId,
+      survey_id: survey.id,
+      employee_id: employeeId,
+    })
+    .first();
+
+  if (!recipient) {
+    await db("pulse_survey_recipients").insert({
+      company_id: companyId,
+      survey_id: survey.id,
+      employee_id: employeeId,
+      sent_at: new Date(),
+    });
+
+    await db("pulse_surveys")
+      .where({ id: survey.id })
+      .increment("total_sent", 1)
+      .update({ updated_at: new Date() });
+  }
+
+  return survey;
+};
+
+const respondDailyPulseSurvey = async (req, res) => {
+  if (!requireAuthType(req, res, "employee")) return;
+
+  const companyId = req.user.company_id;
+  const employeeId = getSurveyEmployeeId(req.user);
+  const { score, label = "", comment = "" } = req.body || {};
+
+  if (!companyId) {
+    return res.status(400).json({ message: "Missing company_id" });
+  }
+
+  if (!employeeId) {
+    return res.status(400).json({ message: "Employee profile is required" });
+  }
+
+  const numericScore = clampScore(score);
+  if (numericScore < 1 || numericScore > 10) {
+    return res.status(400).json({ message: "Score must be between 1 and 10" });
+  }
+
+  try {
+    const survey = await ensureDailyPulseSurvey({
+      companyId,
+      employeeId,
+      createdByUserId: req.user.id,
+    });
+
+    const existing = await db("pulse_survey_responses")
+      .where({
+        company_id: companyId,
+        survey_id: survey.id,
+        employee_id: employeeId,
+      })
+      .first();
+
+    const now = new Date();
+    const payload = {
+      survey_id: survey.id,
+      employee_id: employeeId,
+      company_id: companyId,
+      score: numericScore,
+      label: String(label || "").slice(0, 64),
+      comment: comment ? String(comment) : null,
+      is_anonymous: false,
+      responded_at: now,
+      updated_at: now,
+    };
+
+    if (existing) {
+      await db("pulse_survey_responses").where({ id: existing.id }).update(payload);
+    } else {
+      await db("pulse_survey_responses").insert({ ...payload, created_at: now });
+    }
+
+    return res.json({
+      message: existing ? "Daily log updated" : "Daily log submitted",
+      surveyId: survey.id,
+    });
+  } catch (error) {
+    console.error("respondDailyPulseSurvey error:", error);
+    return res.status(500).json({ message: "Failed to submit daily log" });
+  }
+};
+
 // Admin: templates CRUD
 const getPulseSurveyTemplates = async (req, res) => {
   if (!requireAuthType(req, res, "admin")) return;
@@ -1123,6 +1288,7 @@ module.exports = {
   getMyPulseSurveys,
   getPulseSurveyForEmployee,
   respondPulseSurvey,
+  respondDailyPulseSurvey,
   // Templates
   createPulseSurveyTemplate,
   getPulseSurveyTemplates,
