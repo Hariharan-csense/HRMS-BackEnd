@@ -125,8 +125,20 @@ const inferAddonModuleKey = (addon = {}) => {
   if (text.includes("client") && text.includes("attendance"))
     return "client_attendance";
   if (text.includes("expense")) return "expenses";
+  if (text.includes("helpdesk")) return "hr_helpdesk";
   if (text.includes("ticket")) return "tickets";
+  if (
+    text.includes("ai_assistant") ||
+    text.includes("ai assistant") ||
+    text.includes("ai chat") ||
+    text.includes("chatbot")
+  )
+    return "ai_assistant";
+  if (text.includes("roster") || text.includes("shift_roster"))
+    return "shift_roster";
   if (text.includes("asset")) return "assets";
+  if (text.includes("payroll_audit") || text.includes("audit trail"))
+    return "payroll_audit";
   if (text.includes("payroll")) return "payroll";
   if (
     text.includes("rms") ||

@@ -215,6 +215,8 @@ const EMPLOYEE_DEFAULTS = [
     submodule: "respond",
     actions: ["view", "create", "update"],
   },
+  { module: "hr_helpdesk", actions: ["view", "create", "update"] },
+  { module: "ai_assistant", actions: ["view", "create"] },
 
 ];
 

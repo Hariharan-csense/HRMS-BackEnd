@@ -12,6 +12,7 @@ const {
   deleteSalaryStructure,
   deletePayrollProcessing,
   deletePayslip,
+  getPayrollAuditTrail,
 } = require('../controllers/payrollController');
 const { protect } = require('../middleware/authMiddleware');
 const { requirePermission } = require("../middleware/rbacMiddleware");
@@ -43,6 +44,9 @@ router.get('/payslips', protect, requirePermission("payroll", "view", { submodul
 
 // Get employee payslips (for employees to see their own payslips)
 router.get('/employee/payslips', protect, requirePermission("payroll", "view", { submodule: "payslips" }), getEmployeePayslips);
+
+// Payroll audit trail
+router.get('/audit-trail', protect, requirePermission("payroll", "view", { submodule: "audit_trail" }), getPayrollAuditTrail);
 
 // Delete payslip
 router.delete('/payslips/:id', protect, requirePermission("payroll", "delete", { submodule: "payslips" }), deletePayslip);

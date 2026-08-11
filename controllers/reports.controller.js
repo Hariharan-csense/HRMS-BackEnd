@@ -128,6 +128,29 @@ const normalizeTimeForReport = (value) => {
   return `${String(match[1]).padStart(2, "0")}:${match[2]}:${match[3] || "00"}`;
 };
 
+const timeToSecondsForReport = (value) => {
+  const time = normalizeTimeForReport(value);
+  if (!time) return null;
+  const [h, m, s] = String(time).split(":").map(Number);
+  if ([h, m, s].some(Number.isNaN)) return null;
+  return h * 3600 + m * 60 + s;
+};
+
+const secondsToHours = (seconds) => Number((Math.max(0, seconds) / 3600).toFixed(2));
+
+const formatDurationFromHours = (hours) => {
+  const totalSeconds = Math.round(Number(hours || 0) * 3600);
+  return formatDurationFromSeconds(totalSeconds);
+};
+
+const formatDurationFromSeconds = (seconds) => {
+  const totalSeconds = Math.max(0, Math.round(Number(seconds || 0)));
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+};
+
 const isAllValue = (value) => !value || String(value).toLowerCase() === "all";
 
 const resolveDateRange = (query) => {
@@ -181,6 +204,26 @@ const parseLeaveOverrideType = (reason, fallbackStatus) => {
     return "Half Day Leave";
   return "Paid Leave";
 };
+
+const isPaidLeaveReportRow = (row) => {
+  if (row?.isPaid !== undefined && row?.isPaid !== null) {
+    return (
+      row.isPaid === true ||
+      row.isPaid === 1 ||
+      String(row.isPaid).toLowerCase() === "true" ||
+      String(row.isPaid) === "1"
+    );
+  }
+
+  const leaveType = normalizeStatus(row?.leaveType).replace(/[\s-]+/g, "_");
+  return !(
+    leaveType.includes("lop") ||
+    leaveType.includes("loss_of_pay") ||
+    leaveType.includes("unpaid")
+  );
+};
+
+const roundReportNumber = (value) => Number(Number(value || 0).toFixed(2));
 
 const getReportFilters = async (req, res) => {
   try {
@@ -479,7 +522,7 @@ const getAttendanceReport = async (req, res) => {
     const rowKey = (employeePkId, date) =>
       `${employeePkId || ""}-${toDateKey(date) || ""}`;
 
-    const rows = attendanceRows.map((row) => {
+    const attendanceDetailRows = attendanceRows.map((row) => {
       const rawCheckInTime = normalizeTimeForReport(row.checkInTime);
       const rawCheckOutTime = normalizeTimeForReport(row.checkOutTime);
       const scheduledStartTime = normalizeTimeForReport(row.scheduledStartTime);
@@ -512,10 +555,70 @@ const getAttendanceReport = async (req, res) => {
         permissionDuration: "",
         permissionReason: "",
       };
-      rowsByEmployeeDate.set(
-        rowKey(normalized.employeePkId, normalized.date),
-        normalized,
+      return normalized;
+    });
+
+    const attendanceGroups = new Map();
+    attendanceDetailRows.forEach((row) => {
+      const key = rowKey(row.employeePkId, row.date);
+      const group = attendanceGroups.get(key) || [];
+      group.push(row);
+      attendanceGroups.set(key, group);
+    });
+
+    const rows = Array.from(attendanceGroups.entries()).map(([key, sessions]) => {
+      sessions.sort((a, b) =>
+        String(a.checkInTime || "").localeCompare(String(b.checkInTime || "")),
       );
+
+      const first = sessions[0];
+      const totalHours = sessions.reduce(
+        (sum, session) => sum + Number(session.hoursWorked || 0),
+        0,
+      );
+      const totalOvertime = sessions.reduce(
+        (sum, session) => sum + Number(session.overtimeHours || 0),
+        0,
+      );
+      let breakSeconds = 0;
+
+      for (let index = 0; index < sessions.length - 1; index += 1) {
+        const checkOutSeconds = timeToSecondsForReport(sessions[index].checkOutTime);
+        const nextCheckInSeconds = timeToSecondsForReport(sessions[index + 1].checkInTime);
+        if (checkOutSeconds !== null && nextCheckInSeconds !== null) {
+          breakSeconds += Math.max(0, nextCheckInSeconds - checkOutSeconds);
+        }
+      }
+
+      const sessionDetails = sessions
+        .map(
+          (session, index) =>
+            `${index + 1}. ${session.checkInTime || "-"} - ${session.checkOutTime || "Active"}`,
+        )
+        .join(" | ");
+      const lastCompleted = [...sessions]
+        .reverse()
+        .find((session) => Boolean(session.checkOutTime));
+
+      const normalized = {
+        ...first,
+        id: key,
+        checkInTime: first.checkInTime,
+        checkOutTime: lastCompleted?.checkOutTime || null,
+        hoursWorked: Number(totalHours.toFixed(2)),
+        overallHours: Number(totalHours.toFixed(2)),
+        overallDuration: formatDurationFromHours(totalHours),
+        overtimeHours: Number(totalOvertime.toFixed(2)),
+        breakHours: secondsToHours(breakSeconds),
+        breakDuration: formatDurationFromSeconds(breakSeconds),
+        sessionCount: sessions.length,
+        sessionDetails,
+        attendanceSessions: sessions,
+        check_out_location:
+          lastCompleted?.check_out_location || first.check_out_location,
+      };
+
+      rowsByEmployeeDate.set(key, normalized);
       return normalized;
     });
 
@@ -547,8 +650,14 @@ const getAttendanceReport = async (req, res) => {
             existing.checkOutTime = null;
             existing.check_in_location = null;
             existing.check_out_location = null;
-            existing.hoursWorked = 0;
-            existing.overtimeHours = 0;
+          existing.hoursWorked = 0;
+          existing.overallHours = 0;
+          existing.overallDuration = "00:00:00";
+          existing.breakHours = 0;
+          existing.breakDuration = "00:00:00";
+          existing.sessionCount = 0;
+          existing.sessionDetails = "";
+          existing.overtimeHours = 0;
             existing.status = "leave";
           }
           continue;
@@ -568,6 +677,12 @@ const getAttendanceReport = async (req, res) => {
           checkInTime: null,
           checkOutTime: null,
           hoursWorked: 0,
+          overallHours: 0,
+          overallDuration: "00:00:00",
+          breakHours: 0,
+          breakDuration: "00:00:00",
+          sessionCount: 0,
+          sessionDetails: "",
           overtimeHours: 0,
           deviceInfo: null,
           autoFlag: null,
@@ -627,6 +742,12 @@ const getAttendanceReport = async (req, res) => {
         checkInTime: null,
         checkOutTime: null,
         hoursWorked: 0,
+        overallHours: 0,
+        overallDuration: "00:00:00",
+        breakHours: 0,
+        breakDuration: "00:00:00",
+        sessionCount: 0,
+        sessionDetails: "",
         overtimeHours: 0,
         deviceInfo: null,
         autoFlag: null,
@@ -685,6 +806,12 @@ const getAttendanceReport = async (req, res) => {
             checkInTime: null,
             checkOutTime: null,
             hoursWorked: 0,
+            overallHours: 0,
+            overallDuration: "00:00:00",
+            breakHours: 0,
+            breakDuration: "00:00:00",
+            sessionCount: 0,
+            sessionDetails: "",
             overtimeHours: 0,
             deviceInfo: null,
             autoFlag: null,
@@ -734,6 +861,12 @@ const getAttendanceReport = async (req, res) => {
             checkInTime: null,
             checkOutTime: null,
             hoursWorked: 0,
+            overallHours: 0,
+            overallDuration: "00:00:00",
+            breakHours: 0,
+            breakDuration: "00:00:00",
+            sessionCount: 0,
+            sessionDetails: "",
             overtimeHours: 0,
             deviceInfo: null,
             autoFlag: null,
@@ -804,37 +937,6 @@ const getAttendanceReport = async (req, res) => {
       permissionRemarks: permission.permissionRemarks || "",
     }));
 
-    // ========= Monthly trend (respecting filters) =========
-    const trendRaw = await base
-      .clone()
-      .whereNotNull("a.check_in")
-      .select(
-        knex.raw("DATE_FORMAT(a.check_in, '%Y-%m') as ym_key"),
-        knex.raw("DATE_FORMAT(a.check_in, '%M') as month_name"),
-        knex.raw(
-          "SUM(CASE WHEN LOWER(a.status) IN ('present', 'late', 'grace') THEN 1 ELSE 0 END) as present",
-        ),
-        knex.raw(
-          "SUM(CASE WHEN LOWER(a.status) = 'absent' THEN 1 ELSE 0 END) as absent",
-        ),
-        knex.raw(
-          "SUM(CASE WHEN LOWER(a.status) IN ('half', 'half_day', 'half-day') THEN 1 ELSE 0 END) as half",
-        ),
-      )
-      .groupByRaw(
-        "DATE_FORMAT(a.check_in, '%Y-%m'), DATE_FORMAT(a.check_in, '%M')",
-      )
-      .orderByRaw("DATE_FORMAT(a.check_in, '%Y-%m')");
-
-    const monthMap = {};
-    trendRaw.forEach((row) => {
-      monthMap[row.month_name] = {
-        present: Number(row.present || 0),
-        absent: Number(row.absent || 0),
-        half: Number(row.half || 0),
-      };
-    });
-
     const monthsOrder = [
       "January",
       "February",
@@ -850,6 +952,28 @@ const getAttendanceReport = async (req, res) => {
       "December",
     ];
 
+    const monthMap = {};
+    rows.forEach((row) => {
+      const date = toDateKey(row.date);
+      if (!date) return;
+      const monthIndex = Number(date.slice(5, 7)) - 1;
+      const month = monthsOrder[monthIndex];
+      if (!month) return;
+
+      const statusValue = normalizeStatus(row.status).replace(/[\s-]+/g, "_");
+      const bucket = monthMap[month] || { present: 0, absent: 0, half: 0 };
+
+      if (statusValue === "half" || statusValue === "half_day") {
+        bucket.half += 1;
+      } else if (statusValue === "absent") {
+        bucket.absent += 1;
+      } else if (isPresentLikeStatus(statusValue)) {
+        bucket.present += 1;
+      }
+
+      monthMap[month] = bucket;
+    });
+
     const trend = monthsOrder.map((month) => ({
       month,
       present: monthMap[month]?.present || 0,
@@ -863,33 +987,28 @@ const getAttendanceReport = async (req, res) => {
       .where({ company_id: companyId })
       .first();
 
-    const avgAttendanceRaw = await base
-      .clone()
-      .whereNotNull("a.check_in")
-      .select(
-        knex.raw(
-          "SUM(CASE WHEN LOWER(a.status) IN ('present', 'late', 'grace') THEN 1 WHEN LOWER(a.status) IN ('half', 'half_day', 'half-day') THEN 0.5 ELSE 0 END) / COUNT(*) * 100 as avg_att",
-        ),
-      )
-      .first();
-
-    const todayStats = await base
-      .clone()
-      .whereNotNull("a.check_in")
-      .whereRaw("DATE(a.check_in) = CURDATE()")
-      .select("a.status")
-      .count("* as count")
-      .groupBy("a.status");
-
-    const presentToday =
-      todayStats.find((s) => s.status === "present")?.count || 0;
-    const onLeaveToday =
-      todayStats.find((s) => s.status === "leave")?.count || 0;
+    const attendanceDayRows = rows.filter((row) => {
+      const statusValue = normalizeStatus(row.status);
+      return !statusValue.includes("weekend") && !statusValue.includes("holiday");
+    });
+    const presentCredit = attendanceDayRows.reduce((sum, row) => {
+      const statusValue = normalizeStatus(row.status).replace(/[\s-]+/g, "_");
+      if (statusValue === "half" || statusValue === "half_day") return sum + 0.5;
+      return isPresentLikeStatus(statusValue) ? sum + 1 : sum;
+    }, 0);
+    const todayKey = toDateKey(new Date());
+    const todayRows = rows.filter((row) => toDateKey(row.date) === todayKey);
+    const presentToday = todayRows.filter((row) =>
+      isPresentLikeStatus(row.status),
+    ).length;
+    const onLeaveToday = todayRows.filter((row) =>
+      normalizeStatus(row.status).includes("leave"),
+    ).length;
 
     const summary = {
       totalEmployees: totalEmployees?.count || 0,
-      avgAttendance: avgAttendanceRaw?.avg_att
-        ? `${Number(avgAttendanceRaw.avg_att).toFixed(1)}%`
+      avgAttendance: attendanceDayRows.length
+        ? `${((presentCredit / attendanceDayRows.length) * 100).toFixed(1)}%`
         : "0%",
       presentToday,
       onLeave: onLeaveToday,
@@ -936,6 +1055,15 @@ const getLeaveReport = async (req, res) => {
     let rowsQuery = knex("leave_applications as l")
       .leftJoin("employees as emp", "l.employee_id", "emp.id")
       .leftJoin("departments as d", "emp.department_id", "d.id")
+      .leftJoin("leave_types as lt", function () {
+        this.on(function () {
+          this.on("l.leave_type_id", "=", "lt.id").orOn(
+            knex.raw(
+              "LOWER(TRIM(l.leave_type_name)) = LOWER(TRIM(lt.name))",
+            ),
+          );
+        }).andOn("lt.company_id", "=", "emp.company_id");
+      })
       .select(
         "l.id",
         "l.application_id as applicationId",
@@ -952,6 +1080,7 @@ const getLeaveReport = async (req, res) => {
         "l.reason",
         "l.remarks",
         "l.status",
+        "lt.is_paid as isPaid",
       );
 
     rowsQuery = leaveHasCompanyId
@@ -1034,6 +1163,7 @@ const getLeaveReport = async (req, res) => {
         reason: row.reason,
         remarks: row.remarks,
         status: row.status,
+        isPaid: true,
         source: "attendance_override",
       }));
 
@@ -1068,10 +1198,14 @@ const getLeaveReport = async (req, res) => {
       }),
     );
 
-    const totalEmployees = await knex("employees")
-      .count("* as count")
-      .where({ company_id: companyId })
-      .first();
+    const totalEmployeesQuery = knex("employees as emp")
+      .where("emp.company_id", companyId)
+      .countDistinct("emp.id as count");
+    applyEmployeeDepartmentFilters(totalEmployeesQuery, {
+      employeeId,
+      departmentId,
+    });
+    const totalEmployees = await totalEmployeesQuery.first();
 
     const approvedRows = rows.filter(
       (row) => normalizeStatus(row.status) === "approved",
@@ -1079,10 +1213,20 @@ const getLeaveReport = async (req, res) => {
     const pendingRows = rows.filter(
       (row) => normalizeStatus(row.status) === "pending",
     );
+    const rejectedRows = rows.filter(
+      (row) => normalizeStatus(row.status) === "rejected",
+    );
     const totalApprovedDays = approvedRows.reduce(
       (sum, row) => sum + Number(row.leaveDays || 0),
       0,
     );
+    const paidLeaveDays = approvedRows
+      .filter(isPaidLeaveReportRow)
+      .reduce((sum, row) => sum + Number(row.leaveDays || 0), 0);
+    const lopDays = approvedRows
+      .filter((row) => !isPaidLeaveReportRow(row))
+      .reduce((sum, row) => sum + Number(row.leaveDays || 0), 0);
+    const totalLeaveDays = paidLeaveDays + lopDays;
 
     res.json({
       success: true,
@@ -1091,6 +1235,13 @@ const getLeaveReport = async (req, res) => {
         rows,
         stats: {
           totalEmployees: Number(totalEmployees?.count) || 0,
+          totalLeaveRequests: rows.length,
+          approved: approvedRows.length,
+          pending: pendingRows.length,
+          rejected: rejectedRows.length,
+          totalLeaveDays: roundReportNumber(totalLeaveDays),
+          paidLeaveDays: roundReportNumber(paidLeaveDays),
+          lopDays: roundReportNumber(lopDays),
           approvedLeaves: approvedRows.length,
           pendingRequests: pendingRows.length,
           avgDaysUsed: approvedRows.length
@@ -1204,6 +1355,7 @@ const getPayrollReport = async (req, res) => {
       knex("payroll_processing as p")
         .leftJoin("employees as emp", "p.employee_id", "emp.id")
         .leftJoin("departments as d", "emp.department_id", "d.id")
+        .leftJoin("designations as desg", "emp.designation_id", "desg.id")
         .leftJoin("payroll_structures as ps", function () {
           this.on("ps.employee_id", "=", "p.employee_id");
           if (payrollHasCompanyId && hasStructureColumn("company_id")) {
@@ -1219,19 +1371,23 @@ const getPayrollReport = async (req, res) => {
         ),
         "d.id as departmentId",
         "d.name as department",
+        "desg.name as designation",
         "p.month",
         structureNumberSelect("basic", "basicSalary"),
         structureNumberSelect("hra", "hra"),
         structureNumberSelect("allowances", "allowances"),
-        structureNumberSelect("incentives", "incentives"),
+        structureNumberSelect("incentives", "bonus"),
+        knex.raw("0 as overtime"),
         structureNumberSelect("pf", "pf"),
         structureNumberSelect("esi", "esi"),
         structureNumberSelect("pt", "pt"),
         structureNumberSelect("tds", "tds"),
         structureNumberSelect("other_deductions", "otherDeductions"),
+        payrollNumberSelect("total_days", "workingDays"),
         payrollNumberSelect("total_days", "totalDays"),
         payrollNumberSelect("present_days", "presentDays"),
         payrollNumberSelect("approved_leave_days", "approvedLeaveDays"),
+        payrollNumberSelect("payable_days", "paidDays"),
         payrollNumberSelect("payable_days", "payableDays"),
         payrollNumberSelect("lop_days", "lopDays"),
         hasPayrollColumn("total_days") &&
@@ -1243,33 +1399,61 @@ const getPayrollReport = async (req, res) => {
           : payrollNumberSelect("lop_days", "absentDays"),
         payrollNumberSelect("lop_amount", "lopAmount"),
         payrollNumberSelect("gross", "grossAmount"),
+        payrollNumberSelect("gross", "grossEarnings"),
         payrollNumberSelect("tds_amount", "tdsAmount"),
+        payrollNumberSelect("deductions", "totalDeduction"),
         payrollNumberSelect("deductions", "deductions"),
         payrollNumberSelect("net", "payrollAmount"),
+        payrollNumberSelect("net", "netSalary"),
         payrollNumberSelect("net", "netPay"),
         payrollNumberSelect("total_expenses", "totalExpenses"),
+        structureNumberSelect("pf", "employerPF"),
+        structureNumberSelect("esi", "employerESI"),
+        knex.raw(
+          "COALESCE(p.gross, 0) + COALESCE(ps.pf, 0) + COALESCE(ps.esi, 0) as totalCTC",
+        ),
         "p.status",
         knex.raw("DATE_FORMAT(p.updated_at, '%Y-%m-%d') as payrollDate"),
       )
       .orderBy("p.month", "desc")
       .orderBy("emp.first_name");
 
-    const totalEmployees = await knex("employees")
-      .count("* as count")
-      .where({ company_id: companyId })
-      .first();
-
-    const avgSalaryRaw = await knex("payroll_structures")
-      .avg("gross as avg")
-      .where({ company_id: companyId })
-      .first();
-
     const ytdTotal = trendRaw.reduce(
       (sum, row) => sum + Number(row.amount || 0),
       0,
     );
-    const currentMonth = new Date().getMonth();
-    const currentMonthData = monthMap[currentMonth] || 0;
+    const scopedEmployeesQuery = knex("employees as emp").where({
+      "emp.company_id": companyId,
+    });
+    applyEmployeeDepartmentFilters(scopedEmployeesQuery, {
+      employeeId,
+      departmentId,
+    });
+    const totalEmployees = await scopedEmployeesQuery
+      .clone()
+      .countDistinct("emp.id as count")
+      .first();
+    const numberValue = (value) => Number(value || 0);
+    const sumRows = (key) =>
+      rows.reduce((sum, row) => sum + numberValue(row[key]), 0);
+    const processedEmployeeIds = new Set(
+      rows.map((row) => row.employeeCode || row.employeeName).filter(Boolean),
+    );
+    const processedEmployees = processedEmployeeIds.size;
+    const totalEmployeeCount = Number(totalEmployees?.count) || 0;
+    const employerContributions = sumRows("employerPF") + sumRows("employerESI");
+    const grossSalary = sumRows("grossEarnings");
+    const totalDeductions = sumRows("totalDeduction");
+    const netSalary = sumRows("netSalary");
+    const totalPayrollCost = sumRows("totalCTC");
+    const lopDays = sumRows("lopDays");
+    const paidDays = sumRows("paidDays");
+    const formatIndianCurrency = (amount) =>
+      `₹${Math.round(Number(amount || 0)).toLocaleString("en-IN")}`;
+    const avgSalaryRaw = {
+      avg: rows.length ? grossSalary / rows.length : 0,
+    };
+    const currentMonthData = Math.round(netSalary / 1000);
 
     res.json({
       success: true,
@@ -1277,6 +1461,15 @@ const getPayrollReport = async (req, res) => {
         trend,
         rows,
         summary: {
+          processedEmployees,
+          pendingPayroll: Math.max(totalEmployeeCount - processedEmployees, 0),
+          grossSalary: formatIndianCurrency(grossSalary),
+          totalDeductions: formatIndianCurrency(totalDeductions),
+          netSalary: formatIndianCurrency(netSalary),
+          employerContributions: formatIndianCurrency(employerContributions),
+          totalPayrollCost: formatIndianCurrency(totalPayrollCost),
+          lopDays: Number(lopDays.toFixed(2)),
+          paidDays: Number(paidDays.toFixed(2)),
           totalEmployees: Number(totalEmployees?.count) || 0,
           avgSalary: avgSalaryRaw?.avg
             ? `₹${Math.round(Number(avgSalaryRaw.avg)).toLocaleString()}`
@@ -1316,6 +1509,8 @@ const getExpenseReport = async (req, res) => {
       "expenses",
       "client_id",
     );
+    const expenseColumns = await knex("expenses").columnInfo();
+    const hasExpenseColumn = (column) => Boolean(expenseColumns[column]);
     const { employeeId, departmentId } = req.query;
     const { startDate, endDate } = resolveDateRange(req.query);
 
@@ -1366,6 +1561,12 @@ const getExpenseReport = async (req, res) => {
         ...(expensesHasClientId
           ? [knex.raw("c.client_name as clientName")]
           : [knex.raw("'' as clientName")]),
+        ...(hasExpenseColumn("reimbursement_status")
+          ? ["e.reimbursement_status as reimbursementStatus"]
+          : [knex.raw("'' as reimbursementStatus")]),
+        ...(hasExpenseColumn("reimbursed_at")
+          ? [knex.raw("DATE_FORMAT(e.reimbursed_at, '%Y-%m-%d') as reimbursedAt")]
+          : [knex.raw("NULL as reimbursedAt")]),
         "e.status",
       )
       .orderBy("e.expense_date", "desc");
@@ -1388,12 +1589,39 @@ const getExpenseReport = async (req, res) => {
       }),
     );
 
-    const reportTotalAmount = rows
-      .filter((row) => normalizeStatus(row.status) === "approved")
-      .reduce((sum, row) => sum + Number(row.expenseAmount || 0), 0);
-    const reportPendingAmount = rows
-      .filter((row) => normalizeStatus(row.status) === "pending")
-      .reduce((sum, row) => sum + Number(row.expenseAmount || 0), 0);
+    const amountFor = (row) => Number(row.expenseAmount || 0);
+    const formatIndianCurrency = (amount) =>
+      `₹${Math.round(Number(amount || 0)).toLocaleString("en-IN")}`;
+    const hasReimbursementTracking = rows.some(
+      (row) => row.reimbursementStatus || row.reimbursedAt,
+    );
+    const statusOf = (row) => normalizeStatus(row.status);
+    const reimbursementStatusOf = (row) =>
+      normalizeStatus(row.reimbursementStatus);
+    const totalExpenses = rows.reduce((sum, row) => sum + amountFor(row), 0);
+    const approvedAmount = rows
+      .filter((row) => statusOf(row) === "approved")
+      .reduce((sum, row) => sum + amountFor(row), 0);
+    const pendingExpenseAmount = rows
+      .filter((row) => statusOf(row) === "pending")
+      .reduce((sum, row) => sum + amountFor(row), 0);
+    const rejectedAmount = rows
+      .filter((row) => statusOf(row) === "rejected")
+      .reduce((sum, row) => sum + amountFor(row), 0);
+    const reimbursedAmount = rows
+      .filter((row) => {
+        const status = statusOf(row);
+        const reimbursementStatus = reimbursementStatusOf(row);
+        return (
+          row.reimbursedAt ||
+          ["reimbursed", "paid", "settled"].includes(status) ||
+          ["reimbursed", "paid", "settled"].includes(reimbursementStatus)
+        );
+      })
+      .reduce((sum, row) => sum + amountFor(row), 0);
+    const pendingReimbursementAmount = hasReimbursementTracking
+      ? Math.max(approvedAmount - reimbursedAmount, 0)
+      : approvedAmount;
 
     return res.json({
       success: true,
@@ -1402,12 +1630,16 @@ const getExpenseReport = async (req, res) => {
         rows,
         stats: {
           totalClaims: rows.length,
-          totalAmount: reportTotalAmount
-            ? `₹${Math.round(reportTotalAmount).toLocaleString()}`
-            : "₹0",
-          pendingApproval: reportPendingAmount
-            ? `₹${Math.round(reportPendingAmount).toLocaleString()}`
-            : "₹0",
+          totalExpenses: formatIndianCurrency(totalExpenses),
+          approved: formatIndianCurrency(approvedAmount),
+          pending: formatIndianCurrency(pendingExpenseAmount),
+          rejected: formatIndianCurrency(rejectedAmount),
+          reimbursed: formatIndianCurrency(reimbursedAmount),
+          pendingReimbursement: formatIndianCurrency(
+            pendingReimbursementAmount,
+          ),
+          totalAmount: formatIndianCurrency(approvedAmount),
+          pendingApproval: formatIndianCurrency(pendingExpenseAmount),
         },
       },
     });

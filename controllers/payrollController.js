@@ -6,6 +6,51 @@ const handlebars = require("handlebars");
 const pdf = require("html-pdf");
 const { sendEmailWithAttachment } = require("../utils/mailer"); // SMTP module
 
+const ensurePayrollAuditTable = async () => {
+  const exists = await knex.schema.hasTable("payroll_audit_trail");
+  if (exists) return;
+
+  await knex.schema.createTable("payroll_audit_trail", (table) => {
+    table.increments("id").primary();
+    table.integer("company_id").unsigned().notNullable();
+    table.integer("employee_id").unsigned().nullable();
+    table.integer("payroll_id").unsigned().nullable();
+    table.string("month", 20).nullable();
+    table.string("action", 80).notNullable();
+    table.string("entity", 80).notNullable().defaultTo("payroll_processing");
+    table.json("before_data").nullable();
+    table.json("after_data").nullable();
+    table.integer("changed_by").unsigned().nullable();
+    table.string("changed_by_name", 150).nullable();
+    table.string("ip_address", 80).nullable();
+    table.string("user_agent", 500).nullable();
+    table.timestamps(true, true);
+  });
+};
+
+const writePayrollAudit = async (req, payload = {}) => {
+  try {
+    if (!req?.user?.company_id) return;
+    await ensurePayrollAuditTable();
+    await knex("payroll_audit_trail").insert({
+      company_id: req.user.company_id,
+      employee_id: payload.employee_id || null,
+      payroll_id: payload.payroll_id || null,
+      month: payload.month || null,
+      action: payload.action,
+      entity: payload.entity || "payroll_processing",
+      before_data: payload.before_data ? JSON.stringify(payload.before_data) : null,
+      after_data: payload.after_data ? JSON.stringify(payload.after_data) : null,
+      changed_by: req.user.id || req.user.employee_id || null,
+      changed_by_name: req.user.name || req.user.email || req.user.role || "User",
+      ip_address: req.ip || null,
+      user_agent: req.get ? req.get("user-agent") : null,
+    });
+  } catch (error) {
+    console.warn("Payroll audit write failed:", error.message);
+  }
+};
+
 const hasAnyRole = (userLike, allowedRoles = []) => {
   const roleSet = new Set(
     [userLike?.role, ...(Array.isArray(userLike?.roles) ? userLike.roles : [])]
@@ -1107,60 +1152,95 @@ const processPayroll = async (req, res) => {
     const isNonWorkingDay = (d, key = formatDateKey(d)) =>
       isWeekend(d) || holidayDateSet.has(key);
 
-    for (const row of getLatestAttendanceRowsByDay(attendanceRows)) {
+    const attendanceRowsByDay = new Map();
+    for (const row of attendanceRows) {
       const dayKey =
         row.day instanceof Date
           ? formatDateKey(row.day)
           : String(row.day).slice(0, 10);
       if (!dayKey) continue;
+      if (!attendanceRowsByDay.has(dayKey)) attendanceRowsByDay.set(dayKey, []);
+      attendanceRowsByDay.get(dayKey).push(row);
+    }
 
+    for (const [dayKey, dayRows] of attendanceRowsByDay.entries()) {
       const dayObj = new Date(`${dayKey}T00:00:00`);
-      const status = normalizeAttendanceStatus(row.status);
+      if (Number.isNaN(dayObj.getTime())) continue;
 
-      if (status === "holiday" || status === "weekend") {
-        holidayDateSet.add(dayKey);
-        continue;
+      let attendanceCredit = 0;
+      let lopCredit = 0;
+      let paidLeaveCredit = 0;
+      let hasAbsentStatus = false;
+      let hasKnownStatus = false;
+
+      for (const row of dayRows) {
+        const status = normalizeAttendanceStatus(row.status);
+        if (status) hasKnownStatus = true;
+
+        if (status === "holiday" || status === "weekend") {
+          holidayDateSet.add(dayKey);
+          continue;
+        }
+
+        const nonWorkingDay = isNonWorkingDay(dayObj, dayKey);
+        if (
+          nonWorkingDay &&
+          !["present", "late", "grace"].includes(status)
+        ) {
+          continue;
+        }
+
+        if (status === "absent") {
+          hasAbsentStatus = true;
+        } else if (status === "half") {
+          attendanceCredit = Math.max(attendanceCredit, 0.5);
+          lopCredit = Math.max(lopCredit, 0.5);
+        } else if (
+          status === "present" ||
+          status === "late" ||
+          status === "grace"
+        ) {
+          attendanceCredit = Math.max(attendanceCredit, 1);
+          lopCredit = 0;
+        } else if (status === "leave") {
+          const leaveName = String(row.flag_reason || row.status || "");
+          if (isPaidLeaveType({ leave_type_name: leaveName })) {
+            paidLeaveCredit = Math.max(paidLeaveCredit, 1);
+          } else {
+            lopCredit = Math.max(lopCredit, 1);
+          }
+        } else {
+          // Fallback for legacy rows where status may be custom but hours exist.
+          const hoursWorked = Number(row.hours_worked || 0);
+          if (hoursWorked > 0) {
+            attendanceCredit = Math.max(attendanceCredit, 1);
+            lopCredit = 0;
+          }
+        }
       }
 
       const nonWorkingDay = isNonWorkingDay(dayObj, dayKey);
-      if (nonWorkingDay && !["present", "late", "grace", "half"].includes(status)) {
-        continue;
+      if (
+        !nonWorkingDay &&
+        hasKnownStatus &&
+        hasAbsentStatus &&
+        attendanceCredit <= 0 &&
+        paidLeaveCredit <= 0
+      ) {
+        lopCredit = Math.max(lopCredit, 1);
       }
 
-      let credit = 0;
-
-      if (status === "absent") {
-        lopCreditByDate.set(
-          dayKey,
-          Math.max(Number(lopCreditByDate.get(dayKey) || 0), 1),
-        );
-        credit = 0;
-      } else if (status === "half") {
-        lopCreditByDate.set(
-          dayKey,
-          Math.max(Number(lopCreditByDate.get(dayKey) || 0), 0.5),
-        );
-        credit = 0.5;
-      } else if (status === "present" || status === "late" || status === "grace") {
-        credit = 1;
-      } else if (status === "leave") {
-        const leaveName = String(row.flag_reason || row.status || "");
-        if (isPaidLeaveType({ leave_type_name: leaveName })) {
-          attendanceLeaveCreditByDate.set(
-            dayKey,
-            Math.max(Number(attendanceLeaveCreditByDate.get(dayKey) || 0), 1),
-          );
-        }
-        credit = 0;
-      } else {
-        // Fallback for legacy rows where status may be empty.
-        const hoursWorked = Number(row.hours_worked || 0);
-        credit = hoursWorked > 0 ? 1 : 0;
+      if (attendanceCredit > 0) {
+        attendanceCreditByDay.set(dayKey, attendanceCredit);
       }
-
-      const existingCredit = attendanceCreditByDay.get(dayKey) || 0;
-      if (credit > existingCredit) {
-        attendanceCreditByDay.set(dayKey, credit);
+      if (paidLeaveCredit > 0) {
+        attendanceLeaveCreditByDate.set(dayKey, paidLeaveCredit);
+      }
+      if (!nonWorkingDay && lopCredit > 0) {
+        lopCreditByDate.set(
+          dayKey,
+          Math.max(Number(lopCreditByDate.get(dayKey) || 0), lopCredit),
+        );
       }
     }
 
@@ -1207,13 +1287,13 @@ const processPayroll = async (req, res) => {
       approvedLeaves,
       startDate,
       calculationEndDate,
-      () => false,
+      isNonWorkingDay,
     );
     const unpaidLeaveCreditByDate = calculateUnpaidLeaveCreditByDate(
       approvedLeaves,
       startDate,
       calculationEndDate,
-      () => false,
+      isNonWorkingDay,
     );
     mergeCreditByDate(lopCreditByDate, unpaidLeaveCreditByDate);
 
@@ -1283,7 +1363,7 @@ const processPayroll = async (req, res) => {
 
     const tdsPercentage = getTdsPercentage(structure);
     const tdsAmount = calculateAmountFromPercentage(
-      monthlyGross,
+      earnedGross,
       tdsPercentage,
     );
     const monthlyDeductions = roundTo2(
@@ -1368,8 +1448,24 @@ const processPayroll = async (req, res) => {
       await knex("payroll_processing")
         .where({ id: existing.id })
         .update(payrollData);
+      await writePayrollAudit(req, {
+        action: "payroll_reprocessed",
+        payroll_id: existing.id,
+        employee_id: empId,
+        month,
+        before_data: existing,
+        after_data: { ...payrollData, id: existing.id },
+      });
     } else {
-      await knex("payroll_processing").insert(payrollData);
+      const insertResult = await knex("payroll_processing").insert(payrollData);
+      const payrollId = Array.isArray(insertResult) ? insertResult[0] : insertResult;
+      await writePayrollAudit(req, {
+        action: "payroll_processed",
+        payroll_id: payrollId,
+        employee_id: empId,
+        month,
+        after_data: { ...payrollData, id: payrollId },
+      });
     }
 
     // ===============================
@@ -1498,6 +1594,14 @@ const updatePayrollStatus = async (req, res) => {
     await knex("payroll_processing").where({ id }).update({ status });
 
     const updated = await knex("payroll_processing").where({ id }).first();
+    await writePayrollAudit(req, {
+      action: "payroll_status_updated",
+      payroll_id: payroll.id,
+      employee_id: payroll.employee_id,
+      month: payroll.month,
+      before_data: payroll,
+      after_data: updated,
+    });
 
     res.json({
       success: true,
@@ -1832,6 +1936,20 @@ const payslipPreview = async (req, res) => {
     const companySignatureBase64 = assetPathToBase64(company?.signature);
     const { startDate, endDate } = getPayrollPeriod(month, company);
     const calculationEndDate = getEffectivePayrollEndDate(startDate, endDate);
+    const previewHolidayRows = await knex("holidays")
+      .where({ company_id: companyId })
+      .whereBetween("date", [
+        formatDateKey(startDate),
+        formatDateKey(calculationEndDate),
+      ])
+      .select(knex.raw("DATE_FORMAT(date, '%Y-%m-%d') as day"));
+    const previewHolidayDateSet = new Set(
+      previewHolidayRows.map((row) => row.day).filter(Boolean),
+    );
+    const previewIsNonWorkingDay = (date, key = formatDateKey(date)) => {
+      const day = date.getDay();
+      return day === 0 || day === 6 || previewHolidayDateSet.has(key);
+    };
 
     const previewPaidLeaves = await knex("leave_applications as la")
       .leftJoin("leave_types as lt", function () {
@@ -1866,7 +1984,7 @@ const payslipPreview = async (req, res) => {
       previewPaidLeaves,
       startDate,
       calculationEndDate,
-      () => false,
+      previewIsNonWorkingDay,
     );
     const previewOverrideLeaves = await knex("attendance_overrides as ao")
       .leftJoin("attendance as a", "ao.attendance_id", "a.id")
@@ -1902,7 +2020,7 @@ const payslipPreview = async (req, res) => {
     addOverrideLeaveCredit(
       previewPaidLeaveCreditByDate,
       previewOverrideLeaves,
-      () => false,
+      previewIsNonWorkingDay,
     );
     const previewPaidLeaveDays = sumLeaveCreditByDate(
       previewPaidLeaveCreditByDate,
@@ -2238,6 +2356,13 @@ const deletePayslip = async (req, res) => {
     }
 
     await knex("payroll_processing").where({ id, company_id: companyId }).del();
+    await writePayrollAudit(req, {
+      action: "payslip_deleted",
+      payroll_id: payslip.id,
+      employee_id: payslip.employee_id,
+      month: payslip.month,
+      before_data: payslip,
+    });
 
     res.json({
       success: true,
@@ -2271,6 +2396,13 @@ const deletePayrollProcessing = async (req, res) => {
     }
 
     await knex("payroll_processing").where({ id, company_id: companyId }).del();
+    await writePayrollAudit(req, {
+      action: "payroll_processing_deleted",
+      payroll_id: record.id,
+      employee_id: record.employee_id,
+      month: record.month,
+      before_data: record,
+    });
 
     return res.json({
       success: true,
@@ -2350,6 +2482,59 @@ const getEmployeePayslips = async (req, res) => {
   }
 };
 
+const getPayrollAuditTrail = async (req, res) => {
+  const companyId = req.user.company_id;
+  if (!companyId) {
+    return res
+      .status(400)
+      .json({ message: "You are not assigned to any company" });
+  }
+
+  try {
+    await ensurePayrollAuditTable();
+    const { employeeId, month, action, page = 1, limit = 50 } = req.query;
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    const offset = Math.max(Number(page) - 1, 0) * safeLimit;
+
+    let query = knex("payroll_audit_trail as a")
+      .leftJoin("employees as e", "a.employee_id", "e.id")
+      .where("a.company_id", companyId)
+      .select(
+        "a.*",
+        "e.employee_id as employeeCode",
+        knex.raw("TRIM(CONCAT(COALESCE(e.first_name,''), ' ', COALESCE(e.last_name,''))) as employeeName"),
+      )
+      .orderBy("a.created_at", "desc");
+
+    if (employeeId && employeeId !== "all") {
+      query.where(function () {
+        this.where("e.employee_id", employeeId);
+        if (/^\d+$/.test(String(employeeId))) this.orWhere("e.id", Number(employeeId));
+      });
+    }
+    if (month) query.where("a.month", month);
+    if (action && action !== "all") query.where("a.action", action);
+
+    const rows = await query.limit(safeLimit).offset(offset);
+    const data = rows.map((row) => ({
+      ...row,
+      beforeData:
+        typeof row.before_data === "string"
+          ? JSON.parse(row.before_data || "null")
+          : row.before_data,
+      afterData:
+        typeof row.after_data === "string"
+          ? JSON.parse(row.after_data || "null")
+          : row.after_data,
+    }));
+
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error("Get payroll audit trail error:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 module.exports = {
   saveSalaryStructure,
   getSalaryStructures,
@@ -2362,4 +2547,5 @@ module.exports = {
   deleteSalaryStructure,
   deletePayrollProcessing,
   deletePayslip,
+  getPayrollAuditTrail,
 };

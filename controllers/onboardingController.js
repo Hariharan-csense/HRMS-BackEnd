@@ -16,10 +16,11 @@ const getOnboardingEmployees = async (req, res) => {
     }
 
     if (search) {
+      const searchTerm = `%${String(search).toLowerCase().trim()}%`;
       query = query.where(function () {
-        this.where("name", "ilike", `%${search}%`)
-          .orWhere("email", "ilike", `%${search}%`)
-          .orWhere("position", "ilike", `%${search}%`);
+        this.whereRaw("LOWER(name) LIKE ?", [searchTerm])
+          .orWhereRaw("LOWER(email) LIKE ?", [searchTerm])
+          .orWhereRaw("LOWER(position) LIKE ?", [searchTerm]);
       });
     }
 
@@ -483,17 +484,20 @@ const updateOnboardingEmployee = async (req, res) => {
     const companyId = req.user.company_id;
     const updateData = { ...req.body, updated_by: req.user.id };
 
-    const [updatedEmployee] = await knex("onboarding_employees")
+    const updated = await knex("onboarding_employees")
       .where({ id, company_id: companyId })
-      .update(updateData)
-      .returning("*");
+      .update(updateData);
 
-    if (!updatedEmployee) {
+    if (!updated) {
       return res.status(404).json({
         success: false,
         message: "Onboarding employee not found",
       });
     }
+
+    const updatedEmployee = await knex("onboarding_employees")
+      .where({ id, company_id: companyId })
+      .first();
 
     res.json({
       success: true,
@@ -575,7 +579,7 @@ const createOnboardingTask = async (req, res) => {
       priority,
     });
 
-    const [task] = await knex("onboarding_tasks")
+    const insertResult = await knex("onboarding_tasks")
       .insert({
         employee_id: id,
         title,
@@ -585,8 +589,9 @@ const createOnboardingTask = async (req, res) => {
         assigned_to: assignee, // Map frontend assignee to database assigned_to
         priority: priority || "medium",
         created_by: req.user.id,
-      })
-      .returning("*");
+      });
+    const taskId = Array.isArray(insertResult) ? insertResult[0] : insertResult;
+    const task = await knex("onboarding_tasks").where({ id: taskId }).first();
 
     res.status(201).json({
       success: true,
@@ -693,15 +698,18 @@ const createOnboardingDocument = async (req, res) => {
       });
     }
 
-    const [document] = await knex("onboarding_documents")
+    const insertResult = await knex("onboarding_documents")
       .insert({
         employee_id: id,
         name,
         type,
         required: required || false,
         created_by: req.user.id,
-      })
-      .returning("*");
+      });
+    const documentId = Array.isArray(insertResult) ? insertResult[0] : insertResult;
+    const document = await knex("onboarding_documents")
+      .where({ id: documentId })
+      .first();
 
     res.status(201).json({
       success: true,
@@ -723,21 +731,24 @@ const updateDocumentUpload = async (req, res) => {
     const { documentId } = req.params;
     const { uploaded, file_url } = req.body;
 
-    const [updatedDocument] = await knex("onboarding_documents")
+    const updated = await knex("onboarding_documents")
       .where("id", documentId)
       .update({
         uploaded,
         upload_date: uploaded ? new Date() : null,
         file_url,
-      })
-      .returning("*");
+      });
 
-    if (!updatedDocument) {
+    if (!updated) {
       return res.status(404).json({
         success: false,
         message: "Document not found",
       });
     }
+
+    const updatedDocument = await knex("onboarding_documents")
+      .where("id", documentId)
+      .first();
 
     res.json({
       success: true,

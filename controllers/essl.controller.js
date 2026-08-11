@@ -405,7 +405,7 @@ const esslPunch = async (req, res) => {
       });
     }
 
-    await doCheckOut({
+    const checkoutResult = await doCheckOut({
       employeeId: context.employee.id,
       companyId: context.employee.company_id,
       imageData: punchImagePath,
@@ -416,6 +416,7 @@ const esslPunch = async (req, res) => {
     return res.json({
       success: true,
       action: "check_out",
+      attendance: checkoutResult.attendance,
     });
   } catch (err) {
     console.error("ESSL processing error:", err);

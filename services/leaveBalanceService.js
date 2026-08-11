@@ -38,6 +38,78 @@ const getLeaveYearBounds = (year) => ({
   end: `${year}-12-31`
 });
 
+const formatDateOnly = (value) => {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const addYears = (date, years) => {
+  const next = new Date(date);
+  next.setFullYear(next.getFullYear() + years);
+  return next;
+};
+
+const getFallbackCycleForDate = (dateValue = new Date()) => {
+  const date = new Date(dateValue);
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const year = safeDate.getFullYear();
+  return {
+    year,
+    start: `${year}-01-01`,
+    end: `${year}-12-31`,
+    source: 'calendar'
+  };
+};
+
+const getLeaveCycleForDate = async (db, companyId, dateValue = new Date()) => {
+  const fallback = getFallbackCycleForDate(dateValue);
+  if (!companyId || !(await db.schema.hasTable('fiscal_year'))) {
+    return fallback;
+  }
+
+  const targetDate = formatDateOnly(dateValue) || formatDateOnly(new Date());
+  const containing = await db('fiscal_year')
+    .where({ company_id: companyId })
+    .where('start_date', '<=', targetDate)
+    .where('end_date', '>=', targetDate)
+    .orderBy('is_active', 'desc')
+    .first();
+
+  const row =
+    containing ||
+    (await db('fiscal_year')
+      .where({ company_id: companyId, is_active: 1 })
+      .orderBy('start_date', 'desc')
+      .first());
+
+  if (!row?.start_date || !row?.end_date) return fallback;
+
+  let cycleStart = new Date(row.leave_cycle_start || row.start_date);
+  const target = new Date(targetDate);
+  if (Number.isNaN(cycleStart.getTime()) || Number.isNaN(target.getTime())) {
+    return fallback;
+  }
+
+  while (cycleStart > target) {
+    cycleStart = addYears(cycleStart, -1);
+  }
+
+  const cycleEnd = addYears(cycleStart, 1);
+  cycleEnd.setDate(cycleEnd.getDate() - 1);
+
+  return {
+    year: cycleStart.getFullYear(),
+    start: formatDateOnly(cycleStart),
+    end: formatDateOnly(cycleEnd),
+    source: 'fiscal_year',
+    fiscalYearId: row.id
+  };
+};
+
 const getApprovedOverrideLeaveUsage = async ({
   db,
   companyId,
@@ -132,7 +204,10 @@ const assignLeaveBalancesForEmployee = async (
   options = {}
 ) => {
   const db = options.trx || knex;
-  const year = options.year || new Date().getFullYear();
+  const cycle =
+    options.cycle ||
+    (await getLeaveCycleForDate(db, companyId, options.asOfDate || new Date()));
+  const year = options.year || cycle.year;
   const specificLeaveTypeId = options.leaveTypeId || null;
   const requireActive = options.requireActive === true;
 
@@ -178,7 +253,10 @@ const backfillLeaveBalancesForLeaveType = async (
   options = {}
 ) => {
   const db = options.trx || knex;
-  const year = options.year || new Date().getFullYear();
+  const cycle =
+    options.cycle ||
+    (await getLeaveCycleForDate(db, companyId, options.asOfDate || new Date()));
+  const year = options.year || cycle.year;
 
   const leaveTypes = await getActiveLeaveTypes(db, companyId, leaveTypeId);
   if (!leaveTypes.length) {
@@ -217,7 +295,6 @@ const backfillLeaveBalancesForLeaveType = async (
 
 const reconcileMissingLeaveBalances = async (options = {}) => {
   const db = options.trx || knex;
-  const year = options.year || new Date().getFullYear();
   const companyId = options.companyId || null;
 
   const companyIds = companyId
@@ -228,8 +305,14 @@ const reconcileMissingLeaveBalances = async (options = {}) => {
   let updated = 0;
   let employeesProcessed = 0;
   let companiesProcessed = 0;
+  let resolvedYear = null;
 
   for (const cid of companyIds) {
+    const cycle =
+      options.cycle ||
+      (await getLeaveCycleForDate(db, cid, options.asOfDate || new Date()));
+    const year = options.year || cycle.year;
+    resolvedYear = year;
     const leaveTypes = await getActiveLeaveTypes(db, cid);
     if (!leaveTypes.length) {
       companiesProcessed += 1;
@@ -255,7 +338,7 @@ const reconcileMissingLeaveBalances = async (options = {}) => {
       });
     }
 
-    const { start, end } = getLeaveYearBounds(year);
+    const { start, end } = cycle || getLeaveYearBounds(year);
     const hasTotalColumn = await hasLeaveBalanceTotalColumn(db);
     const balanceColumns = [
       'lb.id',
@@ -324,7 +407,7 @@ const reconcileMissingLeaveBalances = async (options = {}) => {
 
   return {
     success: true,
-    year,
+    year: resolvedYear || new Date().getFullYear(),
     companyId: companyId ? Number(companyId) : null,
     companiesProcessed,
     employeesProcessed,
@@ -337,6 +420,7 @@ module.exports = {
   assignLeaveBalancesForEmployee,
   backfillLeaveBalancesForLeaveType,
   reconcileMissingLeaveBalances,
+  getLeaveCycleForDate,
   isEmployeeFullTime,
   isEmployeeActive
 };

@@ -12,6 +12,7 @@ const {
   assignLeaveBalancesForEmployee,
   backfillLeaveBalancesForLeaveType,
   reconcileMissingLeaveBalances,
+  getLeaveCycleForDate,
 } = require("../services/leaveBalanceService");
 const { validateLeavePolicy } = require("../services/companyPolicyService");
 
@@ -111,6 +112,39 @@ const normalizeHalfDaySession = (value) => {
     .toLowerCase()
     .trim();
   return ["first_half", "second_half"].includes(session) ? session : null;
+};
+
+const toLeaveNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const getReservedLeaveUsage = async ({
+  trx = knex,
+  companyId,
+  employeeId,
+  leaveTypeId,
+  statuses = ["pending", "approved"],
+  start,
+  end,
+  excludeApplicationId = null,
+}) => {
+  const query = trx("leave_applications")
+    .where({
+      company_id: companyId,
+      employee_id: employeeId,
+      leave_type_id: leaveTypeId,
+    })
+    .whereIn("status", statuses)
+    .where("from_date", ">=", start)
+    .where("from_date", "<=", end);
+
+  if (excludeApplicationId) {
+    query.whereNot({ id: excludeApplicationId });
+  }
+
+  const row = await query.sum({ used: "days" }).first();
+  return toLeaveNumber(row?.used);
 };
 
 const getSelectedApproverEmails = async (companyId, body = {}) => {
@@ -504,7 +538,8 @@ const applyLeave = async (req, res) => {
       // ===============================
       // CHECK LEAVE BALANCE / PROBATION (LOP) HANDLING
       // ===============================
-      const currentYear = new Date().getFullYear();
+      const leaveCycle = await getLeaveCycleForDate(knex, companyId, from_date);
+      const currentYear = leaveCycle.year;
 
       // Get the requested leave type (company scoped)
       let leaveType = await knex("leave_types")
@@ -517,7 +552,7 @@ const applyLeave = async (req, res) => {
       }
 
       // If employee is on probation, treat leave as unpaid (loss of pay)
-      if (employee.employment_type === "Probation") {
+      if (normalizeWorkflowText(employee.employment_type) === "probation") {
         // Try to find an existing unpaid leave type for the company
         let unpaid = await knex("leave_types")
           .where({ company_id: companyId, is_paid: false })
@@ -568,17 +603,38 @@ const applyLeave = async (req, res) => {
       if (leaveType && leaveType.is_paid) {
         balance = await knex("leave_balances")
           .where({
+            company_id: companyId,
             employee_id: employeeId,
             leave_type_id,
             year: currentYear,
           })
           .first();
 
-        if (!balance || Number(balance.available) < days) {
+        if (!balance) {
           if (req.file) fs.unlinkSync(req.file.path);
           return res
             .status(400)
-            .json({ message: "Insufficient leave balance" });
+            .json({ message: "Leave balance not found for current leave cycle" });
+        }
+
+        const totalBalance = toLeaveNumber(balance.total ?? balance.opening_balance);
+        const reservedUsage = await getReservedLeaveUsage({
+          companyId,
+          employeeId,
+          leaveTypeId: leave_type_id,
+          start: leaveCycle.start,
+          end: leaveCycle.end,
+        });
+        const availableAfterReserved = totalBalance - reservedUsage;
+
+        if (availableAfterReserved < days) {
+          if (req.file) fs.unlinkSync(req.file.path);
+          return res.status(400).json({
+            message: "Insufficient leave balance",
+            available_days: Math.max(availableAfterReserved, 0),
+            requested_days: days,
+            leave_cycle: `${leaveCycle.start} to ${leaveCycle.end}`,
+          });
         }
       }
 
@@ -986,9 +1042,12 @@ const updateLeaveStatus = async (req, res) => {
     // UPDATE LEAVE BALANCE (IF APPROVED) - skip for unpaid leave (LOP)
     // ===============================
     if (status === "approved") {
-      const applicationYear =
-        new Date(application.from_date).getFullYear() ||
-        new Date().getFullYear();
+      const leaveCycle = await getLeaveCycleForDate(
+        knex,
+        companyId,
+        application.from_date,
+      );
+      const applicationYear = leaveCycle.year;
 
       // fetch leave type to determine if it's paid
       const applicationLeaveType = await knex("leave_types")
@@ -999,6 +1058,7 @@ const updateLeaveStatus = async (req, res) => {
       if (applicationLeaveType && applicationLeaveType.is_paid) {
         const balance = await knex("leave_balances")
           .where({
+            company_id: companyId,
             employee_id: application.employee_id,
             leave_type_id: application.leave_type_id,
             year: applicationYear,
@@ -1008,12 +1068,19 @@ const updateLeaveStatus = async (req, res) => {
         if (!balance)
           return res.status(400).json({ message: "Leave balance not found" });
 
-        // Ensure numeric values to prevent NaN
-        const total = Number(balance.total ?? balance.opening_balance) || 0;
-        const availed = Number(balance.availed) || 0;
+        const total = toLeaveNumber(balance.total ?? balance.opening_balance);
+        const approvedUsage = await getReservedLeaveUsage({
+          companyId,
+          employeeId: application.employee_id,
+          leaveTypeId: application.leave_type_id,
+          statuses: ["approved"],
+          start: leaveCycle.start,
+          end: leaveCycle.end,
+          excludeApplicationId: application.id,
+        });
 
-        const applicationDays = Number(application.days) || 0;
-        const newAvailed = availed + applicationDays;
+        const applicationDays = toLeaveNumber(application.days);
+        const newAvailed = approvedUsage + applicationDays;
         const newAvailable = total - newAvailed;
 
         if (newAvailable < 0) {
@@ -1021,7 +1088,7 @@ const updateLeaveStatus = async (req, res) => {
             message: "Insufficient leave balance",
             leave_type_id: application.leave_type_id,
             requested_days: applicationDays,
-            available_days: total - availed,
+            available_days: Math.max(total - approvedUsage, 0),
           });
         }
 
@@ -1040,7 +1107,7 @@ const updateLeaveStatus = async (req, res) => {
     const approverEmployeeId = await resolveApproverEmployeeId(req, companyId);
 
     await knex("leave_applications")
-      .where({ id })
+      .where({ id, company_id: companyId })
       .update({
         status,
         approved_by: approverEmployeeId,
@@ -1239,10 +1306,11 @@ const getLeaveTypes = async (req, res) => {
 
 const getLeaveBalance = async (req, res) => {
   try {
-    const { id, company_id } = req.user;
-    const year = new Date().getFullYear();
+    const { company_id } = req.user;
+    const leaveCycle = await getLeaveCycleForDate(knex, company_id, new Date());
+    const year = leaveCycle.year;
 
-    await reconcileMissingLeaveBalances({ companyId: company_id, year });
+    await reconcileMissingLeaveBalances({ companyId: company_id, year, cycle: leaveCycle });
 
     let query = knex("leave_balances as lb")
       .join("leave_types as lt", "lb.leave_type_id", "lt.id")
@@ -1278,7 +1346,8 @@ const getLeaveBalance = async (req, res) => {
         "superadmin",
       ])
     ) {
-      query.andWhere("lb.employee_id", id);
+      const employee = await resolveEmployeeProfile(req, company_id);
+      query.andWhere("lb.employee_id", employee?.id || 0);
     }
 
     const rows = await query;
@@ -1286,6 +1355,10 @@ const getLeaveBalance = async (req, res) => {
     const result = {
       company_id,
       year,
+      leave_cycle: {
+        start: leaveCycle.start,
+        end: leaveCycle.end,
+      },
       balances: rows.map((r) => ({
         employee_id: r.employee_id,
         employee_name: `${r.first_name || ""} ${r.last_name || ""}`.trim(),

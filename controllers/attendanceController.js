@@ -462,8 +462,7 @@ const getAttendanceStatus = async (req, res) => {
       .where("company_id", companyId)
       .where("check_in", ">=", todayStart)
       .where("check_in", "<", tomorrowStart)
-      .orderBy("check_in", "desc")
-      .limit(2);
+      .orderBy("check_in", "desc");
 
     res.json({
       success: true,
@@ -840,7 +839,7 @@ const checkIn = async (req, res) => {
     } else {
       console.error("Check-in error:", err);
     }
-    const isDuplicateCheckIn = err.message === "Already checked in today";
+    const isDuplicateCheckIn = err.message === "Already checked in";
     res.status(err.statusCode || (isDuplicateCheckIn ? 400 : 500)).json({
       success: false,
       message:
@@ -855,7 +854,7 @@ const checkIn = async (req, res) => {
 const checkOut = async (req, res) => {
   try {
     const employeeId = await resolveAttendanceEmployeeId(req);
-    await doCheckOut({
+    const result = await doCheckOut({
       employeeId,
       companyId: req.user.company_id,
       imageData: req.file?.path || null,
@@ -863,7 +862,14 @@ const checkOut = async (req, res) => {
       deviceInfo: "Web",
     });
 
-    res.json({ success: true, message: "Checked out successfully" });
+    res.json({
+      success: true,
+      message: "Checked out successfully",
+      attendance: result.attendance,
+      shouldPromptDailyPulse: result.shouldPromptDailyPulse,
+      shiftEndTime: result.shiftEndTime,
+      shiftEndSource: result.shiftEndSource,
+    });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -891,20 +897,6 @@ const resolveFacialAttendanceAction = async ({ companyId, employeeId }) => {
     .first();
 
   if (activeAttendance) return "check-out";
-
-  const completedAttendance = await knex("attendance")
-    .where("employee_id", employeeId)
-    .where("company_id", companyId)
-    .where("check_in", ">=", todayStart)
-    .where("check_in", "<", tomorrowStart)
-    .whereNotNull("check_out")
-    .first();
-
-  if (completedAttendance) {
-    const error = new Error("Employee has already completed attendance today");
-    error.statusCode = 400;
-    throw error;
-  }
 
   return "check-in";
 };
@@ -959,13 +951,14 @@ const facialRecognitionAttendance = async (req, res) => {
         shiftType: "regular",
       });
     } else {
-      await doCheckOut({
+      const checkoutResult = await doCheckOut({
         employeeId,
         companyId,
         imageData: req.file.path,
         location,
         deviceInfo,
       });
+      attendance = checkoutResult.attendance;
     }
 
     return res.json({
@@ -1009,7 +1002,7 @@ const facialRecognitionAttendance = async (req, res) => {
     }
 
     const duplicateOrMissing =
-      err.message === "Already checked in today" ||
+      err.message === "Already checked in" ||
       err.message === "No active check-in";
 
     return res.status(err.statusCode || (duplicateOrMissing ? 400 : 500)).json({
@@ -1069,13 +1062,14 @@ const facialRecognitionDescriptorAttendance = async (req, res) => {
         shiftType: "regular",
       });
     } else {
-      await doCheckOut({
+      const checkoutResult = await doCheckOut({
         employeeId,
         companyId,
         imageData: null,
         location,
         deviceInfo,
       });
+      attendance = checkoutResult.attendance;
     }
 
     return res.json({
@@ -1110,7 +1104,7 @@ const facialRecognitionDescriptorAttendance = async (req, res) => {
     }
 
     const duplicateOrMissing =
-      err.message === "Already checked in today" ||
+      err.message === "Already checked in" ||
       err.message === "No active check-in";
 
     return res.status(err.statusCode || (duplicateOrMissing ? 400 : 500)).json({

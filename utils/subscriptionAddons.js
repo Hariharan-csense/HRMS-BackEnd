@@ -31,9 +31,21 @@ const getAddonModuleAliases = (addon = {}) => {
   }
 
   if (key === 'expenses' || text.includes('expense')) modules.add('expenses');
-  if (key === 'tickets' || text.includes('ticket')) modules.add('tickets');
+  if (key === 'tickets' || key === 'hr_helpdesk' || text.includes('ticket') || text.includes('helpdesk')) {
+    modules.add('tickets');
+    modules.add('hr_helpdesk');
+  }
   if (key === 'assets' || text.includes('asset')) modules.add('assets');
-  if (key === 'payroll' || text.includes('payroll')) modules.add('payroll');
+  if (
+    key === 'ai_assistant' ||
+    key === 'ai_chat' ||
+    key === 'chatbot' ||
+    text.includes('ai assistant') ||
+    text.includes('ai chat') ||
+    text.includes('chatbot')
+  ) modules.add('ai_assistant');
+  if (key === 'payroll' || key === 'payroll_audit' || text.includes('payroll')) modules.add('payroll');
+  if (key === 'shift_roster' || key === 'roster' || text.includes('roster')) modules.add('attendance');
   if (key === 'hr_management' || text.includes('recruitment') || text.includes('rms')) modules.add('hr_management');
   if (key === 'exit' || text.includes('offboarding')) modules.add('exit');
   if (key === 'kpi' || text.includes('kpi')) modules.add('kpi');

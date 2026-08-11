@@ -1,4 +1,6 @@
-exports.up = function(knex) {
+exports.up = async function(knex) {
+  const hasCompanyId = await knex.schema.hasColumn('roles', 'company_id');
+  if (hasCompanyId) return;
   return knex.schema.alterTable('roles', table => {
     table.integer('company_id').unsigned().notNullable().after('id');
     table.foreign('company_id').references('id').inTable('companies');
@@ -11,7 +13,9 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
+exports.down = async function(knex) {
+  const hasCompanyId = await knex.schema.hasColumn('roles', 'company_id');
+  if (!hasCompanyId) return;
   return knex.schema.alterTable('roles', table => {
     table.dropForeign('company_id');
     table.dropColumn('company_id');

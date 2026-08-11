@@ -40,6 +40,33 @@ const creatorFromTicketRow = (ticket = {}) => {
   };
 };
 
+const isEmployeeSelfServiceUser = (user = {}) => {
+  const role = String(user.role || "").toLowerCase();
+  const roles = Array.isArray(user.roles) ? user.roles.map((item) => String(item).toLowerCase()) : [];
+  return (
+    String(user.type || "").toLowerCase() === "employee" ||
+    role === "employee" ||
+    roles.includes("employee")
+  ) && !["admin", "hr", "finance", "ceo", "superadmin"].some((name) =>
+    role === name || roles.includes(name)
+  );
+};
+
+const applyOwnTicketScope = (query, user = {}) => {
+  if (!isEmployeeSelfServiceUser(user)) return query;
+  const email = String(user.email || "").toLowerCase().trim();
+  query.where(function () {
+    this.where("tickets.created_by", user.id);
+    if (user.employee_id) this.orWhere("tickets.created_by", user.employee_id);
+    if (email) {
+      this.orWhereRaw("LOWER(creator.email) = ?", [email])
+        .orWhereRaw("LOWER(employee_creator.email) = ?", [email])
+        .orWhereRaw("LOWER(email_employee_creator.email) = ?", [email]);
+    }
+  });
+  return query;
+};
+
 const resolveTicketCreator = async (authUser = {}) => {
   const email = String(authUser.email || '').toLowerCase().trim();
   const companyId = authUser.company_id || null;
@@ -418,6 +445,7 @@ const getTickets = async (req, res) => {
       .leftJoin('companies', 'tickets.company_id', 'companies.id')
       .where('tickets.company_id', companyId)
       .orderBy('tickets.created_at', 'desc');
+    applyOwnTicketScope(query, req.user);
 
     /* -------- FILTERS -------- */
     if (status) {
@@ -432,8 +460,18 @@ const getTickets = async (req, res) => {
 
     /* -------- COUNT QUERY -------- */
     let countQuery = knex('tickets')
-      .where('company_id', companyId)
+      .leftJoin('users as creator', 'tickets.created_by', 'creator.id')
+      .leftJoin('employees as employee_creator', function () {
+        this.on('tickets.created_by', '=', 'employee_creator.id')
+          .andOn('tickets.company_id', '=', 'employee_creator.company_id');
+      })
+      .leftJoin('employees as email_employee_creator', function () {
+        this.on('tickets.company_id', '=', 'email_employee_creator.company_id')
+          .andOn(knex.raw('LOWER(creator.email)'), '=', knex.raw('LOWER(email_employee_creator.email)'));
+      })
+      .where('tickets.company_id', companyId)
       .count('* as total');
+    applyOwnTicketScope(countQuery, req.user);
 
     if (status) countQuery.where('status', status);
     if (priority) countQuery.where('priority', priority);
@@ -538,9 +576,11 @@ const getTicket = async (req, res) => {
       })
       .leftJoin('users as assigned', 'tickets.assigned_to', 'assigned.id')
       .where('tickets.id', id)
-      .first();
+      .where('tickets.company_id', req.user.company_id);
+    applyOwnTicketScope(ticket, req.user);
+    const ticketRow = await ticket.first();
 
-    if (!ticket) {
+    if (!ticketRow) {
       return res.status(404).json({
         success: false,
         message: 'Ticket not found'
@@ -549,21 +589,21 @@ const getTicket = async (req, res) => {
 
     // Format ticket
     const formattedTicket = {
-      id: ticket.id,
-      ticketNumber: ticket.ticket_number,
-      title: ticket.title,
-      description: ticket.description,
-      remarks: ticket.remarks,
-      priority: ticket.priority,
-      category: ticket.category,
-      status: ticket.status,
-      assignedTo: ticket.assigned_to ? {
-        name: ticket.assigned_name,
-        email: ticket.assigned_email
+      id: ticketRow.id,
+      ticketNumber: ticketRow.ticket_number,
+      title: ticketRow.title,
+      description: ticketRow.description,
+      remarks: ticketRow.remarks,
+      priority: ticketRow.priority,
+      category: ticketRow.category,
+      status: ticketRow.status,
+      assignedTo: ticketRow.assigned_to ? {
+        name: ticketRow.assigned_name,
+        email: ticketRow.assigned_email
       } : null,
-      createdBy: creatorFromTicketRow(ticket),
-      createdAt: ticket.created_at,
-      updatedAt: ticket.updated_at
+      createdBy: creatorFromTicketRow(ticketRow),
+      createdAt: ticketRow.created_at,
+      updatedAt: ticketRow.updated_at
     };
 
     res.status(200).json({
@@ -701,9 +741,18 @@ const updateTicket = async (req, res) => {
     const { id } = req.params;
     const { title, description, remarks, category, status } = req.body;
 
-    const existingTicket = await knex('tickets').where('id', id).first();
+    const existingTicket = await knex('tickets')
+      .where({ id, company_id: req.user.company_id })
+      .first();
     if (!existingTicket) {
       return res.status(404).json({ success:false,message:'Ticket not found'});
+    }
+    if (
+      isEmployeeSelfServiceUser(req.user) &&
+      Number(existingTicket.created_by) !== Number(req.user.id) &&
+      Number(existingTicket.created_by) !== Number(req.user.employee_id)
+    ) {
+      return res.status(403).json({ success: false, message: "Access denied" });
     }
 
     const validStatuses = ['open','in_progress','resolved','closed'];
@@ -724,7 +773,7 @@ const updateTicket = async (req, res) => {
       updateData.remarks = remarks;
     }
 
-    await knex('tickets').where('id', id).update(updateData);
+    await knex('tickets').where({ id, company_id: req.user.company_id }).update(updateData);
 
     const ticket = await knex('tickets')
       .leftJoin('users as creator','tickets.created_by','creator.id')
@@ -804,16 +853,25 @@ const deleteTicket = async (req, res) => {
     const { id } = req.params;
 
     // Check if ticket exists
-    const existingTicket = await knex('tickets').where('id', id).first();
+    const existingTicket = await knex('tickets')
+      .where({ id, company_id: req.user.company_id })
+      .first();
     if (!existingTicket) {
       return res.status(404).json({
         success: false,
         message: 'Ticket not found'
       });
     }
+    if (
+      isEmployeeSelfServiceUser(req.user) &&
+      Number(existingTicket.created_by) !== Number(req.user.id) &&
+      Number(existingTicket.created_by) !== Number(req.user.employee_id)
+    ) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
 
     // Delete ticket
-    await knex('tickets').where('id', id).del();
+    await knex('tickets').where({ id, company_id: req.user.company_id }).del();
 
     res.status(200).json({
       success: true,

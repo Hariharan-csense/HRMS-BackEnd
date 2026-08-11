@@ -1,4 +1,5 @@
 const knex = require("../db/db");
+const { getLeaveCycleForDate } = require("./leaveBalanceService");
 
 const DEFAULT_POLICY = {
   leave: {
@@ -237,7 +238,7 @@ const fullMonthsBetween = (startValue, endValue) => {
   return Math.max(0, months);
 };
 
-const earnedCasualLeave = (employee, asOfDate, policy) => {
+const earnedCasualLeave = (employee, asOfDate, policy, cycle = null) => {
   const monthly = normalizeNumber(policy.leave.casualLeavePerMonth, 1);
   if (monthly <= 0) return 0;
 
@@ -245,13 +246,14 @@ const earnedCasualLeave = (employee, asOfDate, policy) => {
   const asOf = new Date(asOfDate);
   if (!doj || Number.isNaN(asOf.getTime())) return monthly;
 
+  const cycleStart = cycle?.start ? new Date(cycle.start) : new Date(asOf.getFullYear(), 0, 1);
+  const employeeStart = new Date(doj);
+  const accrualStart = employeeStart > cycleStart ? employeeStart : cycleStart;
+
   if (policy.leave.casualLeaveAccrual === "after_full_month") {
-    return fullMonthsBetween(doj, asOfDate) * monthly;
+    return fullMonthsBetween(accrualStart, asOfDate) * monthly;
   }
 
-  const start = new Date(doj);
-  const yearStart = new Date(asOf.getFullYear(), 0, 1);
-  const accrualStart = start > yearStart ? start : yearStart;
   const months =
     (asOf.getFullYear() - accrualStart.getFullYear()) * 12 +
     (asOf.getMonth() - accrualStart.getMonth()) +
@@ -271,11 +273,11 @@ const validateLeavePolicy = async ({
     return null;
   }
 
-  const earned = earnedCasualLeave(employee, fromDate, policy);
+  const cycle = await getLeaveCycleForDate(knex, companyId, fromDate);
+  const earned = earnedCasualLeave(employee, fromDate, policy, cycle);
   const statuses = policy.leave.includePendingLeaveInUsage
     ? ["pending", "approved"]
     : ["approved"];
-  const year = new Date(fromDate).getFullYear();
   const usedRow = await knex("leave_applications")
     .where({
       company_id: companyId,
@@ -283,7 +285,8 @@ const validateLeavePolicy = async ({
       leave_type_id: leaveType.id,
     })
     .whereIn("status", statuses)
-    .whereRaw("YEAR(from_date) = ?", [year])
+    .where("from_date", ">=", cycle.start)
+    .where("from_date", "<=", cycle.end)
     .sum({ used: "days" })
     .first();
 

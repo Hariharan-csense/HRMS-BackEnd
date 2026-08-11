@@ -47,6 +47,7 @@ const RBAC_MODULE_CATALOG = [
       { key: "log", label: "Attendance Log" },
       { key: "override", label: "Override" },
       { key: "shift", label: "Shift Management" },
+      { key: "roster", label: "Shift/Roster Planner" },
       { key: "setup", label: "ESSL Setup" },
     ],
   },
@@ -74,6 +75,7 @@ const RBAC_MODULE_CATALOG = [
       { key: "processing", label: "Processing" },
       { key: "payslips", label: "Payslips" },
       { key: "loans", label: "Loan Management" },
+      { key: "audit_trail", label: "Payroll Audit Trail" },
     ],
   },
   {
@@ -122,7 +124,9 @@ const RBAC_MODULE_CATALOG = [
       { key: "reports", label: "Reports" },
     ],
   },
-  { key: "tickets", label: "Tickets", submodules: [] },
+  { key: "tickets", label: "Ticket Management", submodules: [] },
+  { key: "hr_helpdesk", label: "HR Helpdesk", submodules: [] },
+  { key: "ai_assistant", label: "AI Assistant", submodules: [] },
   {
     key: "pulse_surveys",
     label: "Pulse Surveys",

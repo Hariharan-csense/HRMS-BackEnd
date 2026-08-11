@@ -63,6 +63,35 @@ const calculateStandardHours = (startTime, endTime, fallback = 8) => {
   return durationMinutes / 60;
 };
 
+const getShiftEndForPunch = (attendanceShift, referenceTime) => {
+  if (!attendanceShift?.end_time) return null;
+
+  const [endHour, endMin] = String(attendanceShift.end_time)
+    .split(':')
+    .slice(0, 2)
+    .map(Number);
+  if ([endHour, endMin].some(Number.isNaN)) return null;
+
+  const shiftEnd = new Date(referenceTime);
+  shiftEnd.setHours(endHour, endMin, 0, 0);
+
+  if (attendanceShift?.start_time) {
+    const [startHour, startMin] = String(attendanceShift.start_time)
+      .split(':')
+      .slice(0, 2)
+      .map(Number);
+    if (![startHour, startMin].some(Number.isNaN)) {
+      const shiftStart = new Date(referenceTime);
+      shiftStart.setHours(startHour, startMin, 0, 0);
+      if (shiftEnd <= shiftStart) {
+        shiftEnd.setDate(shiftEnd.getDate() + 1);
+      }
+    }
+  }
+
+  return shiftEnd;
+};
+
 const getAttendancePolicyShift = async (companyId) => {
   const policy = await getCompanyPolicy(companyId);
   const attendancePolicy = policy?.attendance;
@@ -152,9 +181,10 @@ async function doCheckIn({
     .where('company_id', companyId)
     .where('check_in', '>=', attendanceDayStart)
     .where('check_in', '<', attendanceDayEnd)
+    .whereNull('check_out')
     .first();
 
-  if (existing) throw new Error('Already checked in today');
+  if (existing) throw new Error('Already checked in');
 
   // Face verify ONLY for Web
   if (imageData && deviceInfo === 'Web') {
@@ -234,14 +264,17 @@ async function doCheckIn({
       ? Number(attendanceShift.half_day_threshold)
       : 4;
 
+    const checkInMinute = new Date(checkInTime);
+    checkInMinute.setSeconds(0, 0);
+
     const lateCutoff = new Date(shiftStart.getTime() + gracePeriodMinutes * 60 * 1000);
     const halfDayCutoff = new Date(shiftStart.getTime() + halfDayThresholdHours * 60 * 60 * 1000);
 
-    if (checkInTime > halfDayCutoff) {
+    if (checkInMinute > halfDayCutoff) {
       attendanceStatus = 'half_day';
-    } else if (checkInTime > lateCutoff) {
+    } else if (checkInMinute > lateCutoff) {
       attendanceStatus = 'late';
-    } else if (checkInTime > shiftStart && gracePeriodMinutes > 0) {
+    } else if (checkInMinute > shiftStart && gracePeriodMinutes > 0) {
       attendanceStatus = await hasGraceDayAvailable({
         companyId,
         employeeId,
@@ -318,6 +351,7 @@ async function doCheckOut({
   const employeeShift = await getEmployeeShift(employeeId, companyId);
   const policyShift = await getAttendancePolicyShift(companyId);
   const attendanceShift = policyShift || employeeShift;
+  const pulsePromptShift = employeeShift?.end_time ? employeeShift : policyShift;
   const standardHours =
     Number(attendanceShift?.standard_hours) > 0
       ? Number(attendanceShift.standard_hours)
@@ -326,6 +360,10 @@ async function doCheckOut({
   // Checkout should only finalize hours/overtime, not downgrade/upgrade attendance status.
   const overtimeHours = Math.max(0, hoursWorked - standardHours);
   const finalStatus = record.status || 'present';
+  const shiftEnd = getShiftEndForPunch(pulsePromptShift, new Date(record.check_in));
+  const shouldPromptDailyPulse = shiftEnd
+    ? checkOutTime >= shiftEnd
+    : false;
 
   await knex('attendance')
     .where('id', record.id)
@@ -339,7 +377,16 @@ async function doCheckOut({
       status: finalStatus
     });
 
-  return true;
+  const attendance = await knex('attendance')
+    .where('id', record.id)
+    .first();
+
+  return {
+    attendance,
+    shouldPromptDailyPulse,
+    shiftEndTime: shiftEnd ? shiftEnd.toISOString() : null,
+    shiftEndSource: employeeShift?.end_time ? 'employee_shift' : 'company_policy'
+  };
 }
 
 module.exports = {
