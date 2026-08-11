@@ -223,6 +223,20 @@ async function doCheckIn({
   }
 
   const checkInTime = effectivePunchTime;
+  // Use local date (not UTC) to match MySQL DATE(check_in) grouping.
+  const attendanceDayKey = `${checkInTime.getFullYear()}-${String(checkInTime.getMonth() + 1).padStart(2, "0")}-${String(checkInTime.getDate()).padStart(2, "0")}`;
+  // If employee already had a previous check-in (even if the first session was checked out during break),
+  // then this punch is treated as continuation, and should NOT re-trigger late/half-day calculation.
+  const earliestRecord = await knex("attendance")
+    .where({
+      employee_id: employeeId,
+      company_id: companyId,
+    })
+    .whereRaw("DATE(check_in) = ?", [attendanceDayKey])
+    .orderBy("check_in", "asc")
+    .first();
+  const isFirstPunch = !earliestRecord;
+
   let attendanceStatus = 'present';
   const activePermission = await getActivePermissionForPunch({
     companyId,
@@ -230,7 +244,7 @@ async function doCheckIn({
     punchTime: checkInTime
   });
 
-  if (!activePermission && attendanceShift?.start_time) {
+  if (isFirstPunch && !activePermission && attendanceShift?.start_time) {
     const [startHour, startMin] = attendanceShift.start_time
       .split(':')
       .slice(0, 2)

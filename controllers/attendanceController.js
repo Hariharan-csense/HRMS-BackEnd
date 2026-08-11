@@ -1817,22 +1817,89 @@ const getEmployeeSummary = async (req, res) => {
 
     const records = await query.orderBy("check_in", "desc");
 
-    const summary = {
-      total_days: records.length,
-      present_days: records.filter((r) => r.status === "present").length,
-      half_days: records.filter((r) => r.status === "half").length,
-      absent_days: records.filter((r) => r.status === "absent").length,
-      total_hours: records.reduce((sum, r) => sum + (r.hours_worked || 0), 0),
-      total_overtime: records.reduce(
-        (sum, r) => sum + (r.overtime_hours || 0),
+    // Attendance may have multiple sessions in a day (break -> checkout -> checkin).
+    // So we group by DATE(check_in) and derive day-level status from the FIRST punch.
+    const byDay = new Map();
+    for (const r of records) {
+      if (!r.check_in) continue;
+      const d = new Date(r.check_in);
+      if (Number.isNaN(d.getTime())) continue;
+      // Use local date key (not UTC) to match DATE(check_in) in DB.
+      const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      if (!byDay.has(dayKey)) byDay.set(dayKey, []);
+      byDay.get(dayKey).push(r);
+    }
+
+    const dayKeysSortedDesc = Array.from(byDay.keys()).sort(
+      (a, b) =>
+        new Date(`${b}T00:00:00`).getTime() -
+        new Date(`${a}T00:00:00`).getTime(),
+    );
+
+    const daySummaries = dayKeysSortedDesc.map((dayKey) => {
+      const dayRecords = (byDay.get(dayKey) || []).slice();
+      dayRecords.sort(
+        (a, b) => new Date(a.check_in).getTime() - new Date(b.check_in).getTime(),
+      );
+      const first = dayRecords[0];
+      const dayStatus = String(first?.status || "present");
+
+      const totalHours = dayRecords.reduce(
+        (sum, rec) => sum + (rec.hours_worked || 0),
         0,
-      ),
-      average_hours_per_day:
-        records.length > 0
-          ? records.reduce((sum, r) => sum + (r.hours_worked || 0), 0) /
-            records.length
-          : 0,
-      recent_records: records.slice(0, 5),
+      );
+      const totalOvertime = dayRecords.reduce(
+        (sum, rec) => sum + (rec.overtime_hours || 0),
+        0,
+      );
+
+      const recentRecordsForDay = dayRecords
+        .slice()
+        .sort(
+          (a, b) => new Date(b.check_in).getTime() - new Date(a.check_in).getTime(),
+        )
+        .slice(0, 5);
+
+      return {
+        dayKey,
+        dayStatus,
+        totalHours,
+        totalOvertime,
+        recentRecordsForDay,
+      };
+    });
+
+    const total_days = daySummaries.length;
+    const present_days = daySummaries.filter((d) =>
+      ["present", "grace"].includes(d.dayStatus),
+    ).length;
+    const half_days = daySummaries.filter((d) =>
+      ["half", "half_day"].includes(d.dayStatus),
+    ).length;
+    const absent_days = daySummaries.filter(
+      (d) => d.dayStatus === "absent",
+    ).length;
+
+    const total_hours = daySummaries.reduce((sum, d) => sum + d.totalHours, 0);
+    const total_overtime = daySummaries.reduce(
+      (sum, d) => sum + d.totalOvertime,
+      0,
+    );
+
+    const average_hours_per_day =
+      total_days > 0 ? total_hours / total_days : 0;
+
+    const recent_records = records.slice(0, 5);
+
+    const summary = {
+      total_days,
+      present_days,
+      half_days,
+      absent_days,
+      total_hours,
+      total_overtime,
+      average_hours_per_day,
+      recent_records,
     };
 
     res.json({
