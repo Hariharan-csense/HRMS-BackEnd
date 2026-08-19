@@ -57,11 +57,8 @@ const resolveEmployeeProfile = async (req, companyId) => {
     if (byEmail) return byEmail;
   }
 
-  const fallbackById = await knex("employees")
-    .where({ id: Number(req.user?.id), company_id: companyId })
-    .first();
-  if (fallbackById) return fallbackById;
-
+  // Admin/user IDs are not employee IDs and can collide with an unrelated
+  // employee record. They must be mapped through employee_id or email above.
   return null;
 };
 
@@ -554,8 +551,16 @@ const applyLeave = async (req, res) => {
       // If employee is on probation, treat leave as unpaid (loss of pay)
       if (normalizeWorkflowText(employee.employment_type) === "probation") {
         // Try to find an existing unpaid leave type for the company
+        // Do not use an arbitrary unpaid type here. "Half Day" can be
+        // configured as unpaid, but it is a duration/type of request and must
+        // never replace a full-day Casual Leave selection.
         let unpaid = await knex("leave_types")
           .where({ company_id: companyId, is_paid: false })
+          .whereRaw("LOWER(TRIM(name)) IN (?, ?, ?)", [
+            "unpaid leave",
+            "loss of pay",
+            "lop",
+          ])
           .first();
 
         if (!unpaid) {
@@ -916,6 +921,20 @@ const getLeaveApplications = async (req, res) => {
 
   try {
     let query = knex("leave_applications")
+      // The foreign-key record is the source of truth for the leave type.  The
+      // application name is kept as a historical snapshot, so it may be wrong
+      // on records created by an older client.
+      .leftJoin("leave_types as application_leave_type", function () {
+        this.on(
+          "leave_applications.leave_type_id",
+          "=",
+          "application_leave_type.id",
+        ).andOn(
+          "leave_applications.company_id",
+          "=",
+          "application_leave_type.company_id",
+        );
+      })
       .leftJoin(
         "employees as approver",
         "leave_applications.approved_by",
@@ -924,6 +943,7 @@ const getLeaveApplications = async (req, res) => {
       .where("leave_applications.company_id", companyId)
       .select(
         "leave_applications.*",
+        "application_leave_type.name as configured_leave_type_name",
         "approver.first_name as approved_by_first_name",
         "approver.last_name as approved_by_last_name",
       )
@@ -1509,59 +1529,9 @@ const getRelevantUsers = async (req, res) => {
 
     let result;
 
-    // Employee -> department head + all HR + all Admin
-    if (workflowRole === "employee") {
-      const employee = await knex("employees")
-        .where({ id: userId, company_id: companyId })
-        .first();
-
-      if (!employee)
-        return res.status(404).json({ message: "Employee not found" });
-
-      // Get department head using current schema (head_name, head_id)
-      const departmentHead = await knex("departments")
-        .where({ id: employee.department_id, company_id: companyId })
-        .select("head_name", "head_id")
-        .first();
-
-      const [hrUsers, adminUsers] = await Promise.all([
-        getUsersByRole("hr"),
-        getUsersByRole("admin"),
-      ]);
-
-      let manager = null;
-      if (departmentHead?.head_id) {
-        const headEmployee = await knex("employees")
-          .where({ id: departmentHead.head_id, company_id: companyId })
-          .select(...userSelectColumns)
-          .first();
-        if (headEmployee) {
-          manager = headEmployee;
-        }
-      }
-      if (!manager && departmentHead?.head_name) {
-        manager = { name: departmentHead.head_name };
-      }
-
-      result = {
-        manager,
-        admin: adminUsers,
-        hr: hrUsers,
-      };
-
-      // Admin/Manager -> only HR list
-    } else if (["admin", "manager", "ceo"].includes(workflowRole)) {
-      const hrUsers = await getUsersByRole("hr");
-      result = { hr: hrUsers };
-
-      // HR -> only Admin list
-    } else if (workflowRole === "hr") {
-      const adminUsers = await getUsersByRole("admin");
-      result = { admin: adminUsers };
-    } else {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
+    // Use one role workflow only. The old duplicate block below first built an
+    // HR list for admins and then overwrote it with a CEO list, causing the UI
+    // to report a false "role mapping mismatch" warning.
     if (workflowRole === "employee") {
       const employee = await knex("employees")
         .where({ id: userId, company_id: companyId })

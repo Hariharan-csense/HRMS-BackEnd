@@ -1427,28 +1427,28 @@ const updateEmployee = async (req, res) => {
     // --------------------
     let finalShiftId = null;
 
-    if (shift_id) {
-      const shift = await knex("shifts")
-        .where({
-          id: shift_id,
-          company_id: companyId,
-        })
-        .first();
+    // if (shift_id) {
+    //   const shift = await knex("shifts")
+    //     .where({
+    //       id: shift_id,
+    //       company_id: companyId,
+    //     })
+    //     .first();
 
-      if (!shift) {
-        cleanupFiles(req.files);
-        return res.status(400).json({
-          message: "Invalid shift selected",
-        });
-      }
+    //   if (!shift) {
+    //     cleanupFiles(req.files);
+    //     return res.status(400).json({
+    //       message: "Invalid shift selected",
+    //     });
+    //   }
 
-      finalShiftId = shift.id;
-    } else {
-      cleanupFiles(req.files);
-      return res.status(400).json({
-        message: "Shift is required",
-      });
-    }
+    //   finalShiftId = shift.id;
+    // } else {
+    //   cleanupFiles(req.files);
+    //   return res.status(400).json({
+    //     message: "Shift is required",
+    //   });
+    // }
 
     // Handle bank details (optional update)
     if (hasBankUpdates) {
