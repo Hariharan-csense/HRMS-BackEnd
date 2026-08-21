@@ -288,17 +288,14 @@ const sendPulseSurveyWhatsApp = async ({
           .first("id")
       )?.id;
 
-    const variables = {
-      employee_name: employeeName,
-      survey_title: title,
-      question: message || title,
-    };
-    const renderedQuestion = renderPulseTemplateText(
-      message || template.message || title,
-      variables,
-    );
-    // WhatsApp rejects template text parameters containing new lines/tabs.
-    const whatsappQuestion = String(renderedQuestion || title)
+    // Body {{1}} is the employee name and {{2}} must always come from the
+    // survey currently being created. Do not fall back to the saved HRMS
+    // template text, otherwise a custom title/message can be replaced by the
+    // template's default happiness question.
+    const whatsappQuestion = [title, message]
+      .map((value) => String(value || "").trim())
+      .filter((value, index, list) => value && list.indexOf(value) === index)
+      .join(" - ")
       .replace(/[\r\n\t]+/g, " ")
       .replace(/ {2,}/g, " ")
       .trim();
