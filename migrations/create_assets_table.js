@@ -1,6 +1,8 @@
 // db/migrations/xxxx_create_assets_table.js
-exports.up = function(knex) {
-  return knex.schema.createTable('assets', table => {
+exports.up = async function(knex) {
+  if (await knex.schema.hasTable('assets')) return;
+
+  await knex.schema.createTable('assets', table => {
     table.increments('id').primary();
     table.string('asset_id').unique().notNullable(); // AST001
     table.string('name').notNullable();             // e.g., Dell XPS 13
@@ -20,6 +22,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('assets');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('assets');
 };

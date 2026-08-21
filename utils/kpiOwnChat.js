@@ -49,18 +49,22 @@ async function sendOwnChatTemplate({
   recipientName,
   templateName,
   parameters = [],
+  buttonPayloads = [],
+  urlButtonParameters = [],
+  language,
+  returnResponse = false,
 }) {
   const { apiUrl, apiKey, apiSecret, templateLanguage, debug } =
     getOwnChatConfig();
   if (!apiUrl || !apiKey || !apiSecret) {
     console.warn("[OwnChat] skipped: missing API configuration");
-    return false;
+    return returnResponse ? { sent: false, error: "missing_configuration" } : false;
   }
 
   const mobileNumber = normalizeMobileNumber(to);
   if (!mobileNumber) {
     console.warn("[OwnChat] skipped: invalid mobile number");
-    return false;
+    return returnResponse ? { sent: false, error: "invalid_mobile" } : false;
   }
 
   const payload = {
@@ -69,13 +73,35 @@ async function sendOwnChatTemplate({
     recipient_name: String(recipientName || "").trim() || "Employee",
     type: "template",
     template: {
-      language: { policy: "deterministic", code: templateLanguage },
+      language: { policy: "deterministic", code: language || templateLanguage },
       name: templateName,
       components: [
         {
           type: "body",
           parameters: parameters.map((text) => ({ type: "text", text: String(text ?? "") })),
         },
+        ...buttonPayloads.map((button, index) => ({
+          type: "button",
+          sub_type: "quick_reply",
+          index: String(index),
+          parameters: [
+            {
+              type: "payload",
+              payload: String(button?.payload ?? button ?? ""),
+            },
+          ],
+        })),
+        ...urlButtonParameters.map((value, index) => ({
+          type: "button",
+          sub_type: "url",
+          index: String(index),
+          parameters: [
+            {
+              type: "text",
+              text: String(value ?? ""),
+            },
+          ],
+        })),
       ],
     },
   };
@@ -96,16 +122,20 @@ async function sendOwnChatTemplate({
       console.warn(
         `[OwnChat] template=${templateName} http=${response.status} body=${body}`,
       );
-      return false;
+      return returnResponse
+        ? { sent: false, error: `http_${response.status}`, responseBody: body }
+        : false;
     }
     if (debug) {
       console.log(`[OwnChat] sent template=${templateName} to=${mobileNumber}`);
     }
-    return true;
+    if (!returnResponse) return true;
+    const body = await response.json().catch(() => ({}));
+    return { sent: true, messageId: body?.messages?.[0]?.id || body?.message_id || body?.id || null };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[OwnChat] template=${templateName} failed: ${message}`);
-    return false;
+    return returnResponse ? { sent: false, error: message } : false;
   }
 }
 
@@ -173,6 +203,7 @@ async function sendKpiCorrectiveActionStatusUpdateNotification({
 
 module.exports = {
   normalizeMobileNumber,
+  sendOwnChatTemplate,
   sendKpiCorrectiveActionNotification,
   sendKpiCorrectiveActionStatusUpdateNotification,
 };

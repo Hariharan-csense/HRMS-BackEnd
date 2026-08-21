@@ -1,6 +1,9 @@
 // db/migrations/xxxx_create_companies_table.js
-exports.up = function(knex) {
-  return knex.schema.createTable('companies', table => {
+exports.up = async function(knex) {
+  const exists = await knex.schema.hasTable('companies');
+  if (exists) return;
+
+  await knex.schema.createTable('companies', table => {
     table.increments('id').primary(); // auto increment integer id
     table.string('company_id').unique().notNullable(); // CMP001, CMP002...
     table.string('company_name').notNullable();
@@ -14,6 +17,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('companies');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('companies');
 };

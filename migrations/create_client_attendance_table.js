@@ -1,6 +1,9 @@
 // db/migrations/xxxx_create_client_attendance_table.js
-exports.up = function(knex) {
-  return knex.schema.createTable('client_attendance', table => {
+exports.up = async function(knex) {
+  const exists = await knex.schema.hasTable('client_attendance');
+  if (exists) return;
+
+  await knex.schema.createTable('client_attendance', table => {
     table.increments('id').primary();
     table.integer('employee_id').unsigned().references('id').inTable('employees').onDelete('CASCADE');
     table.integer('client_id').unsigned().references('id').inTable('clients').onDelete('CASCADE');
@@ -31,6 +34,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('client_attendance');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('client_attendance');
 };

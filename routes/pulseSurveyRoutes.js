@@ -13,11 +13,14 @@ const {
   getPulseSurveyForEmployee,
   respondPulseSurvey,
   respondDailyPulseSurvey,
+  handleOwnChatWebhook,
   createPulseSurveyTemplate,
   getPulseSurveyTemplates,
   updatePulseSurveyTemplate,
   deletePulseSurveyTemplate,
 } = require("../controllers/pulseSurveyController");
+
+router.post("/ownchat/webhook", handleOwnChatWebhook);
 
 // Admin
 router.get("/admin/overview", protect, requirePermission("pulse_surveys", "view", { submodule: "dashboard" }), getAdminPulseOverview);

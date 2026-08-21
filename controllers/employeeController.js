@@ -252,9 +252,7 @@ const findBankDuplicateMessage = async ({
     })
     .whereRaw(
       "LOWER(REPLACE(TRIM(COALESCE(ebd.account_number, '')), ' ', '')) = ?",
-      [
-      normalizedAccountNumber.toLowerCase(),
-      ],
+      [normalizedAccountNumber.toLowerCase()],
     )
     .first();
 
@@ -431,6 +429,10 @@ const addEmployee = async (req, res) => {
     location_office,
     status = "Active",
     salary = 0,
+    salary_type = "MONTHLY",
+    monthly_salary,
+    hourly_rate,
+    overtime_hourly_rate,
     aadhaar,
     pan,
     uan,
@@ -444,6 +446,30 @@ const addEmployee = async (req, res) => {
   } = req.body;
 
   try {
+    const salaryType = String(salary_type || "MONTHLY").toUpperCase();
+    const monthlySalary =
+      monthly_salary === undefined || monthly_salary === ""
+        ? Number(salary || 0)
+        : Number(monthly_salary);
+    const hourlyRate = Number(hourly_rate || 0);
+    const overtimeHourlyRate = Number(overtime_hourly_rate || 0);
+    if (
+      !["MONTHLY", "HOURLY"].includes(salaryType) ||
+      (salaryType === "MONTHLY" &&
+        (!Number.isFinite(monthlySalary) || monthlySalary < 0)) ||
+      (salaryType === "HOURLY" &&
+        (!Number.isFinite(hourlyRate) || hourlyRate <= 0)) ||
+      !Number.isFinite(overtimeHourlyRate) ||
+      overtimeHourlyRate < 0
+    ) {
+      cleanupFiles(req.files);
+      return res
+        .status(400)
+        .json({
+          message:
+            "Provide a valid monthly salary or a positive hourly rate for the selected salary type",
+        });
+    }
     const depId = department_id ? parseInt(department_id) : null;
     const desigId = designation_id ? parseInt(designation_id) : null;
     const requestedRole = String(role || "employee").trim();
@@ -582,6 +608,11 @@ const addEmployee = async (req, res) => {
           location_office: location_office || null,
           status,
           salary: Number(salary) || 0,
+          salary_type: salaryType,
+          monthly_salary: salaryType === "MONTHLY" ? monthlySalary : null,
+          hourly_rate: salaryType === "HOURLY" ? hourlyRate : null,
+          overtime_hourly_rate:
+            salaryType === "HOURLY" ? overtimeHourlyRate || null : null,
           aadhaar: aadhaar || null,
           pan: pan || null,
           uan: uan || null,
@@ -666,6 +697,11 @@ const addEmployee = async (req, res) => {
         location_office: location_office || null,
         status,
         salary: Number(salary) || 0,
+        salary_type: salaryType,
+        monthly_salary: salaryType === "MONTHLY" ? monthlySalary : null,
+        hourly_rate: salaryType === "HOURLY" ? hourlyRate : null,
+        overtime_hourly_rate:
+          salaryType === "HOURLY" ? overtimeHourlyRate || null : null,
         aadhaar: aadhaar || null,
         pan: pan || null,
         uan: uan || null,
@@ -1207,6 +1243,10 @@ const updateEmployee = async (req, res) => {
     location_office,
     status,
     salary,
+    salary_type,
+    monthly_salary,
+    hourly_rate,
+    overtime_hourly_rate,
     aadhaar,
     pan,
     uan,
@@ -1275,6 +1315,48 @@ const updateEmployee = async (req, res) => {
     if (status !== undefined) updateData.status = status;
     if (salary !== undefined)
       updateData.salary = salary ? parseFloat(salary) : null;
+    if (
+      salary_type !== undefined ||
+      monthly_salary !== undefined ||
+      hourly_rate !== undefined ||
+      overtime_hourly_rate !== undefined
+    ) {
+      const salaryType = String(
+        salary_type ?? employee.salary_type ?? "MONTHLY",
+      ).toUpperCase();
+      const monthlySalary = Number(
+        monthly_salary ?? employee.monthly_salary ?? employee.salary ?? 0,
+      );
+      const hourlyRate = Number(hourly_rate ?? employee.hourly_rate ?? 0);
+      const overtimeRate = Number(
+        overtime_hourly_rate ?? employee.overtime_hourly_rate ?? 0,
+      );
+      if (
+        !["MONTHLY", "HOURLY"].includes(salaryType) ||
+        (salaryType === "MONTHLY" &&
+          (!Number.isFinite(monthlySalary) || monthlySalary < 0)) ||
+        (salaryType === "HOURLY" &&
+          (!Number.isFinite(hourlyRate) || hourlyRate <= 0)) ||
+        !Number.isFinite(overtimeRate) ||
+        overtimeRate < 0
+      ) {
+        cleanupFiles(req.files);
+        return res
+          .status(400)
+          .json({
+            message:
+              "Provide a valid monthly salary or a positive hourly rate for the selected salary type",
+          });
+      }
+      updateData.salary_type = salaryType;
+      updateData.monthly_salary =
+        salaryType === "MONTHLY" ? monthlySalary : null;
+      updateData.hourly_rate = salaryType === "HOURLY" ? hourlyRate : null;
+      updateData.overtime_hourly_rate =
+        salaryType === "HOURLY" ? overtimeRate || null : null;
+      if (salary === undefined && salaryType === "MONTHLY")
+        updateData.salary = monthlySalary;
+    }
     if (aadhaar !== undefined) updateData.aadhaar = aadhaar || null;
     if (pan !== undefined) updateData.pan = pan || null;
     if (uan !== undefined) updateData.uan = uan || null;

@@ -1,6 +1,9 @@
 // db/migrations/xxxx_create_expenses_table.js
-exports.up = function(knex) {
-  return knex.schema.createTable('expenses', table => {
+exports.up = async function(knex) {
+  const exists = await knex.schema.hasTable('expenses');
+  if (exists) return;
+
+  await knex.schema.createTable('expenses', table => {
     table.increments('id').primary();
     table.string('expense_id').unique().notNullable(); // EXP001
     table.integer('employee_id').unsigned().notNullable(); // link to employees.id
@@ -21,6 +24,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('expenses');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('expenses');
 };

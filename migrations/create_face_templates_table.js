@@ -1,5 +1,8 @@
-exports.up = function(knex) {
-  return knex.schema.createTable('face_templates', function(table) {
+exports.up = async function(knex) {
+  const exists = await knex.schema.hasTable('face_templates');
+  if (exists) return;
+
+  await knex.schema.createTable('face_templates', function(table) {
     table.increments('id').primary();
     table.integer('employee_id').unsigned().notNullable().references('id').inTable('employees');
     table.text('template_hash').notNullable();
@@ -12,6 +15,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('face_templates');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('face_templates');
 };

@@ -1,5 +1,8 @@
-exports.up = function(knex) {
-  return knex.schema.createTable('employee_documents', table => {
+exports.up = async function(knex) {
+  const exists = await knex.schema.hasTable('employee_documents');
+  if (exists) return;
+
+  await knex.schema.createTable('employee_documents', table => {
     table.increments('id').primary();
     table.integer('employee_id').unsigned().notNullable();
     table.string('type').notNullable(); // photo, id_proof, address_proof, offer_letter, etc.
@@ -11,6 +14,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('employee_documents');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('employee_documents');
 };

@@ -2727,6 +2727,67 @@ const getLiveLocationHistory = async (req, res) => {
   }
 };
 
+const getAttendanceMonthlyReport = async (req, res) => {
+  const companyId = req.user.company_id;
+  const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+  if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ message: "Month must be YYYY-MM" });
+
+  try {
+    const [year] = month.split("-").map(Number);
+    const leaveBalanceByEmployee = knex("leave_balances")
+      .select("employee_id")
+      .sum({ available_balance: "available" })
+      .where("year", year)
+      .groupBy("employee_id")
+      .as("lb");
+    const rows = await knex("employees as e")
+      .leftJoin("payroll_processing as p", function () {
+        this.on("p.employee_id", "=", "e.id")
+          .andOn("p.company_id", "=", "e.company_id")
+          .andOn("p.month", "=", knex.raw("?", [month]));
+      })
+      .leftJoin("payroll_structures as ps", function () {
+        this.on("ps.employee_id", "=", "e.id").andOn("ps.company_id", "=", "e.company_id");
+      })
+      .leftJoin(leaveBalanceByEmployee, "lb.employee_id", "e.id")
+      .where("e.company_id", companyId)
+      .where("e.status", "Active")
+      .select(
+        "e.id", "e.employee_id", "e.first_name", "e.last_name", "e.salary_type", "e.monthly_salary", "e.hourly_rate",
+        knex.raw("COALESCE(p.present_days, 0) as present_days"),
+        knex.raw("COALESCE(p.lop_days, 0) as lop_days"),
+        knex.raw("COALESCE(p.lop_amount, 0) as lop_amount"),
+        knex.raw("COALESCE(p.approved_leave_days, 0) as leave_taken"),
+        knex.raw("COALESCE(lb.available_balance, 0) as leave_balance"),
+        knex.raw("CASE WHEN UPPER(COALESCE(e.salary_type, 'MONTHLY')) = 'HOURLY' THEN COALESCE(p.gross, 0) ELSE COALESCE(ps.gross, e.monthly_salary, e.salary, 0) END as monthly_salary"),
+        knex.raw("COALESCE(p.net, 0) as net_pay"),
+        knex.raw("COALESCE(p.deductions, 0) as deductions"),
+        knex.raw("COALESCE(p.total_days, 0) as total_days"),
+      )
+      .orderBy("e.first_name");
+
+    const reportRows = rows.map((row) => ({
+      employeeId: row.employee_id,
+      employeeName: `${row.first_name || ""} ${row.last_name || ""}`.trim(),
+      salaryType: row.salary_type || "MONTHLY",
+      presentDays: Number(row.present_days || 0),
+      absentDays: Math.max(0, Number(row.lop_days || 0)),
+      lopDays: Number(row.lop_days || 0),
+      lopAmount: Number(row.lop_amount || 0),
+      leaveTaken: Number(row.leave_taken || 0),
+      leaveBalance: Number(row.leave_balance || 0),
+      monthlySalary: Number(row.monthly_salary || 0),
+      deductions: Number(row.deductions || 0),
+      netPay: Number(row.net_pay || 0),
+      payrollProcessed: Boolean(row.net_pay || row.total_days),
+    }));
+    return res.json({ success: true, month, rows: reportRows });
+  } catch (error) {
+    console.error("Monthly attendance report error:", error);
+    return res.status(500).json({ message: "Failed to load monthly attendance report" });
+  }
+};
+
 const exportLocationHistory = async (req, res) => {
   try {
     const companyId = Number(req.user?.company_id);
@@ -3116,6 +3177,7 @@ module.exports = {
   facialRecognitionAttendance,
   facialRecognitionDescriptorAttendance,
   getAttendanceLogs,
+  getAttendanceMonthlyReport,
   getAttendanceByEmployeeAndMonth,
   createOverride,
   processOverride,

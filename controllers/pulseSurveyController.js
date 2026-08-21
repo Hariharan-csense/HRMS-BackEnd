@@ -1,6 +1,10 @@
 const db = require("../db/db");
 const { transporter } = require("../utils/mailer");
 const { sendPushToUsers } = require("../services/pushNotificationService");
+const {
+  normalizeMobileNumber,
+  sendOwnChatTemplate,
+} = require("../utils/kpiOwnChat");
 
 const requireAuthType = (req, res) => {
   if (!req.user) {
@@ -42,6 +46,7 @@ const buildRecipientsQuery = async ({
       "employees.first_name",
       "employees.last_name",
       "employees.email",
+      "employees.mobile as phone",
     )
     .where("employees.company_id", companyId);
 
@@ -105,6 +110,461 @@ const getEmployeeName = (employee) =>
   employee.email ||
   "Employee";
 
+const parseJson = (value, fallback = []) => {
+  if (Array.isArray(value) || (value && typeof value === "object")) return value;
+  try {
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const normalizeWhatsappButtons = (value) => {
+  const rows = parseJson(value, []);
+  return (Array.isArray(rows) ? rows : [])
+    .map((row, index) => {
+      if (typeof row === "string") {
+        return { id: String(index + 1), label: row, score: index + 1 };
+      }
+      return {
+        id: String(row?.id || row?.value || index + 1),
+        label: String(row?.label || row?.title || row?.text || row?.value || index + 1).trim(),
+        score: Number(row?.score || row?.value || index + 1),
+      };
+    })
+    .filter((row) => row.label)
+    .slice(0, 3);
+};
+
+const renderPulseTemplateText = (text, values) =>
+  String(text || "").replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_m, key) =>
+    String(values[key] ?? ""),
+  );
+
+const detectPulseTemplateLanguage = (template, title, message) => {
+  const pulseLanguage = String(
+    process.env.OWNCHAT_PULSE_SURVEY_LANGUAGE ||
+      process.env.OWNCHAT_SURVEY_LANGUAGE ||
+      "",
+  ).trim();
+  if (pulseLanguage) return pulseLanguage;
+
+  const configured = String(template?.whatsapp_language || "").trim();
+  if (configured) return configured;
+  const text = `${template?.title || title || ""} ${template?.message || message || ""}`;
+  return /[\u0B80-\u0BFF]/.test(text) ? "ta" : "en_US";
+};
+
+const getPulseTemplateParameters = (text, values) => {
+  const matches = [...String(text || "").matchAll(/{{\s*([a-zA-Z0-9_]+)\s*}}/g)];
+  const uniqueKeys = matches.map((match) => match[1]);
+  if (!uniqueKeys.length) {
+    return [values.employee_name, values.survey_title, values.question];
+  }
+  return uniqueKeys.map((key) => values[key] ?? "");
+};
+
+const parseButtonScore = (value, options) => {
+  const raw = String(value || "").trim();
+  const payloadMatch = raw.match(/^pulse:(\d+):(\d+)$/);
+  const optionIndex = payloadMatch ? Number(payloadMatch[2]) : null;
+  if (optionIndex && options[optionIndex - 1]) return options[optionIndex - 1];
+
+  const byIdOrLabel = options.find(
+    (option) =>
+      String(option.id).toLowerCase() === raw.toLowerCase() ||
+      String(option.label).toLowerCase() === raw.toLowerCase(),
+  );
+  if (byIdOrLabel) return byIdOrLabel;
+
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) return { score: numeric, label: raw };
+
+  const numericTokens = raw
+    .match(/\b10\b|\b[1-9]\b/g)
+    ?.map((token) => Number(token))
+    .filter((score) => score >= 1 && score <= 10);
+  if (numericTokens?.length) {
+    const score = numericTokens[numericTokens.length - 1];
+    return { score, label: String(score) };
+  }
+
+  return null;
+};
+
+const getPulseSurveyTemplateForSend = async ({ companyId, templateId }) => {
+  if (!templateId) return null;
+  return db("pulse_survey_templates")
+    .where({ id: Number(templateId), company_id: companyId, is_active: 1 })
+    .first();
+};
+
+const sendPulseSurveyWhatsApp = async ({
+  companyId,
+  surveyId,
+  template,
+  recipients,
+  title,
+  message,
+}) => {
+  const summary = { sent: 0, failed: 0, skipped: 0, errors: [] };
+  const ownChatTemplateName = String(
+    process.env.OWNCHAT_PULSE_SURVEY_TEMPLATE ||
+      process.env.OWNCHAT_SURVEY_TEMPLATE ||
+      template?.whatsapp_template_name ||
+      "pulse_survey",
+  ).trim();
+  if (!ownChatTemplateName) {
+    summary.errors.push({ reason: "missing_pulse_survey_template" });
+    return summary;
+  }
+
+  const buttons = normalizeWhatsappButtons(template.whatsapp_buttons);
+  const fallbackButtons = buttons.length
+    ? buttons
+    : [
+        { id: "1", label: "1", score: 1 },
+        { id: "5", label: "5", score: 5 },
+        { id: "10", label: "10", score: 10 },
+      ];
+  const question = String(message || template.message || title || "").slice(0, 1000);
+
+  for (const employee of recipients) {
+    const employeeName = getEmployeeName(employee);
+    const mobile = normalizeMobileNumber(employee.phone);
+    const now = new Date();
+
+    if (!mobile) {
+      summary.skipped += 1;
+      await db("pulse_survey_whatsapp_messages")
+        .insert({
+          company_id: companyId,
+          survey_id: surveyId,
+          employee_id: employee.id,
+          template_id: template.id,
+          status: "failed",
+          question,
+          button_options: JSON.stringify(fallbackButtons),
+          created_at: now,
+          updated_at: now,
+        })
+        .onConflict(["survey_id", "employee_id"])
+        .merge({ status: "failed", updated_at: now });
+      continue;
+    }
+
+    const [mappingId] = await db("pulse_survey_whatsapp_messages")
+      .insert({
+        company_id: companyId,
+        survey_id: surveyId,
+        employee_id: employee.id,
+        template_id: template.id,
+        status: "pending",
+        question,
+        button_options: JSON.stringify(fallbackButtons),
+        created_at: now,
+        updated_at: now,
+      })
+      .onConflict(["survey_id", "employee_id"])
+      .merge({
+        template_id: template.id,
+        status: "pending",
+        question,
+        button_options: JSON.stringify(fallbackButtons),
+        response_message_id: null,
+        responded_at: null,
+        updated_at: now,
+      });
+
+    const mapping =
+      mappingId ||
+      (
+        await db("pulse_survey_whatsapp_messages")
+          .where({
+            company_id: companyId,
+            survey_id: surveyId,
+            employee_id: employee.id,
+          })
+          .first("id")
+      )?.id;
+
+    const variables = {
+      employee_name: employeeName,
+      survey_title: title,
+      question: message || title,
+    };
+    const renderedQuestion = renderPulseTemplateText(
+      message || template.message || title,
+      variables,
+    );
+    // WhatsApp rejects template text parameters containing new lines/tabs.
+    const whatsappQuestion = String(renderedQuestion || title)
+      .replace(/[\r\n\t]+/g, " ")
+      .replace(/ {2,}/g, " ")
+      .trim();
+    const parameters = [employeeName, whatsappQuestion];
+
+    // eslint-disable-next-line no-await-in-loop
+    const language = detectPulseTemplateLanguage(template, title, message);
+    const result = await sendOwnChatTemplate({
+      to: mobile,
+      recipientName: employeeName,
+      templateName: ownChatTemplateName,
+      language,
+      parameters,
+      returnResponse: true,
+    });
+
+    const status = result?.sent ? "sent" : "failed";
+    if (result?.sent) summary.sent += 1;
+    else {
+      summary.failed += 1;
+      summary.errors.push({
+        employeeId: employee.id,
+        mobile,
+        templateName: ownChatTemplateName,
+        language,
+        reason: result?.error || "send_failed",
+        responseBody: result?.responseBody || null,
+      });
+    }
+
+    await db("pulse_survey_whatsapp_messages")
+      .where({ id: mapping })
+      .update({
+        ownchat_message_id: result?.messageId || null,
+        status,
+        updated_at: new Date(),
+      });
+  }
+
+  return summary;
+};
+
+const flattenWebhookMessages = (payload) => {
+  const messages = [];
+  const visit = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== "object") return;
+    if (
+      value.id ||
+      value.message_id ||
+      value.from ||
+      value.interactive ||
+      value.button ||
+      value.text
+    ) {
+      messages.push(value);
+    }
+    for (const key of [
+      "messages",
+      "message",
+      "data",
+      "entry",
+      "changes",
+      "value",
+      "statuses",
+      "events",
+    ]) {
+      if (value[key]) visit(value[key]);
+    }
+  };
+  visit(payload);
+  return messages;
+};
+
+const getWebhookReply = (message) => {
+  const interactive = message?.interactive || {};
+  const buttonReply = interactive.button_reply || message?.button || {};
+  const listReply = interactive.list_reply || {};
+  const text =
+    message?.text?.body ||
+    message?.text?.message ||
+    message?.body ||
+    message?.message?.text ||
+    (typeof message?.message === "string" ? message.message : "") ||
+    message?.reply ||
+    message?.content ||
+    "";
+  return {
+    responseId:
+      message?.id ||
+      message?.message_id ||
+      message?.wamid ||
+      message?.event_id ||
+      null,
+    contextId:
+      message?.context?.id ||
+      message?.context?.message_id ||
+      message?.context?.wamid ||
+      message?.reply_to_message_id ||
+      message?.quoted_message_id ||
+      message?.quoted?.id ||
+      message?.ownchat_context_id ||
+      null,
+    from:
+      message?.from ||
+      message?.wa_id ||
+      message?.sender ||
+      message?.sender_id ||
+      message?.senderId ||
+      message?.mobile ||
+      message?.phone ||
+      message?.phone_number ||
+      message?.contact_number ||
+      message?.customer_phone ||
+      message?.customer?.phone ||
+      message?.contact?.phone ||
+      "",
+    replyValue:
+      buttonReply?.id ||
+      buttonReply?.payload ||
+      buttonReply?.title ||
+      listReply?.id ||
+      listReply?.title ||
+      text,
+    replyLabel:
+      buttonReply?.title || listReply?.title || text || buttonReply?.id || "",
+  };
+};
+
+const findWhatsappMapping = async ({ contextId, from, replyValue }) => {
+  const payloadMatch = String(replyValue || "").match(/^pulse:(\d+):(\d+)$/);
+  if (payloadMatch) {
+    const row = await db("pulse_survey_whatsapp_messages")
+      .where({ id: Number(payloadMatch[1]) })
+      .first();
+    if (row) return row;
+  }
+
+  if (contextId) {
+    const row = await db("pulse_survey_whatsapp_messages")
+      .where({ ownchat_message_id: contextId })
+      .first();
+    if (row) return row;
+  }
+
+  const normalizedFrom = normalizeMobileNumber(from);
+  if (!normalizedFrom) return null;
+
+  const candidates = await db("pulse_survey_whatsapp_messages as wm")
+    .join("employees as e", "e.id", "wm.employee_id")
+    .whereIn("wm.status", ["sent", "pending"])
+    .orderBy("wm.created_at", "desc")
+    .limit(20)
+    .select("wm.*", "e.mobile as phone");
+
+  const matches = candidates.filter(
+    (row) => normalizeMobileNumber(row.phone) === normalizedFrom,
+  );
+  return matches[0] || null;
+};
+
+const handleOwnChatWebhook = async (req, res) => {
+  try {
+    const messages = flattenWebhookMessages(req.body);
+    if (!messages.length) return res.json({ accepted: true, processed: 0 });
+
+    let processed = 0;
+    let ignored = 0;
+    for (const rawMessage of messages) {
+      const reply = getWebhookReply(rawMessage);
+      if (!reply.replyValue) {
+        ignored += 1;
+        continue;
+      }
+
+      const mapping = await findWhatsappMapping(reply);
+      if (!mapping || mapping.status === "responded") {
+        ignored += 1;
+        if (!mapping) {
+          console.warn("Pulse OwnChat webhook ignored: no mapping found", {
+            from: reply.from ? normalizeMobileNumber(reply.from) : null,
+            contextId: reply.contextId || null,
+            responseId: reply.responseId || null,
+            replyValue: String(reply.replyValue || "").slice(0, 80),
+          });
+        }
+        continue;
+      }
+
+      if (reply.responseId) {
+        const duplicate = await db("pulse_survey_whatsapp_messages")
+          .where({ response_message_id: reply.responseId })
+          .first("id");
+        if (duplicate) continue;
+      }
+
+      const options = normalizeWhatsappButtons(mapping.button_options);
+      const answer = parseButtonScore(reply.replyValue, options) ||
+        parseButtonScore(reply.replyLabel, options);
+      const numericScore = clampScore(answer?.score);
+      if (numericScore < 1 || numericScore > 10) {
+        ignored += 1;
+        continue;
+      }
+
+      const now = new Date();
+      const responsePayload = {
+        survey_id: mapping.survey_id,
+        employee_id: mapping.employee_id,
+        company_id: mapping.company_id,
+        score: numericScore,
+        label: String(answer?.label || reply.replyLabel || reply.replyValue).slice(0, 64),
+        comment: null,
+        is_anonymous: false,
+        responded_at: now,
+        updated_at: now,
+      };
+
+      const existing = await db("pulse_survey_responses")
+        .where({
+          company_id: mapping.company_id,
+          survey_id: mapping.survey_id,
+          employee_id: mapping.employee_id,
+        })
+        .first();
+      if (existing) {
+        await db("pulse_survey_whatsapp_messages")
+          .where({ id: mapping.id })
+          .update({
+            status: "responded",
+            response_message_id: reply.responseId || null,
+            responded_at: now,
+            updated_at: now,
+          });
+        continue;
+      }
+
+      await db("pulse_survey_responses").insert({
+        ...responsePayload,
+        created_at: now,
+      });
+      await db("pulse_survey_whatsapp_messages")
+        .where({ id: mapping.id })
+        .update({
+          status: "responded",
+          response_message_id: reply.responseId || null,
+          responded_at: now,
+          updated_at: now,
+        });
+      processed += 1;
+    }
+
+    return res.json({ accepted: true, processed, ignored });
+  } catch (error) {
+    if (error?.code === "ER_DUP_ENTRY") {
+      return res.json({ accepted: true, duplicate: true });
+    }
+    console.error("handleOwnChatWebhook error:", error);
+    return res.status(500).json({ message: "Webhook processing failed" });
+  }
+};
+
 const getUserRoleNames = (user) =>
   [...(Array.isArray(user?.roles) ? user.roles : []), user?.role]
     .map((role) => String(role || "").toLowerCase())
@@ -136,10 +596,13 @@ const getPulseSurveyCategory = (survey) => {
   return title.startsWith("daily log -") ? "daily_log" : "survey";
 };
 
-const SURVEY_LOGIN_URL = "https://hrms.procease.co/login";
+const getFrontendBaseUrl = () =>
+  String(process.env.FRONTEND_URL || process.env.BASE_URL || "https://hrms.procease.co")
+    .replace(/\/backend\/?$/, "")
+    .replace(/\/+$/, "");
 
 const buildSurveyUrl = (surveyId) => {
-  return SURVEY_LOGIN_URL;
+  return `${getFrontendBaseUrl()}/pulse-surveys/respond/${surveyId}`;
 };
 
 const buildSurveyPushPath = (surveyId) => `/pulse-surveys/respond/${surveyId}`;
@@ -289,6 +752,8 @@ const createPulseSurvey = async (req, res) => {
     selectedDepartment,
     selectedDesignation,
     allowAnonymous = false,
+    templateId,
+    sendViaWhatsApp = false,
   } = req.body || {};
 
   const companyId = req.user.company_id;
@@ -318,9 +783,20 @@ const createPulseSurvey = async (req, res) => {
       return res.status(400).json({ message: "No recipients found" });
     }
 
+    const pulseTemplate = await getPulseSurveyTemplateForSend({
+      companyId,
+      templateId,
+    });
+    if (sendViaWhatsApp && !pulseTemplate) {
+      return res
+        .status(400)
+        .json({ message: "Select an active Pulse Survey template to send WhatsApp" });
+    }
+
     const [surveyId] = await db("pulse_surveys").insert({
       company_id: companyId,
       created_by_user_id: createdByUserId,
+      pulse_template_id: pulseTemplate?.id || null,
       title: String(title).trim(),
       message: message ? String(message) : null,
       recipient_type: recipientType,
@@ -347,6 +823,7 @@ const createPulseSurvey = async (req, res) => {
 
     let notificationsCreated = 0;
     let emailSummary = { sent: 0, skipped: 0, failed: 0 };
+    let whatsappSummary = { sent: 0, skipped: 0, failed: 0 };
 
     try {
       notificationsCreated = await createSurveyNotifications({
@@ -396,6 +873,24 @@ const createPulseSurvey = async (req, res) => {
       });
     }
 
+    if (sendViaWhatsApp) {
+      try {
+        whatsappSummary = await sendPulseSurveyWhatsApp({
+          companyId,
+          surveyId,
+          template: pulseTemplate,
+          recipients,
+          title: String(title).trim(),
+          message: message ? String(message) : "",
+        });
+      } catch (whatsappError) {
+        console.error("Pulse survey WhatsApp dispatch failed:", {
+          surveyId,
+          error: whatsappError?.message || whatsappError,
+        });
+      }
+    }
+
     const pushSummary = await pushSummaryPromise;
     const pushSkipReasons = [
       ...(Array.isArray(pushSummary?.skipReasons)
@@ -419,6 +914,7 @@ const createPulseSurvey = async (req, res) => {
         skipReasons: pushSkipReasons,
       },
       emails: emailSummary,
+      whatsapp: whatsappSummary,
       createdAt: new Date().toISOString(),
     });
   } catch (error) {
@@ -656,6 +1152,33 @@ const getAdminPulseOverview = async (req, res) => {
       .slice(-6)
       .map(([, v]) => toPoint(v.label, v.count ? v.sum / v.count : 0));
 
+    const whatsappRows = await db("pulse_survey_whatsapp_messages")
+      .where("company_id", companyId)
+      .select("status");
+    const whatsappSent = whatsappRows.filter((row) =>
+      ["sent", "responded"].includes(String(row.status)),
+    ).length;
+    const whatsappResponded = whatsappRows.filter(
+      (row) => String(row.status) === "responded",
+    ).length;
+    const whatsappPending = whatsappRows.filter(
+      (row) => String(row.status) === "sent" || String(row.status) === "pending",
+    ).length;
+    const whatsappFailed = whatsappRows.filter(
+      (row) => String(row.status) === "failed",
+    ).length;
+    const whatsappDistribution = await db("pulse_survey_whatsapp_messages as wm")
+      .join("pulse_survey_responses as r", function () {
+        this.on("r.company_id", "=", "wm.company_id")
+          .andOn("r.survey_id", "=", "wm.survey_id")
+          .andOn("r.employee_id", "=", "wm.employee_id");
+      })
+      .where("wm.company_id", companyId)
+      .where("wm.status", "responded")
+      .groupBy("r.label", "r.score")
+      .orderBy("r.score", "asc")
+      .select("r.label", "r.score", db.raw("COUNT(*) as count"));
+
     return res.json({
       kpis: {
         totalEmployees: Number(totalEmployees || 0),
@@ -690,6 +1213,20 @@ const getAdminPulseOverview = async (req, res) => {
         employees: Number(b.employees || 0),
         score: b.avgScore === null ? 0 : Number(b.avgScore || 0),
       })),
+      whatsapp: {
+        sent: whatsappSent,
+        responded: whatsappResponded,
+        pending: whatsappPending,
+        failed: whatsappFailed,
+        responseRate: whatsappSent
+          ? Math.round((whatsappResponded / whatsappSent) * 100)
+          : 0,
+        answerDistribution: whatsappDistribution.map((row) => ({
+          label: row.label || String(row.score || ""),
+          score: Number(row.score || 0),
+          count: Number(row.count || 0),
+        })),
+      },
     });
   } catch (error) {
     console.error("getAdminPulseOverview error:", error);
@@ -1160,6 +1697,9 @@ const getPulseSurveyTemplates = async (req, res) => {
         message: t.message || "",
         category: t.category || "general",
         isActive: Boolean(t.is_active),
+        whatsappTemplateName: t.whatsapp_template_name || "",
+        whatsappLanguage: t.whatsapp_language || "en_US",
+        whatsappButtons: normalizeWhatsappButtons(t.whatsapp_buttons),
         createdAt: t.created_at,
         updatedAt: t.updated_at,
       })),
@@ -1181,6 +1721,9 @@ const createPulseSurveyTemplate = async (req, res) => {
     message = "",
     category = "general",
     isActive = true,
+    whatsappTemplateName = "",
+    whatsappLanguage = "en_US",
+    whatsappButtons = [],
   } = req.body || {};
 
   if (!name || !String(name).trim()) {
@@ -1199,6 +1742,11 @@ const createPulseSurveyTemplate = async (req, res) => {
       message: message ? String(message) : null,
       category: String(category || "general").trim() || "general",
       is_active: Boolean(isActive),
+      whatsapp_template_name: whatsappTemplateName
+        ? String(whatsappTemplateName).trim()
+        : null,
+      whatsapp_language: String(whatsappLanguage || "en_US").trim() || "en_US",
+      whatsapp_buttons: JSON.stringify(normalizeWhatsappButtons(whatsappButtons)),
       created_at: new Date(),
       updated_at: new Date(),
     };
@@ -1226,7 +1774,16 @@ const updatePulseSurveyTemplate = async (req, res) => {
 
   const companyId = req.user.company_id;
   const { id } = req.params;
-  const { name, title, message, category, isActive } = req.body || {};
+  const {
+    name,
+    title,
+    message,
+    category,
+    isActive,
+    whatsappTemplateName,
+    whatsappLanguage,
+    whatsappButtons,
+  } = req.body || {};
 
   try {
     const existing = await db("pulse_survey_templates")
@@ -1244,6 +1801,20 @@ const updatePulseSurveyTemplate = async (req, res) => {
     if (category !== undefined)
       next.category = String(category || "general").trim() || "general";
     if (isActive !== undefined) next.is_active = Boolean(isActive);
+    if (whatsappTemplateName !== undefined) {
+      next.whatsapp_template_name = whatsappTemplateName
+        ? String(whatsappTemplateName).trim()
+        : null;
+    }
+    if (whatsappLanguage !== undefined) {
+      next.whatsapp_language =
+        String(whatsappLanguage || "en_US").trim() || "en_US";
+    }
+    if (whatsappButtons !== undefined) {
+      next.whatsapp_buttons = JSON.stringify(
+        normalizeWhatsappButtons(whatsappButtons),
+      );
+    }
 
     await db("pulse_survey_templates")
       .where({ id: Number(id), company_id: companyId })
@@ -1289,6 +1860,7 @@ module.exports = {
   getPulseSurveyForEmployee,
   respondPulseSurvey,
   respondDailyPulseSurvey,
+  handleOwnChatWebhook,
   // Templates
   createPulseSurveyTemplate,
   getPulseSurveyTemplates,

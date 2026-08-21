@@ -9,6 +9,7 @@ const {
   facialRecognitionAttendance,
   facialRecognitionDescriptorAttendance,
   getAttendanceLogs,
+  getAttendanceMonthlyReport,
   getAttendanceByEmployeeAndMonth,
   createOverride,
   processOverride,
@@ -115,6 +116,12 @@ router.get(
   protect,
   requirePermission("attendance", "view", { submodule: "log" }),
   getEmployeeSummary,
+);
+router.get(
+  "/monthly-report",
+  protect,
+  requirePermission("attendance", "view", { submodule: "monthly_report" }),
+  getAttendanceMonthlyReport,
 );
 router.get(
   "/overrides",

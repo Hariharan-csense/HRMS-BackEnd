@@ -473,12 +473,20 @@
 
         <div class="summary-card">
           <div class="panel">
-            <div class="panel-title">Pay & Bank Details</div>
+            <div class="panel-title">Attendance & Pay Details</div>
             <div class="info-grid">
               <div class="info-row">
                 <div class="label">Salary Period</div>
                 <div class="value">{{payroll_period}}</div>
               </div>
+              <div class="info-row">
+                <div class="label">Salary Type</div>
+                <div class="value">{{salary_type}}</div>
+              </div>
+              {{#if is_hourly}}
+              <div class="info-row"><div class="label">Hourly Rate</div><div class="value">&#8377;{{hourly_rate}}</div></div>
+              <div class="info-row"><div class="label">Worked Hours</div><div class="value">{{total_worked_hours}}</div></div>
+              {{/if}}
               <div class="info-row">
                 <div class="label">Total Days</div>
                 <div class="value">{{total_days}}</div>
@@ -494,6 +502,14 @@
               <div class="info-row">
                 <div class="label">LOP Days</div>
                 <div class="value">{{lop_days}}</div>
+              </div>
+              <div class="info-row">
+                <div class="label">Absent / Unpaid Leave Days</div>
+                <div class="value">{{absent_days}}</div>
+              </div>
+              <div class="info-row">
+                <div class="label">LOP Amount</div>
+                <div class="value">&#8377;{{lop_amount}}</div>
               </div>
               <div class="info-row">
                 <div class="label">Payable Days</div>
@@ -519,6 +535,11 @@
       <div class="panel">
         <div class="panel-title">Salary Statement</div>
         <table class="salary-table">
+          {{#if is_hourly}}
+          <tr><td>Normal Pay ({{normal_hours}} hrs)</td><td class="amount">&#8377;{{normal_pay}}</td><td>Provident Fund</td><td class="amount deduction">&#8377;{{pf}}</td></tr>
+          <tr><td>Overtime Pay ({{overtime_hours}} hrs @ &#8377;{{overtime_hourly_rate}})</td><td class="amount">&#8377;{{overtime_pay}}</td><td>ESI / PT / TDS</td><td class="amount deduction">&#8377;{{monthly_deductions}}</td></tr>
+          <tr class="total-row"><td>Gross Earnings</td><td class="amount">&#8377;{{gross}}</td><td>Total Deductions</td><td class="amount">&#8377;{{total_payroll_deductions}}</td></tr>
+          {{else}}
           <tr>
             <th>Earnings</th>
             <th>Amount (INR)</th>
@@ -558,15 +579,16 @@
           <tr>
             <td>Expense Reimbursements</td>
             <td class="amount">&#8377;{{total_expenses}}</td>
-            <td></td>
-            <td class="amount"></td>
+            <td>LOP Adjustment</td>
+            <td class="amount deduction">&#8377;{{lop_amount}}</td>
           </tr>
           <tr class="total-row">
             <td>Gross Earnings</td>
             <td class="amount">&#8377;{{gross}}</td>
             <td>Total Deductions</td>
-            <td class="amount">&#8377;{{monthly_deductions}}</td>
+            <td class="amount">&#8377;{{total_payroll_deductions}}</td>
           </tr>
+          {{/if}}
         </table>
       </div>
 

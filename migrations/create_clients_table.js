@@ -1,6 +1,9 @@
 // db/migrations/xxxx_create_clients_table.js
-exports.up = function(knex) {
-  return knex.schema.createTable('clients', table => {
+exports.up = async function(knex) {
+  const exists = await knex.schema.hasTable('clients');
+  if (exists) return;
+
+  await knex.schema.createTable('clients', table => {
     table.increments('id').primary();
     table.string('client_id').unique().notNullable(); // CLI001, CLI002...
     table.string('client_name').notNullable();
@@ -16,6 +19,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('clients');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('clients');
 };

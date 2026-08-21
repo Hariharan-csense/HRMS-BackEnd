@@ -45,6 +45,7 @@ const RBAC_MODULE_CATALOG = [
       { key: "capture", label: "Check-In/Out" },
       { key: "facial_recognition", label: "Facial Recognition" },
       { key: "log", label: "Attendance Log" },
+      { key: "monthly_report", label: "Monthly Report" },
       { key: "override", label: "Override" },
       { key: "shift", label: "Shift Management" },
       { key: "roster", label: "Shift/Roster Planner" },

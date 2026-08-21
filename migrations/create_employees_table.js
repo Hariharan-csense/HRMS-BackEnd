@@ -1,5 +1,8 @@
-exports.up = function(knex) {
-  return knex.schema.createTable('employees', table => {
+exports.up = async function(knex) {
+  const exists = await knex.schema.hasTable('employees');
+  if (exists) return;
+
+  await knex.schema.createTable('employees', table => {
     table.increments('id').primary(); // Auto unsigned int PK - Perfect for foreign keys
     table.string('employee_id').unique().notNullable(); // EMP001 format
     table.string('first_name').notNullable();
@@ -40,6 +43,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('employees');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('employees');
 };

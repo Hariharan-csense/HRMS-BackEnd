@@ -1,5 +1,8 @@
-exports.up = function(knex) {
-  return knex.schema.createTable('employee_bank_details', table => {
+exports.up = async function(knex) {
+  const exists = await knex.schema.hasTable('employee_bank_details');
+  if (exists) return;
+
+  await knex.schema.createTable('employee_bank_details', table => {
     table.increments('id').primary();
     table.integer('employee_id').unsigned().notNullable();
     table.string('account_holder_name');
@@ -13,6 +16,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('employee_bank_details');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('employee_bank_details');
 };

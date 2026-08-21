@@ -1,23 +1,37 @@
-exports.up = function(knex) {
-  return knex.schema
-    // Add storage field to subscription_plans
-    .table('subscription_plans', function(table) {
-      table.integer('storage_gb').defaultTo(1).after('max_users'); // Storage in GB
-    })
-    // Add storage tracking to company_subscriptions
-    .table('company_subscriptions', function(table) {
-      table.integer('storage_gb').defaultTo(1).after('max_users'); // Storage limit in GB
-      table.integer('used_storage_mb').defaultTo(0).after('storage_gb'); // Used storage in MB
+exports.up = async function(knex) {
+  const planHasStorage = await knex.schema.hasColumn('subscription_plans', 'storage_gb');
+  const subscriptionHasStorage = await knex.schema.hasColumn('company_subscriptions', 'storage_gb');
+  const subscriptionHasUsedStorage = await knex.schema.hasColumn('company_subscriptions', 'used_storage_mb');
+
+  if (!planHasStorage) {
+    await knex.schema.table('subscription_plans', function(table) {
+      table.integer('storage_gb').defaultTo(1).after('max_users');
     });
+  }
+
+  if (!subscriptionHasStorage || !subscriptionHasUsedStorage) {
+    await knex.schema.table('company_subscriptions', function(table) {
+      if (!subscriptionHasStorage) table.integer('storage_gb').defaultTo(1).after('max_users');
+      if (!subscriptionHasUsedStorage) table.integer('used_storage_mb').defaultTo(0).after('storage_gb');
+    });
+  }
 };
 
-exports.down = function(knex) {
-  return knex.schema
-    .table('company_subscriptions', function(table) {
-      table.dropColumn('used_storage_mb');
-      table.dropColumn('storage_gb');
-    })
-    .table('subscription_plans', function(table) {
+exports.down = async function(knex) {
+  const planHasStorage = await knex.schema.hasColumn('subscription_plans', 'storage_gb');
+  const subscriptionHasStorage = await knex.schema.hasColumn('company_subscriptions', 'storage_gb');
+  const subscriptionHasUsedStorage = await knex.schema.hasColumn('company_subscriptions', 'used_storage_mb');
+
+  if (subscriptionHasStorage || subscriptionHasUsedStorage) {
+    await knex.schema.table('company_subscriptions', function(table) {
+      if (subscriptionHasUsedStorage) table.dropColumn('used_storage_mb');
+      if (subscriptionHasStorage) table.dropColumn('storage_gb');
+    });
+  }
+
+  if (planHasStorage) {
+    await knex.schema.table('subscription_plans', function(table) {
       table.dropColumn('storage_gb');
     });
+  }
 };

@@ -195,6 +195,30 @@ const calculateAmountFromPercentage = (base, percentage) => {
 
 const roundTo2 = (value) => Number((Number(value) || 0).toFixed(2));
 
+// Keeps the payslip component breakdown aligned with the attendance-prorated
+// gross. The final component absorbs the rounding difference.
+const getProratedSalaryComponents = (structure = {}, fullGross = 0, earnedGross = 0) => {
+  const components = {
+    basic: Number(structure.basic || 0),
+    hra: Number(structure.hra || 0),
+    lta: Number(structure.lta || 0),
+    allowances: Number(structure.allowances || 0),
+    incentives: Number(structure.incentives || 0),
+  };
+  if (fullGross <= 0 || earnedGross >= fullGross) return components;
+  const factor = earnedGross / fullGross;
+  const result = {};
+  let allocated = 0;
+  const keys = Object.keys(components);
+  keys.forEach((key, index) => {
+    result[key] = index === keys.length - 1
+      ? roundTo2(earnedGross - allocated)
+      : roundTo2(components[key] * factor);
+    allocated = roundTo2(allocated + result[key]);
+  });
+  return result;
+};
+
 const normalizePayrollDayTotals = ({ totalDays, payableDays, lopDays }) => {
   const normalizedTotalDays = Math.max(0, roundTo2(totalDays));
   const normalizedLopDays = Math.min(
@@ -1074,9 +1098,11 @@ const processPayroll = async (req, res) => {
       .where({ employee_id: empId, company_id: companyId })
       .first();
 
-    if (!structure) {
+    const salaryType = String(employee.salary_type || "MONTHLY").toUpperCase();
+    if (!structure && salaryType !== "HOURLY") {
       return res.status(400).json({ message: "Salary structure not found" });
     }
+    const payrollStructure = structure || {};
 
     const company = await knex("companies").where({ id: companyId }).first();
 
@@ -1096,16 +1122,16 @@ const processPayroll = async (req, res) => {
     // MONTHLY GROSS
     // ===============================
     const componentGross = roundTo2(
-      Number(structure.basic || 0) +
-        Number(structure.hra || 0) +
-        Number(structure.lta || 0) +
-        Number(structure.allowances || 0) +
-        Number(structure.incentives || 0),
+      Number(payrollStructure.basic || 0) +
+        Number(payrollStructure.hra || 0) +
+        Number(payrollStructure.lta || 0) +
+        Number(payrollStructure.allowances || 0) +
+        Number(payrollStructure.incentives || 0),
     );
     const monthlyGross =
       componentGross > 0
         ? componentGross
-        : roundTo2(Number(structure.gross || 0));
+        : roundTo2(Number(payrollStructure.gross || 0));
 
     // ===============================
     // ATTENDANCE (PRESENT)
@@ -1122,6 +1148,8 @@ const processPayroll = async (req, res) => {
         knex.raw("DATE(check_in) as day"),
         "status",
         "hours_worked",
+        "overtime_hours",
+        "check_out",
         "flag_reason",
         "created_at",
         "updated_at",
@@ -1361,17 +1389,17 @@ const processPayroll = async (req, res) => {
     const futurePeriodAmount = roundTo2(dailyGross * futurePeriodDays);
     const earnedGross = roundTo2(dailyGross * payableDays);
 
-    const tdsPercentage = getTdsPercentage(structure);
+    const tdsPercentage = getTdsPercentage(payrollStructure);
     const tdsAmount = calculateAmountFromPercentage(
       earnedGross,
       tdsPercentage,
     );
     const monthlyDeductions = roundTo2(
-      Number(structure.pf || 0) +
-        Number(structure.esi || 0) +
-        Number(structure.pt || 0) +
+      Number(payrollStructure.pf || 0) +
+        Number(payrollStructure.esi || 0) +
+        Number(payrollStructure.pt || 0) +
         tdsAmount +
-        Number(structure.other_deductions || 0),
+        Number(payrollStructure.other_deductions || 0),
     );
 
     // ===============================
@@ -1389,7 +1417,31 @@ const processPayroll = async (req, res) => {
       0,
     );
 
-    let monthlyNet = earnedGross - monthlyDeductions + totalExpenses;
+    // Hourly payroll uses only finalized attendance rows. `hours_worked` and
+    // `overtime_hours` are produced by the existing checkout/shift logic.
+    const validHourlyAttendance = attendanceRows.filter((row) => {
+      const status = normalizeAttendanceStatus(row.status);
+      return row.check_out && ["present", "late", "grace", "half"].includes(status) && Number(row.hours_worked || 0) > 0;
+    });
+    const totalWorkedHours = roundTo2(validHourlyAttendance.reduce((sum, row) => sum + Number(row.hours_worked || 0), 0));
+    const overtimeHours = roundTo2(validHourlyAttendance.reduce((sum, row) => sum + Math.min(Number(row.hours_worked || 0), Math.max(0, Number(row.overtime_hours || 0))), 0));
+    const normalHours = roundTo2(Math.max(0, totalWorkedHours - overtimeHours));
+    const hourlyRate = roundTo2(Number(employee.hourly_rate || 0));
+    const overtimeHourlyRate = roundTo2(Number(employee.overtime_hourly_rate || 0));
+    if (salaryType === "HOURLY" && hourlyRate <= 0) {
+      return res.status(400).json({ message: "Hourly employee requires a positive hourly rate" });
+    }
+    const normalPay = salaryType === "HOURLY" ? roundTo2(normalHours * hourlyRate) : 0;
+    const overtimePay = salaryType === "HOURLY" && overtimeHourlyRate > 0 ? roundTo2(overtimeHours * overtimeHourlyRate) : 0;
+    const grossEarnings = salaryType === "HOURLY" ? roundTo2(normalPay + overtimePay) : earnedGross;
+    const paidComponents = salaryType === "MONTHLY"
+      ? getProratedSalaryComponents(payrollStructure, monthlyGross, earnedGross)
+      : {};
+    const effectiveDeductions = salaryType === "HOURLY"
+      ? roundTo2(Number(payrollStructure.pf || 0) + Number(payrollStructure.esi || 0) + Number(payrollStructure.pt || 0) + calculateAmountFromPercentage(grossEarnings, tdsPercentage) + Number(payrollStructure.other_deductions || 0))
+      : monthlyDeductions;
+    const effectiveTdsAmount = salaryType === "HOURLY" ? calculateAmountFromPercentage(grossEarnings, tdsPercentage) : tdsAmount;
+    let monthlyNet = grossEarnings - effectiveDeductions + totalExpenses;
     monthlyNet = roundTo2(monthlyNet);
 
     // Ensure net doesn't go negative due to calculation errors
@@ -1408,8 +1460,8 @@ const processPayroll = async (req, res) => {
     // ===============================
     // ANNUAL
     // ===============================
-    const annualGross = roundTo2(monthlyGross * 12);
-    const annualDeductions = roundTo2(monthlyDeductions * 12);
+    const annualGross = roundTo2(grossEarnings * 12);
+    const annualDeductions = roundTo2(effectiveDeductions * 12);
     const annualNet = roundTo2(monthlyNet * 12);
 
     // ===============================
@@ -1427,17 +1479,25 @@ const processPayroll = async (req, res) => {
         payable_days: payableDays,
         lop_days: lopDays,
         lop_amount: lopAmount,
-        gross: monthlyGross,
-        deductions: monthlyDeductions,
+        gross: grossEarnings,
+        deductions: effectiveDeductions,
         net: monthlyNet,
         total_expenses: totalExpenses,
         annual_gross: annualGross,
         annual_deductions: annualDeductions,
         annual_net: annualNet,
         status: "processed",
+        salary_type: salaryType,
+        hourly_rate: salaryType === "HOURLY" ? hourlyRate : null,
+        overtime_hourly_rate: salaryType === "HOURLY" ? overtimeHourlyRate || null : null,
+        total_worked_hours: salaryType === "HOURLY" ? totalWorkedHours : 0,
+        normal_hours: salaryType === "HOURLY" ? normalHours : 0,
+        overtime_hours: salaryType === "HOURLY" ? overtimeHours : 0,
+        normal_pay: salaryType === "HOURLY" ? normalPay : 0,
+        overtime_pay: salaryType === "HOURLY" ? overtimePay : 0,
       },
       "tds_amount",
-      tdsAmount,
+      effectiveTdsAmount,
     );
 
     const existing = await knex("payroll_processing")
@@ -1506,29 +1566,41 @@ const processPayroll = async (req, res) => {
       present_days: formatPayrollDayCount(presentDateSet.size),
       approved_leave_days: formatPayrollDayCount(approvedLeaveDays),
       lop_days: formatPayrollDayCount(lopDays),
+      absent_days: formatPayrollDayCount(lopDays),
       payable_days: formatPayrollDayCount(payableDays),
+      lop_amount: lopAmount,
 
-      basic: structure.basic,
-      hra: structure.hra,
-      lta: structure.lta,
-      allowances: structure.allowances,
-      incentives: structure.incentives,
+      basic: salaryType === "MONTHLY" ? paidComponents.basic : 0,
+      hra: salaryType === "MONTHLY" ? paidComponents.hra : 0,
+      lta: salaryType === "MONTHLY" ? paidComponents.lta : 0,
+      allowances: salaryType === "MONTHLY" ? paidComponents.allowances : 0,
+      incentives: salaryType === "MONTHLY" ? paidComponents.incentives : 0,
       total_expenses: totalExpenses,
 
-      pf: structure.pf,
-      esi: structure.esi,
-      pt: structure.pt,
-      tds: tdsAmount,
+      pf: payrollStructure.pf,
+      esi: payrollStructure.esi,
+      pt: payrollStructure.pt,
+      tds: effectiveTdsAmount,
       tds_percentage: tdsPercentage,
-      other_deductions: structure.other_deductions,
+      other_deductions: payrollStructure.other_deductions,
 
-      gross: monthlyGross,
+      gross: grossEarnings,
       monthly_net: monthlyNet,
       monthly_net_words: amountToWords(monthlyNet),
-      monthly_deductions: monthlyDeductions,
+      monthly_deductions: effectiveDeductions,
+      total_payroll_deductions: roundTo2(effectiveDeductions + (salaryType === "MONTHLY" ? lopAmount : 0)),
       annual_gross: annualGross,
       annual_deductions: annualDeductions,
       annual_net: annualNet,
+      is_hourly: salaryType === "HOURLY",
+      salary_type: salaryType === "HOURLY" ? "Hourly" : "Monthly",
+      hourly_rate: hourlyRate,
+      overtime_hourly_rate: overtimeHourlyRate,
+      total_worked_hours: totalWorkedHours,
+      normal_hours: normalHours,
+      overtime_hours: overtimeHours,
+      normal_pay: normalPay,
+      overtime_pay: overtimePay,
       current_date: new Date().toISOString().slice(0, 10),
     });
 
@@ -2035,6 +2107,10 @@ const payslipPreview = async (req, res) => {
     // ===============================
     // TEMPLATE DATA (🔥 SAME FIELDS)
     // ===============================
+    const previewFullGross = Number(structure?.basic || 0) + Number(structure?.hra || 0) + Number(structure?.lta || 0) + Number(structure?.allowances || 0) + Number(structure?.incentives || 0) || Number(structure?.gross || 0);
+    const previewPaidComponents = String(payroll.salary_type || employee.salary_type || "MONTHLY").toUpperCase() === "MONTHLY"
+      ? getProratedSalaryComponents(structure || {}, previewFullGross, Number(payroll.gross || 0))
+      : {};
     const templateData = {
       company_name: company.company_name,
       company_logo: companyLogoBase64,
@@ -2062,13 +2138,15 @@ const payslipPreview = async (req, res) => {
       payable_days: formatPayrollDayCount(displayDayTotals.payableDays),
       approved_leave_days: formatPayrollDayCount(displayPaidLeaveDays),
       lop_days: formatPayrollDayCount(displayDayTotals.lopDays),
+      absent_days: formatPayrollDayCount(displayDayTotals.lopDays),
+      lop_amount: payroll.lop_amount || 0,
 
       // 🔥 Salary Snapshot (from payroll_processing)
-      basic: structure?.basic || 0,
-      hra: structure?.hra,
-      lta: structure?.lta || 0,
-      allowances: structure?.allowances,
-      incentives: structure?.incentives,
+      basic: previewPaidComponents.basic || 0,
+      hra: previewPaidComponents.hra || 0,
+      lta: previewPaidComponents.lta || 0,
+      allowances: previewPaidComponents.allowances || 0,
+      incentives: previewPaidComponents.incentives || 0,
       total_expenses: payroll.total_expenses || 0,
 
       pf: structure?.pf,
@@ -2082,9 +2160,19 @@ const payslipPreview = async (req, res) => {
       monthly_net: payroll.net,
       monthly_net_words: amountToWords(payroll.net),
       monthly_deductions: payroll.deductions,
+      total_payroll_deductions: roundTo2(Number(payroll.deductions || 0) + (String(payroll.salary_type || employee.salary_type || "MONTHLY").toUpperCase() === "MONTHLY" ? Number(payroll.lop_amount || 0) : 0)),
       annual_gross: payroll.annual_gross,
       annual_deductions: payroll.annual_deductions,
       annual_net: payroll.annual_net,
+      is_hourly: String(payroll.salary_type || employee.salary_type || "MONTHLY").toUpperCase() === "HOURLY",
+      salary_type: String(payroll.salary_type || employee.salary_type || "MONTHLY").toUpperCase() === "HOURLY" ? "Hourly" : "Monthly",
+      hourly_rate: payroll.hourly_rate || employee.hourly_rate || 0,
+      overtime_hourly_rate: payroll.overtime_hourly_rate || employee.overtime_hourly_rate || 0,
+      total_worked_hours: payroll.total_worked_hours || 0,
+      normal_hours: payroll.normal_hours || 0,
+      overtime_hours: payroll.overtime_hours || 0,
+      normal_pay: payroll.normal_pay || 0,
+      overtime_pay: payroll.overtime_pay || 0,
       current_date: new Date().toISOString().slice(0, 10),
     };
 

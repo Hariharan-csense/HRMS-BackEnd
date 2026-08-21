@@ -1,5 +1,8 @@
-exports.up = function(knex) {
-  return knex.schema.createTable('employee_live_locations', function(table) {
+exports.up = async function(knex) {
+  const exists = await knex.schema.hasTable('employee_live_locations');
+  if (exists) return;
+
+  await knex.schema.createTable('employee_live_locations', function(table) {
     table.increments('id').primary();
     
     // Employee reference with company isolation
@@ -44,6 +47,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('employee_live_locations');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('employee_live_locations');
 };

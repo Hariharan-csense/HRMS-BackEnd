@@ -1,5 +1,7 @@
-exports.up = function(knex) {
-  return knex.schema.createTable('audit_logs', table => {
+exports.up = async function(knex) {
+  if (await knex.schema.hasTable('audit_logs')) return;
+
+  await knex.schema.createTable('audit_logs', table => {
     table.increments('id').primary();
     table.string('action').notNullable(); // create, update, delete, login, etc.
     table.string('table_name').nullable();
@@ -16,6 +18,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('audit_logs');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('audit_logs');
 };

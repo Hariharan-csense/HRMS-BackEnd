@@ -1,5 +1,7 @@
-exports.up = function(knex) {
-  return knex.schema.createTable('attendance', function(table) {
+exports.up = async function(knex) {
+  if (await knex.schema.hasTable('attendance')) return;
+
+  await knex.schema.createTable('attendance', function(table) {
     table.increments('id').primary();
     
     // Correct foreign key
@@ -28,6 +30,6 @@ exports.up = function(knex) {
   });
 };
 
-exports.down = function(knex) {
-  return knex.schema.dropTable('attendance');
+exports.down = async function(knex) {
+  await knex.schema.dropTableIfExists('attendance');
 };
