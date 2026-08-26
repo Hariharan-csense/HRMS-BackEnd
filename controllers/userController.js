@@ -1,5 +1,8 @@
 const db = require('../db/db');
 const { v4: uuidv4 } = require('uuid');
+const bcrypt = require("bcryptjs");
+const { sendEmployeeWelcomeMail } = require("../utils/sendEmployeeWelcomeMail");
+const { generateTemporaryPassword } = require("../utils/temporaryPassword");
 
 // Get all users
 const getUsers = async (req, res) => {
@@ -179,37 +182,66 @@ const getUserById = async (req, res) => {
 // Create new user
 const createUser = async (req, res) => {
   try {
-    const { company_id } = req.user;
-    const userData = {
-      id: uuidv4(),
-      company_id,
-      ...req.body,
-      created_at: new Date(),
-      updated_at: new Date()
-    };
-    
-    await db('users').insert(userData);
-    
-    // Assign default role if provided
-    if (req.body.role_id) {
-      await db('user_roles').insert({
-        id: uuidv4(),
-        user_id: userData.id,
-        role_id: req.body.role_id,
-        created_at: new Date()
-      });
+    const company_id = req.user.company_id || req.body?.company_id;
+    const name = String(req.body?.name || "").trim();
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const role = String(req.body?.role || "employee").trim().toLowerCase();
+    if (!company_id || !name || !email) {
+      return res.status(400).json({ success: false, error: "Name, email and company are required" });
     }
+
+    const duplicate = await db("users").whereRaw("LOWER(email) = ?", [email]).first();
+    if (duplicate) {
+      return res.status(409).json({ success: false, error: "Email is already registered" });
+    }
+
+    const temporaryPassword = generateTemporaryPassword();
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    let userId;
+
+    await db.transaction(async (trx) => {
+      const [insertedId] = await trx("users").insert({
+        company_id,
+        name,
+        email,
+        password: passwordHash,
+        role,
+        department: req.body?.department || null,
+        avatar: req.body?.avatar || null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+      userId = insertedId;
+
+      if (req.body?.role_id && await trx.schema.hasTable("user_roles")) {
+        await trx("user_roles").insert({
+          id: uuidv4(),
+          user_id: userId,
+          role_id: req.body.role_id,
+          created_at: new Date(),
+        });
+      }
+
+      const company = await trx("companies").where({ id: company_id }).select("company_name").first();
+      await sendEmployeeWelcomeMail({
+        name,
+        email,
+        password: temporaryPassword,
+        role,
+        companyName: company?.company_name || "",
+      });
+    });
     
     res.status(201).json({ 
       success: true, 
-      data: { userId: userData.id },
-      message: 'User created successfully' 
+      data: { userId, emailSent: true },
+      message: 'User created successfully and login details were emailed' 
     });
   } catch (error) {
     console.error('Error creating user:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false, 
-      error: 'Failed to create user' 
+      error: 'User was not created because the welcome email could not be delivered' 
     });
   }
 };

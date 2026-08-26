@@ -11,6 +11,12 @@ const sendLeaveNotification = async (toEmails, application, employeeInfo, leaveT
   const template = handlebars.compile(templateSource);
 
   const currentYear = new Date().getFullYear();
+  const halfDaySessionLabel =
+    application.half_day_session === 'first_half'
+      ? 'First Half'
+      : application.half_day_session === 'second_half'
+        ? 'Second Half'
+        : null;
 
   const html = template({
     employeeName: employeeInfo.employee_name,
@@ -19,6 +25,7 @@ const sendLeaveNotification = async (toEmails, application, employeeInfo, leaveT
     fromDate: new Date(application.from_date).toLocaleDateString('en-IN'),
     toDate: new Date(application.to_date).toLocaleDateString('en-IN'),
     days: application.days,
+    halfDaySessionLabel,
     reason: application.reason,
     status: application.status.charAt(0).toUpperCase() + application.status.slice(1),
     applicationId: application.application_id,
@@ -30,7 +37,7 @@ const sendLeaveNotification = async (toEmails, application, employeeInfo, leaveT
     from: `"HRMS System" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
     to: toEmails.join(', '),
     replyTo: employeeInfo.employee_email, // ← Manager reply பண்ணினா employee-க்கு direct போகும்
-    subject: `New Leave Request - ${employeeInfo.employee_name} (${application.days} days)`,
+    subject: `New Leave Request - ${employeeInfo.employee_name} (${application.days} days${halfDaySessionLabel ? `, ${halfDaySessionLabel}` : ''})`,
     html,
     attachments: application.attachment_path ? [{
       filename: path.basename(application.attachment_path),

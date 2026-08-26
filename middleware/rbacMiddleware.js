@@ -1,8 +1,5 @@
 const knex = require("../db/db");
 const { hasPermission, parseModulesFromDb } = require("../utils/rbac");
-const {
-  companyHasActiveAddonModule,
-} = require("../utils/subscriptionAddons");
 
 const isSuperAdmin = (user) => {
   const roles = Array.isArray(user?.roles) ? user.roles : [];
@@ -10,48 +7,29 @@ const isSuperAdmin = (user) => {
   return hasSuperAdminRole || String(user?.role || "").toLowerCase() === "superadmin";
 };
 
-const isCeo = (user) => {
-  const roles = Array.isArray(user?.roles) ? user.roles : [];
-  const hasCeoRole = roles.some((r) => String(r || "").toLowerCase() === "ceo");
-  return hasCeoRole || String(user?.role || "").toLowerCase() === "ceo";
-};
-
-const isTopAuthority = (user) => isSuperAdmin(user) || isCeo(user);
-
-const isCompanyAdmin = (user) => {
-  const roleNames = getRoleNamesFromUser(user);
-  return roleNames.includes("admin") || roleNames.includes("ceo");
-};
-
-const hasAddonAccess = async (user, moduleKey) => {
-  if (!user?.company_id) return false;
-  const hasCompanyAddon = await companyHasActiveAddonModule(user.company_id, moduleKey);
-  if (!hasCompanyAddon) return false;
-
-  // Admin/CEO can manage/monitor purchased add-on modules for the company.
-  if (isCompanyAdmin(user)) return true;
-
-  return false;
-};
-
-const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
-  const roleNames = getRoleNamesFromUser(user);
-  const isAdmin = roleNames.includes("admin");
-  if (!isAdmin) return false;
-
-  const normalizedModule = String(moduleKey || "").toLowerCase();
-  const normalizedSubmodule = String(submoduleKey || "").toLowerCase();
-
-  if (normalizedModule === "payroll") return true;
-  if (normalizedModule === "employees" && normalizedSubmodule === "profile") return true;
-  if (normalizedModule === "expenses" && normalizedSubmodule === "claims") return true;
-  if (
-    normalizedModule === "pulse_surveys" &&
-    ["my_surveys", "feedback", "respond"].includes(normalizedSubmodule)
-  ) {
+const isAdmin = (user) => {
+  const primaryRole = String(user?.role || "").toLowerCase();
+  const accountType = String(user?.type || "").toLowerCase();
+  // Trust only the primary account identity for full access. This supports
+  // Admin/CEO records stored in either users or employees without allowing an
+  // ordinary Employee's additional role assignment to become a bypass.
+  if (["admin", "ceo"].includes(primaryRole) || accountType === "admin") {
     return true;
   }
+  if (accountType === "employee") return false;
+  const roles = Array.isArray(user?.roles) ? user.roles : [];
+  const authorityRoles = new Set(["admin", "ceo"]);
+  const hasAdminRole = roles.some((r) =>
+    authorityRoles.has(String(r || "").toLowerCase()),
+  );
+  return hasAdminRole;
+};
 
+const isTopAuthority = (user) => isSuperAdmin(user);
+
+const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
+  // Saved role permissions are authoritative. COMP050 Admin/CEO full access is
+  // handled separately by isInternalCompanyAdmin.
   return false;
 };
 
@@ -141,10 +119,11 @@ const resolveRbacContext = async (req) => {
 
   const context = {
     isTopAuthority: isTopAuthority(req.user),
+    isAdmin: isAdmin(req.user),
     effectiveRoles: [],
   };
 
-  if (!context.isTopAuthority) {
+  if (!context.isTopAuthority && !context.isAdmin) {
     context.effectiveRoles = await fetchEffectiveRoles(req.user);
   }
 
@@ -156,8 +135,7 @@ const requirePermission = (moduleKey, action, options = {}) => {
   return async (req, res, next) => {
     try {
       const context = await resolveRbacContext(req);
-      if (context.isTopAuthority) return next();
-      if (await hasAddonAccess(req.user, moduleKey)) return next();
+      if (context.isTopAuthority || context.isAdmin) return next();
       if (hasDefaultAdminAccess(req.user, moduleKey, options.submodule)) return next();
 
       // Pulse self-service pages should be available to employees; controller logic still
@@ -204,9 +182,8 @@ const requireAnyPermission = (permissions = []) => {
   return async (req, res, next) => {
     try {
       const context = await resolveRbacContext(req);
-      if (context.isTopAuthority) return next();
+      if (context.isTopAuthority || context.isAdmin) return next();
       for (const requiredPermission of permissions) {
-        if (await hasAddonAccess(req.user, requiredPermission.module)) return next();
         if (
           hasDefaultAdminAccess(
             req.user,

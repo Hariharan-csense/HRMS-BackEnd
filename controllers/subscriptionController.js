@@ -1884,6 +1884,7 @@ const updateAddonUserAssignments = async (req, res) => {
 const getCompanySubscription = async (req, res) => {
   try {
     const companyId = req.user.company_id;
+    const { getInternalFullAccessCompany } = require("../utils/internalCompany");
     const planColumns = await getPlanSchemaInfo();
     const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
     const storageField = getPlanStorageField(planColumns);
@@ -1894,6 +1895,8 @@ const getCompanySubscription = async (req, res) => {
         message: "Company context not found for current user",
       });
     }
+
+    const internalCompany = await getInternalFullAccessCompany(companyId, db);
 
     const subscription = await db("company_subscriptions")
       .select(
@@ -1918,8 +1921,18 @@ const getCompanySubscription = async (req, res) => {
     if (!subscription) {
       return res.json({
         success: true,
-        data: null,
-        message: "No active subscription found",
+        data: internalCompany
+          ? {
+              status: "active",
+              plan_name: "Internal full access",
+              plan_description: "All modules",
+              is_internal_company: true,
+              addons: [],
+            }
+          : null,
+        message: internalCompany
+          ? "Internal company has full module access"
+          : "No active subscription found",
       });
     }
 
@@ -1949,6 +1962,7 @@ const getCompanySubscription = async (req, res) => {
       success: true,
       data: {
         ...subscription,
+        is_internal_company: Boolean(internalCompany),
         addons: await getSubscriptionAddons(subscription.id),
         days_remaining: Math.max(0, daysRemaining),
         is_trial_active: isTrialActive,

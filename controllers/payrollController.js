@@ -5,6 +5,7 @@ const path = require("path");
 const handlebars = require("handlebars");
 const pdf = require("html-pdf");
 const { sendEmailWithAttachment } = require("../utils/mailer"); // SMTP module
+const { calculateHourlyPayroll, calculateShiftHours } = require("../utils/hourlyPayroll");
 
 const ensurePayrollAuditTable = async () => {
   const exists = await knex.schema.hasTable("payroll_audit_trail");
@@ -1419,21 +1420,29 @@ const processPayroll = async (req, res) => {
 
     // Hourly payroll uses only finalized attendance rows. `hours_worked` and
     // `overtime_hours` are produced by the existing checkout/shift logic.
-    const validHourlyAttendance = attendanceRows.filter((row) => {
-      const status = normalizeAttendanceStatus(row.status);
-      return row.check_out && ["present", "late", "grace", "half"].includes(status) && Number(row.hours_worked || 0) > 0;
-    });
-    const totalWorkedHours = roundTo2(validHourlyAttendance.reduce((sum, row) => sum + Number(row.hours_worked || 0), 0));
-    const overtimeHours = roundTo2(validHourlyAttendance.reduce((sum, row) => sum + Math.min(Number(row.hours_worked || 0), Math.max(0, Number(row.overtime_hours || 0))), 0));
-    const normalHours = roundTo2(Math.max(0, totalWorkedHours - overtimeHours));
     const hourlyRate = roundTo2(Number(employee.hourly_rate || 0));
     const overtimeHourlyRate = roundTo2(Number(employee.overtime_hourly_rate || 0));
     if (salaryType === "HOURLY" && hourlyRate <= 0) {
       return res.status(400).json({ message: "Hourly employee requires a positive hourly rate" });
     }
-    const normalPay = salaryType === "HOURLY" ? roundTo2(normalHours * hourlyRate) : 0;
-    const overtimePay = salaryType === "HOURLY" && overtimeHourlyRate > 0 ? roundTo2(overtimeHours * overtimeHourlyRate) : 0;
-    const grossEarnings = salaryType === "HOURLY" ? roundTo2(normalPay + overtimePay) : earnedGross;
+    const employeeShift = employee.shift_id
+      ? await knex("shifts").where({ id: employee.shift_id }).first()
+      : null;
+    const hourlyCalculation = calculateHourlyPayroll({
+      attendanceRows,
+      standardHoursPerDay: calculateShiftHours(
+        employeeShift?.start_time,
+        employeeShift?.end_time,
+        8,
+      ),
+      hourlyRate,
+      overtimeHourlyRate,
+    });
+    const { totalWorkedHours, normalHours, overtimeHours, normalPay, overtimePay } =
+      salaryType === "HOURLY"
+        ? hourlyCalculation
+        : { totalWorkedHours: 0, normalHours: 0, overtimeHours: 0, normalPay: 0, overtimePay: 0 };
+    const grossEarnings = salaryType === "HOURLY" ? hourlyCalculation.grossEarnings : earnedGross;
     const paidComponents = salaryType === "MONTHLY"
       ? getProratedSalaryComponents(payrollStructure, monthlyGross, earnedGross)
       : {};
@@ -1698,12 +1707,35 @@ const getPayrollRecords = async (req, res) => {
   try {
     let query = knex("payroll_processing")
       .leftJoin("employees", "payroll_processing.employee_id", "employees.id")
+      .leftJoin("designations", function () {
+        this.on("employees.designation_id", "=", "designations.id").andOn(
+          "designations.company_id",
+          "=",
+          "payroll_processing.company_id",
+        );
+      })
+      .leftJoin("payroll_structures", function () {
+        this.on("payroll_processing.employee_id", "=", "payroll_structures.employee_id").andOn(
+          "payroll_structures.company_id",
+          "=",
+          "payroll_processing.company_id",
+        );
+      })
       .where("payroll_processing.company_id", companyId)
       .select(
         "payroll_processing.*",
         "employees.first_name",
         "employees.last_name",
         "employees.employee_id as employee_code",
+        "employees.doj as date_of_joining",
+        "designations.name as designation_name",
+        "payroll_structures.gross as configured_gross",
+        "payroll_structures.pf as provident_fund",
+        "payroll_structures.esi as esi_deduction",
+        "payroll_structures.pt as professional_tax",
+        "payroll_structures.other_deductions",
+        "payroll_structures.tds_percentage",
+        "payroll_structures.tds as legacy_tds_percentage",
       )
       .orderBy("month", "desc");
 
@@ -1737,20 +1769,50 @@ const getPayrollRecords = async (req, res) => {
     }
     // Admin/HR/Finance sees all in company
 
-    const records = (await query).map((record) => {
+    const records = await Promise.all((await query).map(async (record) => {
       const dayTotals = normalizePayrollDayTotals({
         totalDays: record.total_days,
         payableDays: record.payable_days,
         lopDays: record.lop_days,
       });
 
+      const month = String(record.month || "").slice(0, 7);
+      let lateCount = 0;
+      let graceCount = 0;
+      let permissionCount = 0;
+
+      if (/^\d{4}-\d{2}$/.test(month)) {
+        const [attendanceCounts, permissionCounts] = await Promise.all([
+          knex("attendance")
+            .where({ company_id: companyId, employee_id: record.employee_id })
+            .whereRaw("DATE_FORMAT(check_in, '%Y-%m') = ?", [month])
+            .select(
+              knex.raw("COUNT(DISTINCT CASE WHEN LOWER(status) = 'late' THEN DATE(check_in) END) AS late_count"),
+              knex.raw("COUNT(DISTINCT CASE WHEN LOWER(status) = 'grace' THEN DATE(check_in) END) AS grace_count"),
+            )
+            .first(),
+          knex("leave_permissions")
+            .where({ company_id: companyId, employee_id: record.employee_id })
+            .whereRaw("DATE_FORMAT(permission_date, '%Y-%m') = ?", [month])
+            .whereRaw("LOWER(status) = 'approved'")
+            .countDistinct({ permission_count: "permission_date" })
+            .first(),
+        ]);
+        lateCount = Number(attendanceCounts?.late_count || 0);
+        graceCount = Number(attendanceCounts?.grace_count || 0);
+        permissionCount = Number(permissionCounts?.permission_count || 0);
+      }
+
       return {
         ...record,
         total_days: dayTotals.totalDays,
         payable_days: dayTotals.payableDays,
         lop_days: dayTotals.lopDays,
+        late_count: lateCount,
+        permission_count: permissionCount,
+        grace_count: graceCount,
       };
-    });
+    }));
 
     res.json({
       success: true,

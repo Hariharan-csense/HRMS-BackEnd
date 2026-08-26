@@ -20,6 +20,11 @@ let modelsLoaded = false;
 let modelLoadError = null;
 const descriptorCache = new Map();
 let hasFaceTemplatesTableCache = null;
+const companyDescriptorSync = new Map();
+const FACE_DESCRIPTOR_SYNC_TTL_MS = Math.max(
+  60_000,
+  Number(process.env.FACE_DESCRIPTOR_SYNC_TTL_MS) || 10 * 60_000,
+);
 
 const loadModels = async () => {
   if (modelsLoaded) return;
@@ -416,6 +421,39 @@ const warmFaceDescriptorCache = async (companyId) => {
   return { warmed, skipped };
 };
 
+const synchronizeCompanyDescriptors = async (companyId, force = false) => {
+  const key = Number(companyId);
+  const now = Date.now();
+  const current = companyDescriptorSync.get(key);
+
+  if (!force && current?.completedAt && now - current.completedAt < FACE_DESCRIPTOR_SYNC_TTL_MS) {
+    return current.result;
+  }
+
+  if (current?.promise) return current.promise;
+
+  const promise = warmFaceDescriptorCache(key)
+    .then((result) => {
+      companyDescriptorSync.set(key, {
+        promise: null,
+        completedAt: Date.now(),
+        result,
+      });
+      return result;
+    })
+    .catch((error) => {
+      companyDescriptorSync.delete(key);
+      throw error;
+    });
+
+  companyDescriptorSync.set(key, {
+    promise,
+    completedAt: current?.completedAt || 0,
+    result: current?.result,
+  });
+  return promise;
+};
+
 const warmAllEmployeeDescriptors = async () => {
   const companyRows = await knex("employees")
     .whereNotNull("company_id")
@@ -428,7 +466,7 @@ const warmAllEmployeeDescriptors = async () => {
     const companyId = Number(row.company_id);
     if (!companyId) continue;
 
-    const result = await warmFaceDescriptorCache(companyId);
+    const result = await synchronizeCompanyDescriptors(companyId, true);
     totalWarmed += result.warmed;
     totalSkipped += result.skipped;
   }
@@ -604,12 +642,15 @@ const findEmployeeByDescriptor = async (
   const capturedDescriptor = normalizeIncomingDescriptor(descriptor);
   const threshold = Number(options.threshold) || 0.5;
   const minimumMargin = Number(options.minimumMargin) || 0.04;
-  let templates = await getCompanyPersistedDescriptors(companyId);
 
-  if (!templates.length) {
-    await warmFaceDescriptorCache(companyId);
-    templates = await getCompanyPersistedDescriptors(companyId);
-  }
+  // Always synchronize templates from employee document photos before
+  // matching. Previously this ran only when the entire face_templates table
+  // was empty, so after the first employee was registered every later
+  // employee was never enrolled and could never match. Cached/persisted
+  // descriptors make this inexpensive after the initial synchronization, and
+  // the file cache key also refreshes a template when its photo is replaced.
+  await synchronizeCompanyDescriptors(companyId);
+  const templates = await getCompanyPersistedDescriptors(companyId);
 
   if (!templates.length) {
     const error = new Error(

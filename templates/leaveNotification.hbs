@@ -39,6 +39,13 @@
         <span class="value">{{fromDate}} to {{toDate}} ({{days}} days)</span>
       </div>
 
+      {{#if halfDaySessionLabel}}
+      <div class="detail">
+        <span class="label">Half Day Session:</span>
+        <span class="value">{{halfDaySessionLabel}}</span>
+      </div>
+      {{/if}}
+
       <div class="detail">
         <span class="label">Reason:</span>
         <span class="value">{{reason}}</span>

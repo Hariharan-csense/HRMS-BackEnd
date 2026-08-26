@@ -510,7 +510,7 @@ const getEmployeeDepartmentLookup = async ({
   return lookup;
 };
 
-const getKpiTemplateData = async ({ employeeIds, selectedYear, selectedMonth }) => {
+const getKpiTemplateData = async ({ companyId, employeeIds, selectedYear, selectedMonth }) => {
   const templateTable = await firstExistingTable([
     "kpitemplate",
     "kpi_templates",
@@ -530,6 +530,11 @@ const getKpiTemplateData = async ({ employeeIds, selectedYear, selectedMonth }) 
   const createdCol = firstColumn(columns, ["createdAt", "created_at", "date"]);
   const titleCol = firstColumn(columns, ["title", "name"]);
   const totalScoreCol = firstColumn(columns, ["totalScore", "total_score", "score"]);
+  const companyCol = firstColumn(columns, [
+    "company_id",
+    "organizationId",
+    "organization_id",
+  ]);
   if (!idCol) return { templates: [], templateIds: [] };
 
   const query = knex(templateTable).select(`${idCol} as id`);
@@ -541,6 +546,8 @@ const getKpiTemplateData = async ({ employeeIds, selectedYear, selectedMonth }) 
   else query.select(knex.raw("NULL as title"));
   if (totalScoreCol) query.select(`${totalScoreCol} as totalScore`);
   else query.select(knex.raw("0 as totalScore"));
+
+  if (companyCol && companyId) query.where(companyCol, companyId);
 
   if (ownerCol && employeeIds.length) {
     query.whereIn(ownerCol, employeeIds);
@@ -899,6 +906,7 @@ const getKpiDashboardWidgets = async (req, res) => {
     });
 
     const { templates, templateIds } = await getKpiTemplateData({
+      companyId,
       employeeIds: scope.employeeIds,
       selectedYear: normalizedYear,
       selectedMonth: normalizedMonth,

@@ -99,6 +99,7 @@ const RBAC_MODULE_CATALOG = [
     submodules: [
       { key: "resignations", label: "Resignations" },
       { key: "checklist", label: "Exit Checklist" },
+      { key: "no_due", label: "No Due Form" },
       { key: "settlement", label: "F&F Settlement" },
     ],
   },

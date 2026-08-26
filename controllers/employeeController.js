@@ -4,6 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const bcrypt = require("bcryptjs");
 const { sendEmployeeWelcomeMail } = require("../utils/sendEmployeeWelcomeMail");
+const { generateTemporaryPassword } = require("../utils/temporaryPassword");
 const {
   initializeLeaveBalance,
   calculateLeaveForConfirmedEmployee,
@@ -93,6 +94,9 @@ const textIncludesLiveTracking = (value) => {
 };
 
 const getLiveTrackingSeatLimit = async (companyId) => {
+  const { getInternalFullAccessCompany } = require("../utils/internalCompany");
+  if (await getInternalFullAccessCompany(companyId, knex)) return null;
+
   const subscription = await knex("company_subscriptions")
     .leftJoin(
       "subscription_plans",
@@ -668,10 +672,7 @@ const addEmployee = async (req, res) => {
       }
 
       // Generate temporary password
-      const tempPassword =
-        Math.random().toString(36).slice(2, 10).toUpperCase() +
-        Math.random().toString(36).slice(2, 4).toUpperCase() +
-        "!";
+      const tempPassword = generateTemporaryPassword();
       const hashedPassword = await bcrypt.hash(tempPassword, 10);
 
       const [newId] = await knex("employees").insert({
@@ -713,7 +714,7 @@ const addEmployee = async (req, res) => {
       });
 
       console.log(
-        `[EMPLOYEE CREATION DEBUG] New Employee ID: ${newId}, Email: ${email.trim().toLowerCase()}, Temp Password: ${tempPassword}`,
+        `[EMPLOYEE CREATION] New employee created: ${newId}, ${email.trim().toLowerCase()}`,
       );
 
       employeeId = newId;
@@ -724,13 +725,22 @@ const addEmployee = async (req, res) => {
           name: `${first_name.trim()} ${last_name.trim()}`,
           email: email.trim().toLowerCase(),
           password: tempPassword,
+          role: finalRoleName,
         });
         message =
           "Employee added successfully! Welcome email sent with temporary password.";
       } catch (emailError) {
         console.error("Error sending welcome email:", emailError);
-        message =
-          "Employee added successfully! Warning: Failed to send welcome email.";
+        // Avoid leaving behind an account whose temporary password was never
+        // delivered. Related rows are cascade-deleted with the employee.
+        await knex("employees")
+          .where({ id: newId, company_id: companyId })
+          .del();
+        cleanupFiles(req.files);
+        return res.status(502).json({
+          message:
+            "Employee was not created because the welcome email could not be delivered. Please verify the email address and mail configuration.",
+        });
       }
 
       // Initialize leave balance

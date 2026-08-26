@@ -161,6 +161,7 @@ async function doCheckIn({
   deviceInfo = 'Web',
   shiftId = null,
   shiftType = 'regular',
+  withLsk = false,
   punchTime = null
 }) {
   const employee = await knex('employees')
@@ -300,6 +301,19 @@ async function doCheckIn({
     }
   }
 
+  // LSK employees have an approved arrival window from 09:30 through 10:00.
+  // Keep this decision in the service so every client and downstream payroll
+  // calculation receives the same persisted attendance status.
+  const lskWindowStart = new Date(checkInTime);
+  lskWindowStart.setHours(9, 30, 0, 0);
+  const lskWindowEnd = new Date(checkInTime);
+  lskWindowEnd.setHours(10, 0, 0, 0);
+  const isWithinLskWindow =
+    Boolean(withLsk) && checkInTime >= lskWindowStart && checkInTime <= lskWindowEnd;
+  if (isFirstPunch && isWithinLskWindow) {
+    attendanceStatus = 'present';
+  }
+
   const insertPayload = {
     company_id: companyId,
     employee_id: employeeId,
@@ -308,6 +322,7 @@ async function doCheckIn({
     check_in_image_url: resolveStoredImageUrl(imageData, companyId),
     device_info: deviceInfo,
     status: attendanceStatus,
+    with_lsk: Boolean(withLsk),
     shift_type: finalShiftType,
     shift_id: finalShiftId
   };
@@ -338,7 +353,10 @@ async function doCheckOut({
     throw new Error('Invalid punch time');
   }
 
-  const attendanceDay = effectivePunchTime.toISOString().slice(0, 10);
+  // Match the local-day convention used by check-in and MySQL DATE(check_in).
+  // Using toISOString() here shifts early-morning punches to the previous UTC
+  // date in positive-offset time zones, so the shared record cannot be found.
+  const attendanceDay = formatDateOnly(effectivePunchTime);
 
   const record = await knex('attendance')
     .where({

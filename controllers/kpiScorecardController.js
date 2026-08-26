@@ -125,6 +125,25 @@ const parseLeadIndicatorDefinitions = (value) => {
     }));
 };
 
+const evaluateLeadIndicatorStatus = (indicator, value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "missing";
+  if (indicator.type === "yesno") {
+    const normalized = raw.toLowerCase();
+    if (["yes", "y", "true", "1"].includes(normalized)) return "green";
+    if (["no", "n", "false", "0"].includes(normalized)) return "red";
+    return "yellow";
+  }
+
+  const numericValue = parseOptionalNumber(raw);
+  const target = parseOptionalNumber(indicator.targetValue);
+  const minimum = parseOptionalNumber(indicator.minimumValue);
+  if (numericValue === null) return "yellow";
+  if (minimum !== null && numericValue < minimum) return "red";
+  if (target !== null && numericValue < target) return "yellow";
+  return "green";
+};
+
 const getAssignedLeadIndicatorKeys = (parameters = []) => {
   const keys = new Set();
   parameters.forEach((parameter) => {
@@ -729,6 +748,7 @@ exports.getAssignedLeadIndicators = async (req, res) => {
 
           const rowKey = `li-${index}`;
           const values = daily[rowKey] || {};
+          const todayValue = String(values?.[todayKey] || "");
           assignments.push({
             parameterId: String(row.parameterId),
             scorecardId: String(row.scorecardId),
@@ -742,7 +762,8 @@ exports.getAssignedLeadIndicators = async (req, res) => {
             minimumValue: indicator.minimumValue,
             values,
             todayKey,
-            todayValue: String(values?.[todayKey] || ""),
+            todayValue,
+            status: evaluateLeadIndicatorStatus(indicator, todayValue),
             periodDate: row.periodDate,
           });
         },

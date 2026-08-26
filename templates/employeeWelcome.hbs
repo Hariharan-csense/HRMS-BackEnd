@@ -1,70 +1,19 @@
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8" />
-<title>Welcome</title>
-
-<style>
-body {
-  font-family: Arial, sans-serif;
-  background:#f4f6f8;
-  padding:20px;
-}
-.card {
-  max-width:600px;
-  margin:auto;
-  background:#ffffff;
-  border-radius:10px;
-  padding:30px;
-  box-shadow:0 4px 10px rgba(0,0,0,0.05);
-}
-h2 {
-  color:#2c3e50;
-}
-ul {
-  padding-left:18px;
-}
-li {
-  margin-bottom:8px;
-}
-.btn {
-  display:inline-block;
-  padding:12px 20px;
-  background:#4CAF50;
-  color:white;
-  text-decoration:none;
-  border-radius:6px;
-  margin-top:15px;
-}
-.footer {
-  margin-top:25px;
-  font-size:12px;
-  color:#888;
-  text-align:center;
-}
-</style>
-
-</head>
-
-<body>
-
-<div class="card">
-<h2>Welcome {{name}} 👋</h2>
-
-<p>Your employee account has been created successfully.</p>
-
-<ul>
-<li><strong>Email:</strong> {{email}}</li>
-<li><strong>Temporary Password:</strong> {{password}}</li>
-</ul>
-
-<a href="https://hrms.procease.co/login" class="btn">Login to Procease HRMS</a>
-
-<div class="footer">
-© {{currentYear}} Procease HRMS System
-</div>
-
-</div>
-
-</body>
-</html>
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><title>Welcome to HRMS</title></head>
+<body style="margin:0;padding:24px;background:#f4f6f8;font-family:Arial,sans-serif;color:#243040;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;background:#fff;border-radius:10px;padding:32px;"><tr><td>
+<h2 style="margin:0 0 18px;color:#17324d;">Welcome, {{name}}</h2>
+<p>Your HRMS account has been created successfully.</p>
+{{#if companyName}}<p><strong>Company:</strong> {{companyName}}</p>{{/if}}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="10" style="background:#f7fafc;border-radius:6px;margin:20px 0;">
+<tr><td><strong>Email</strong></td><td>{{email}}</td></tr>
+<tr><td><strong>Temporary password</strong></td><td style="font-family:Consolas,monospace;">{{password}}</td></tr>
+<tr><td><strong>Role</strong></td><td>{{role}}</td></tr>
+</table>
+<p>For security, sign in and change this temporary password immediately.</p>
+<p style="text-align:center;margin:28px 0;"><a href="{{loginUrl}}" style="display:inline-block;padding:12px 22px;background:#16a085;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;">Sign in to HRMS</a></p>
+<p style="margin-top:28px;font-size:12px;color:#718096;text-align:center;">&copy; {{currentYear}} Procease HRMS. This is an automated message.</p>
+</td></tr></table></td></tr></table>
+</body></html>

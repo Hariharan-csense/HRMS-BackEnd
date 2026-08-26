@@ -434,6 +434,12 @@ const validateAssignedClientLocationForCheckIn = async ({
 // Check current attendance status
 const getAttendanceStatus = async (req, res) => {
   try {
+    // This response contains employee-specific attendance and must never be
+    // reused for a different authenticated account by a browser or proxy.
+    res.set("Cache-Control", "private, no-store, no-cache, must-revalidate");
+    res.set("Pragma", "no-cache");
+    res.set("Vary", "Authorization, Cookie");
+
     const companyId = Number(req.user.company_id);
     if (!companyId && hasAnyRole(req.user, ["superadmin"])) {
       return res.json({
@@ -802,6 +808,26 @@ const checkIn = async (req, res) => {
       selectedClientIdRaw === undefined || selectedClientIdRaw === null
         ? null
         : Number(selectedClientIdRaw);
+    const withLsk = [true, 1, "1", "true", "on"].includes(
+      req.body?.withLsk ?? req.body?.with_lsk,
+    );
+
+    if (withLsk) {
+      const company = await knex("companies")
+        .where({ id: companyId })
+        .select("company_name")
+        .first();
+      const normalizedCompanyName = String(company?.company_name || "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .toLowerCase();
+      if (normalizedCompanyName !== "csense management solutions pvt ltd") {
+        return res.status(403).json({
+          success: false,
+          message: "With LSK is available only for CSense Management Solutions Pvt Ltd",
+        });
+      }
+    }
 
     await validateAssignedClientLocationForCheckIn({
       req,
@@ -829,6 +855,7 @@ const checkIn = async (req, res) => {
       shiftId: shift?.id || null,
       shiftType: "regular", // Use string that will be converted to numeric
       clientId: Number.isInteger(selectedClientId) ? selectedClientId : null,
+      withLsk,
     });
 
     // 5️⃣ Return success
@@ -901,6 +928,25 @@ const resolveFacialAttendanceAction = async ({ companyId, employeeId }) => {
   return "check-in";
 };
 
+const assertFacialCheckoutIsNotImmediate = async ({ companyId, employeeId }) => {
+  const activeAttendance = await knex("attendance")
+    .where({ company_id: companyId, employee_id: employeeId })
+    .whereNull("check_out")
+    .orderBy("check_in", "desc")
+    .first();
+
+  if (!activeAttendance?.check_in) return;
+
+  const elapsedMs = Date.now() - new Date(activeAttendance.check_in).getTime();
+  if (Number.isFinite(elapsedMs) && elapsedMs < 60 * 1000) {
+    const error = new Error(
+      "Check-out is blocked for 60 seconds after check-in. Please move away and try again later.",
+    );
+    error.statusCode = 409;
+    throw error;
+  }
+};
+
 const facialRecognitionAttendance = async (req, res) => {
   try {
     const companyId = Number(req.user?.company_id);
@@ -951,6 +997,7 @@ const facialRecognitionAttendance = async (req, res) => {
         shiftType: "regular",
       });
     } else {
+      await assertFacialCheckoutIsNotImmediate({ companyId, employeeId });
       const checkoutResult = await doCheckOut({
         employeeId,
         companyId,
@@ -1062,6 +1109,7 @@ const facialRecognitionDescriptorAttendance = async (req, res) => {
         shiftType: "regular",
       });
     } else {
+      await assertFacialCheckoutIsNotImmediate({ companyId, employeeId });
       const checkoutResult = await doCheckOut({
         employeeId,
         companyId,
@@ -1557,14 +1605,14 @@ const createOverride = async (req, res) => {
         String(overriddenStatus || "").toLowerCase(),
       ) && !isLeaveOverride;
 
-    if (
-      requiresTimeUpdate &&
-      (!normalizedRequestedCheckIn || !normalizedRequestedCheckOut)
-    ) {
-      return res.status(400).json({
-        message: "Valid requested check-in and check-out times are required",
-      });
-    }
+    // if (
+    //   requiresTimeUpdate &&
+    //   (!normalizedRequestedCheckIn || !normalizedRequestedCheckOut)
+    // ) {
+    //   return res.status(400).json({
+    //     message: "Valid requested check-in and check-out times are required",
+    //   });
+    // }
 
     let attendance = null;
     const normalizedEmployeeId = String(employeeId).trim();

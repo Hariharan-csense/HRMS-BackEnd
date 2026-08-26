@@ -14,9 +14,7 @@ const moment = require("moment");
 
 const { generateAutoNumber } = require("../utils/generateAutoNumber");
 
-const {
-  sendRegistrationSuccessMail,
-} = require("../utils/sendRegistrationSuccessMail");
+const { sendEmployeeWelcomeMail } = require("../utils/sendEmployeeWelcomeMail");
 
 const {
   buildEmployeeDefaultModules,
@@ -701,15 +699,17 @@ const registerUser = async (req, res) => {
           // Don't fail registration if leave balance creation fails
         }
       }
+
+      // Do not commit an account whose login credentials could not be handed
+      // off to the configured mail server.
+      await sendEmployeeWelcomeMail({
+        name: createdUser.name,
+        email: createdUser.email,
+        password,
+        role: createdUser.role,
+        companyName: role === "admin" ? createdCompanyName : null,
+      });
     });
-
-    /* ---------------- SEND REGISTRATION MAIL (OUTSIDE TRANSACTION) ---------------- */
-
-    sendRegistrationSuccessMail(
-      createdUser,
-
-      role === "admin" ? createdCompanyName : null,
-    ).catch((err) => console.error("Registration mail failed:", err));
 
     /* ---------------- TOKEN ---------------- */
 
