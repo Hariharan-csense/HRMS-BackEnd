@@ -21,9 +21,9 @@
 
       if (search) {
         query = query.where(function() {
-          this.where('title', 'ilike', `%${search}%`)
-              .orWhere('department', 'ilike', `%${search}%`)
-              .orWhere('location', 'ilike', `%${search}%`);
+          this.whereRaw('LOWER(title) LIKE ?', [`%${String(search).toLowerCase()}%`])
+              .orWhereRaw('LOWER(department) LIKE ?', [`%${String(search).toLowerCase()}%`])
+              .orWhereRaw('LOWER(location) LIKE ?', [`%${String(search).toLowerCase()}%`]);
         });
       }
 
@@ -97,7 +97,7 @@
         benefits
       } = req.body;
 
-      const [requirement] = await knex('job_requirements').insert({
+      const [requirementId] = await knex('job_requirements').insert({
         company_id: companyId,
         title,
         department,
@@ -108,14 +108,18 @@
         status: status || 'active',
         positions: positions || 1,
         urgency: urgency || 'medium',
-        closing_date,
+        closing_date: closing_date || null,
         required_skills: required_skills ? JSON.stringify(required_skills) : null,
         preferred_skills: preferred_skills ? JSON.stringify(preferred_skills) : null,
         qualifications,
         responsibilities,
         benefits,
         created_by: req.user.id
-      }).returning('*');
+      });
+
+      const requirement = await knex('job_requirements')
+        .where({ id: requirementId, company_id: companyId })
+        .first();
 
       res.status(201).json({
         success: true,
@@ -137,6 +141,10 @@
       const { id } = req.params;
       const companyId = req.user.company_id;
       const updateData = { ...req.body, updated_by: req.user.id };
+
+      if (Object.prototype.hasOwnProperty.call(updateData, 'closing_date')) {
+        updateData.closing_date = updateData.closing_date || null;
+      }
 
       // Handle JSON fields
       if (updateData.required_skills) {
@@ -214,23 +222,30 @@
       const { filled_positions } = req.body;
       const companyId = req.user.company_id;
 
-      const [updatedRequirement] = await knex('job_requirements')
+      const updated = await knex('job_requirements')
         .where({ id, company_id: companyId })
-        .update({ filled_positions })
-        .returning('*');
+        .update({ filled_positions });
 
-      if (!updatedRequirement) {
+      if (!updated) {
         return res.status(404).json({
           success: false,
           message: 'Job requirement not found'
         });
       }
 
+      let updatedRequirement = await knex('job_requirements')
+        .where({ id, company_id: companyId })
+        .first();
+
       // Check if all positions are filled, then update status to closed
       if (updatedRequirement.filled_positions >= updatedRequirement.positions) {
         await knex('job_requirements')
           .where({ id, company_id: companyId })
           .update({ status: 'closed' });
+        updatedRequirement = {
+          ...updatedRequirement,
+          status: 'closed'
+        };
       }
 
       res.json({

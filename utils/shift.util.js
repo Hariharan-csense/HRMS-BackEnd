@@ -25,19 +25,30 @@ async function getEmployeeShift(employeeId, companyId) {
       return null;
     }
 
-    if (!employee.shift_id) {
-      console.log(`Employee ${empId} has no shift_id assigned`);
-      return null;
+    const assignedShift = employee.shift_id
+      ? await knex("shifts")
+          .where({ id: employee.shift_id, company_id: compId })
+          .first()
+      : null;
+
+    if (assignedShift) return assignedShift;
+
+    // Some legacy employee rows retain a deleted/stale shift_id. When the
+    // company has exactly one configured shift, it is the unambiguous fallback
+    // for attendance cut-offs and the post-shift Daily Log prompt.
+    const companyShifts = await knex("shifts")
+      .where({ company_id: compId })
+      .orderBy("id", "asc")
+      .limit(2);
+    if (companyShifts.length === 1) {
+      console.warn(
+        `Employee ${empId} has no valid assigned shift; using company shift ${companyShifts[0].id}`,
+      );
+      return companyShifts[0];
     }
 
-    const shift = await knex("shifts").where({ id: employee.shift_id }).first();
-
-    if (!shift) {
-      console.log(`Shift not found for shift_id ${employee.shift_id}`);
-      return null;
-    }
-
-    return shift;
+    console.log(`Employee ${empId} has no valid shift assigned`);
+    return null;
   } catch (err) {
     console.error("getEmployeeShift error:", err);
     return null;

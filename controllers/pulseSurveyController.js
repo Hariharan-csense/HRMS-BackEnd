@@ -562,16 +562,6 @@ const handleOwnChatWebhook = async (req, res) => {
   }
 };
 
-const getUserRoleNames = (user) =>
-  [...(Array.isArray(user?.roles) ? user.roles : []), user?.role]
-    .map((role) => String(role || "").toLowerCase())
-    .filter(Boolean);
-
-const isAdminSurveyUser = (user) => {
-  const roles = getUserRoleNames(user);
-  return roles.includes("admin") || roles.includes("ceo");
-};
-
 const getSurveyEmployeeId = (user) => {
   const mappedEmployeeId = Number(user?.employee_id || 0);
   if (mappedEmployeeId) return mappedEmployeeId;
@@ -709,6 +699,7 @@ const createSurveyNotifications = async ({
   const actionUrl = `/pulse-surveys/respond/${surveyId}`;
   const rows = recipients.map((employee) => ({
     user_id: String(employee.id),
+    company_id: companyId,
     title: "New Pulse Survey",
     description: String(
       message || title || "Please complete your new survey.",
@@ -839,6 +830,7 @@ const createPulseSurvey = async (req, res) => {
 
     const pushSummaryPromise = sendPushToUsers({
       userIds: recipients.map((employee) => employee.id),
+      companyId,
       title: "New Pulse Survey",
       body: String(
         message || title || "Please complete your new survey.",
@@ -1297,18 +1289,11 @@ const getMyPulseSurveys = async (req, res) => {
 
   const companyId = req.user.company_id;
   const employeeId = getSurveyEmployeeId(req.user);
-  const canSeeAllCompanySurveys = isAdminSurveyUser(req.user);
 
   try {
-    const surveysQuery = canSeeAllCompanySurveys
-      ? db("pulse_surveys as s")
-      : db("pulse_survey_recipients as pr").join(
-          "pulse_surveys as s",
-          "s.id",
-          "pr.survey_id",
-        );
-
-    const surveys = await surveysQuery
+    // My Surveys is always recipient-scoped, including for admin/CEO users.
+    const surveys = await db("pulse_survey_recipients as pr")
+      .join("pulse_surveys as s", "s.id", "pr.survey_id")
       .leftJoin("pulse_survey_responses as r", function () {
         this.on("r.survey_id", "=", "s.id").andOn(
           "r.employee_id",
@@ -1316,15 +1301,8 @@ const getMyPulseSurveys = async (req, res) => {
           db.raw("?", [employeeId || 0]),
         );
       })
-      .where(
-        canSeeAllCompanySurveys ? "s.company_id" : "pr.company_id",
-        companyId,
-      )
-      .modify((query) => {
-        if (!canSeeAllCompanySurveys) {
-          query.andWhere("pr.employee_id", employeeId);
-        }
-      })
+      .where("pr.company_id", companyId)
+      .andWhere("pr.employee_id", employeeId || 0)
       .orderBy("s.created_at", "desc")
       .select(
         "s.id",
@@ -1370,28 +1348,20 @@ const getPulseSurveyForEmployee = async (req, res) => {
   const companyId = req.user.company_id;
   const employeeId = getSurveyEmployeeId(req.user);
   const { id } = req.params;
-  const canSeeAllCompanySurveys = isAdminSurveyUser(req.user);
 
   try {
-    if (!canSeeAllCompanySurveys) {
-      if (!employeeId) {
-        return res
-          .status(400)
-          .json({
-            message: "Employee profile is required to view this survey",
-          });
-      }
+    if (!employeeId)
+      return res.status(404).json({ message: "Survey not found" });
 
-      const assigned = await db("pulse_survey_recipients")
-        .where({
-          company_id: companyId,
-          employee_id: employeeId,
-          survey_id: Number(id),
-        })
-        .first();
-      if (!assigned)
-        return res.status(404).json({ message: "Survey not found" });
-    }
+    const assigned = await db("pulse_survey_recipients")
+      .where({
+        company_id: companyId,
+        employee_id: employeeId,
+        survey_id: Number(id),
+      })
+      .first();
+    if (!assigned)
+      return res.status(404).json({ message: "Survey not found" });
 
     const survey = await db("pulse_surveys")
       .where({ company_id: companyId, id: Number(id) })
@@ -1444,14 +1414,9 @@ const respondPulseSurvey = async (req, res) => {
     comment = "",
     isAnonymous = false,
   } = req.body || {};
-  const canSeeAllCompanySurveys = isAdminSurveyUser(req.user);
 
   if (!employeeId) {
-    return res
-      .status(400)
-      .json({
-        message: "Admin needs a linked employee profile to respond to surveys",
-      });
+    return res.status(403).json({ message: "This survey is not assigned to you" });
   }
 
   const numericScore = clampScore(score);
@@ -1465,16 +1430,15 @@ const respondPulseSurvey = async (req, res) => {
       .first();
     if (!survey) return res.status(404).json({ message: "Survey not found" });
 
-    if (!canSeeAllCompanySurveys) {
-      const assigned = await db("pulse_survey_recipients")
-        .where({
-          company_id: companyId,
-          employee_id: employeeId,
-          survey_id: Number(id),
-        })
-        .first();
-      if (!assigned) return res.status(403).json({ message: "Not allowed" });
-    }
+    const assigned = await db("pulse_survey_recipients")
+      .where({
+        company_id: companyId,
+        employee_id: employeeId,
+        survey_id: Number(id),
+      })
+      .first();
+    if (!assigned)
+      return res.status(403).json({ message: "This survey is not assigned to you" });
 
     const allowAnonymous = Boolean(survey.allow_anonymous);
     const anonymousFlag = allowAnonymous ? Boolean(isAnonymous) : false;

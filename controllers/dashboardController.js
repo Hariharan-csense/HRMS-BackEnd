@@ -1,6 +1,10 @@
 // src/controllers/adminDashboardController.js
 const knex = require("../db/db"); // Adjust path if needed
 const { getCompanyPolicy } = require("../services/companyPolicyService");
+const {
+  isLeaveTypeEligibleForEmployee,
+  assignLeaveBalancesForEmployee,
+} = require("../services/leaveBalanceService");
 
 const getRelativeTime = (dateString) => {
   if (!dateString) return "Unknown time";
@@ -681,28 +685,87 @@ const getEmployeeDashboardData = async (req, res) => {
     const currentMonth = new Date().getMonth() + 1;
     const currentYear = new Date().getFullYear();
 
-    // Get today's attendance status
-    const todayAttendance = await knex("attendance")
+    // Get every attendance session for today. The first punch owns the day's
+    // status (late/half-day is decided at first check-in), while later rows may
+    // only be post-break continuation sessions.
+    const todayAttendanceRows = await knex("attendance")
       .where({
         company_id: companyId,
         employee_id: employeeId,
       })
-      .whereIn("status", ["present", "late"])
       .whereRaw("DATE(check_in) = ?", [today])
-      .orderByRaw("CASE WHEN check_out IS NULL THEN 1 ELSE 0 END")
-      .orderBy("check_out", "desc")
-      .orderBy("check_in", "desc")
+      .orderBy("check_in", "asc");
+
+    const todayAttendance = todayAttendanceRows[0] || null;
+    const latestAttendance = todayAttendanceRows.length
+      ? todayAttendanceRows[todayAttendanceRows.length - 1]
+      : null;
+
+    // Approved leave takes precedence over an unmarked day so employees on
+    // leave are not shown as absent/not marked.
+    const todayLeave = await knex("leave_applications")
+      .where({
+        company_id: companyId,
+        employee_id: employeeId,
+        status: "approved",
+      })
+      .whereRaw("? BETWEEN from_date AND to_date", [today])
+      .orderBy("approved_at", "desc")
       .first();
 
+    const normalizedTodayStatus = String(todayAttendance?.status || "")
+      .trim()
+      .toLowerCase();
+    const attendanceStatusLabels = {
+      present: "Present",
+      late: "Late",
+      grace: "Grace",
+      half_day: "Half Day",
+      absent: "Absent",
+    };
+    const todayStatusLabel = todayLeave
+      ? "Leave"
+      : attendanceStatusLabels[normalizedTodayStatus] || "Not Marked";
+    const activityTime = latestAttendance
+      ? latestAttendance.check_out || latestAttendance.check_in
+      : null;
+    const formattedActivityTime = activityTime
+      ? new Date(activityTime).toLocaleTimeString("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : null;
+
     // Get leave balance
-    const leaveBalance = await knex("leave_balances")
-      .where({
-        company_id: companyId,
-        employee_id: employeeId,
-      })
-      .andWhere("year", currentYear)
-      .sum("available as total_available")
+    await assignLeaveBalancesForEmployee(employeeId, companyId, {
+      requireActive: true,
+      asOfDate: new Date(),
+    });
+    const employeeProfile = await knex("employees")
+      .where({ id: employeeId, company_id: companyId })
+      .select("id", "gender")
       .first();
+    const eligiblePaidLeaveBalances = await knex("leave_balances as lb")
+      .join("leave_types as lt", "lb.leave_type_id", "lt.id")
+      .where({
+        "lb.company_id": companyId,
+        "lb.employee_id": employeeId,
+        "lb.year": currentYear,
+        "lt.status": "active",
+      })
+      .where("lt.annual_limit", ">", 0)
+      .where((builder) => {
+        builder
+          .where("lt.is_paid", true)
+          .orWhere("lt.is_paid", 1)
+          .orWhere("lt.is_paid", "1");
+      })
+      .select("lb.available", "lt.name as leave_type_name");
+    const totalEligibleLeaveBalance = eligiblePaidLeaveBalances
+      .filter((balance) =>
+        isLeaveTypeEligibleForEmployee(balance, employeeProfile),
+      )
+      .reduce((total, balance) => total + Number(balance.available || 0), 0);
 
     // Get monthly permission balance from company policy
     const policy = await getCompanyPolicy(companyId);
@@ -797,26 +860,16 @@ const getEmployeeDashboardData = async (req, res) => {
 
     const dashboardData = {
       todayStatus: {
-        status: todayAttendance ? "Present" : "Not Marked",
-        checkInTime: todayAttendance
-          ? new Date(
-              todayAttendance.check_out || todayAttendance.check_in,
-            ).toLocaleTimeString("en-US", {
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : null,
-        description: todayAttendance
-          ? `${todayAttendance.check_out ? "Last checked out" : "Checked in"} at ${new Date(
-              todayAttendance.check_out || todayAttendance.check_in,
-            ).toLocaleTimeString("en-US", {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}`
-          : "Attendance not marked",
+        status: todayStatusLabel,
+        checkInTime: formattedActivityTime,
+        description: todayLeave
+          ? `Approved ${todayLeave.leave_type_name || "leave"}`
+          : latestAttendance
+            ? `${latestAttendance.check_out ? "Last checked out" : "Checked in"} at ${formattedActivityTime}`
+            : "Attendance not marked",
       },
       leaveBalance: {
-        totalDays: Number(leaveBalance?.total_available || 0),
+        totalDays: totalEligibleLeaveBalance,
         description: "Days remaining this year",
       },
       permissionBalance: {

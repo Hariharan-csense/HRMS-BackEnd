@@ -75,7 +75,7 @@ const deactivatePushToken = async (token) => {
     .update({ active: false, updated_at: new Date() });
 };
 
-const sendPushToUsers = async ({ userIds, title, body, data = {} }) => {
+const sendPushToUsers = async ({ userIds, companyId, title, body, data = {} }) => {
   const messaging = getMessaging();
   const ids = [...new Set((userIds || []).map((id) => String(id)).filter(Boolean))];
 
@@ -88,10 +88,15 @@ const sendPushToUsers = async ({ userIds, title, body, data = {} }) => {
     };
   }
 
-  const rows = await db("fcm_tokens")
+  const tokenQuery = db("fcm_tokens")
     .whereIn("user_id", ids)
-    .andWhere({ active: true })
-    .select("id", "user_id", "token");
+    .andWhere({ active: true });
+
+  if (companyId !== undefined && companyId !== null && companyId !== "") {
+    tokenQuery.andWhere("company_id", companyId);
+  }
+
+  const rows = await tokenQuery.select("id", "user_id", "token");
 
   const tokens = rows.map((row) => row.token).filter(Boolean);
   if (!tokens.length) {

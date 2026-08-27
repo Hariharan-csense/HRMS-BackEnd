@@ -178,6 +178,7 @@ const createLeadIndicatorNotifications = async ({
 
         notifications.push({
           user_id: String(employeeId),
+          company_id: companyId,
           title: "KPI Lead Indicator Assigned",
           description: `You have been assigned "${indicator.label}" for ${parameter.parameter || parameter.name || "KPI Parameter"}.`,
           type: "info",
@@ -204,6 +205,7 @@ const createLeadIndicatorNotifications = async ({
     ];
     const push = await sendPushToUsers({
       userIds: uniqueEmployeeIds,
+      companyId,
       title: "KPI Lead Indicator Assigned",
       body: "A KPI lead indicator has been assigned to you. Please update today's value.",
       data: {

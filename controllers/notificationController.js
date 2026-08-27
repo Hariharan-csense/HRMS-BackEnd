@@ -14,18 +14,19 @@ const isMySqlClient = () => {
 const getNotifications = async (req, res) => {
   try {
     const userId = req.user?.id;
+    const companyId = req.user?.company_id;
     
-    if (!userId) {
+    if (!userId || !companyId) {
       return res.status(401).json({ message: 'User not authenticated' });
     }
 
     const notifications = await knex('notifications')
-      .where({ user_id: userId })
+      .where({ user_id: userId, company_id: companyId })
       .orderBy('created_at', 'desc')
       .select('*');
 
     const unreadCount = await knex('notifications')
-      .where({ user_id: userId, read: false })
+      .where({ user_id: userId, company_id: companyId, read: false })
       .count('* as count')
       .first();
 
@@ -62,6 +63,7 @@ const createNotification = async (req, res) => {
 
     const notificationData = {
       user_id: userId || req.user?.id,
+      company_id: req.user?.company_id,
       title,
       description,
       type,
@@ -104,6 +106,7 @@ const createNotification = async (req, res) => {
 
     sendPushToUsers({
       userIds: [notification.user_id],
+      companyId: notification.company_id,
       title: notification.title,
       body: notification.description,
       data: {
@@ -173,8 +176,9 @@ const markNotificationAsRead = async (req, res) => {
   try {
     const { notificationId } = req.params;
     const userId = req.user?.id;
+    const companyId = req.user?.company_id;
 
-    if (!userId) {
+    if (!userId || !companyId) {
       return res.status(401).json({ message: 'User not authenticated' });
     }
 
@@ -182,7 +186,7 @@ const markNotificationAsRead = async (req, res) => {
 
     if (isMySqlClient()) {
       const updatedCount = await knex('notifications')
-        .where({ id: notificationId, user_id: userId })
+        .where({ id: notificationId, user_id: userId, company_id: companyId })
         .update({ read: true });
 
       if (!updatedCount) {
@@ -190,11 +194,11 @@ const markNotificationAsRead = async (req, res) => {
       }
 
       updatedNotification = await knex('notifications')
-        .where({ id: notificationId, user_id: userId })
+        .where({ id: notificationId, user_id: userId, company_id: companyId })
         .first();
     } else {
       const updateResult = await knex('notifications')
-        .where({ id: notificationId, user_id: userId })
+        .where({ id: notificationId, user_id: userId, company_id: companyId })
         .update({ read: true })
         .returning('*');
 
@@ -216,13 +220,14 @@ const markNotificationAsRead = async (req, res) => {
 const markAllNotificationsAsRead = async (req, res) => {
   try {
     const userId = req.user?.id;
+    const companyId = req.user?.company_id;
 
-    if (!userId) {
+    if (!userId || !companyId) {
       return res.status(401).json({ message: 'User not authenticated' });
     }
 
     await knex('notifications')
-      .where({ user_id: userId, read: false })
+      .where({ user_id: userId, company_id: companyId, read: false })
       .update({ read: true });
 
     res.json({ success: true });
@@ -237,13 +242,14 @@ const deleteNotification = async (req, res) => {
   try {
     const { notificationId } = req.params;
     const userId = req.user?.id;
+    const companyId = req.user?.company_id;
 
-    if (!userId) {
+    if (!userId || !companyId) {
       return res.status(401).json({ message: 'User not authenticated' });
     }
 
     const deletedCount = await knex('notifications')
-      .where({ id: notificationId, user_id: userId })
+      .where({ id: notificationId, user_id: userId, company_id: companyId })
       .del();
 
     if (deletedCount === 0) {

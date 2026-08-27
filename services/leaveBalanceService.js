@@ -9,10 +9,92 @@ const normalizeLeaveName = (value) =>
 const isEmployeeActive = (status) => normalize(status) === 'active';
 const isEmployeeFullTime = (employmentType) => compact(employmentType) === 'fulltime';
 
+const normalizeGender = (value) => compact(value);
+
+const isLeaveTypeEligibleForEmployee = (leaveType, employee) => {
+  if (!leaveType || !employee) return false;
+
+  const leaveName = normalizeLeaveName(leaveType.name || leaveType.leave_type_name);
+  const gender = normalizeGender(employee.gender);
+
+  // Keep common legacy spelling variants covered so an old "mantory leave"
+  // configuration cannot be allocated to male employees.
+  if (
+    leaveName.includes('maternity') ||
+    leaveName.includes('maternal') ||
+    leaveName.includes('mantory') ||
+    leaveName.includes('menstrual')
+  ) {
+    return ['female', 'f', 'woman'].includes(gender);
+  }
+
+  if (leaveName.includes('paternity')) {
+    return ['male', 'm', 'man'].includes(gender);
+  }
+
+  return true;
+};
+
+const hasRequiredAttendanceForLeaveType = async ({
+  db,
+  companyId,
+  employee,
+  leaveType,
+  asOfDate = new Date()
+}) => {
+  const { getCompanyPolicy } = require('./companyPolicyService');
+  const policy = await getCompanyPolicy(companyId);
+  const leaveName = normalizeLeaveName(leaveType?.name);
+  const casualLeaveNames = (policy.leave.casualLeaveNames || [])
+    .map(normalizeLeaveName);
+
+  if (
+    policy.leave.casualLeaveAccrual !== 'after_attendance_days' ||
+    !casualLeaveNames.includes(leaveName)
+  ) {
+    return true;
+  }
+
+  const requiredDays = Math.max(
+    1,
+    Number(policy.leave.casualLeaveMinimumAttendanceDays || 30)
+  );
+  const startDate = formatDateOnly(
+    employee.doj || employee.date_of_joining || employee.created_at
+  );
+  const endDate = formatDateOnly(asOfDate);
+  if (!startDate || !endDate) return false;
+
+  const attendanceRows = await db('attendance')
+    .where({ company_id: companyId, employee_id: employee.id })
+    .where('check_in', '>=', `${startDate} 00:00:00`)
+    .where('check_in', '<=', `${endDate} 23:59:59`)
+    .select('check_in', 'status');
+
+  const dayWeights = new Map();
+  for (const row of attendanceRows) {
+    const date = formatDateOnly(row.check_in);
+    const status = normalize(row.status);
+    if (!date) continue;
+    const weight = ['present', 'grace', 'late'].includes(status)
+      ? 1
+      : ['half', 'half_day', 'half-day'].includes(status)
+        ? 0.5
+        : 0;
+    dayWeights.set(date, Math.max(dayWeights.get(date) || 0, weight));
+  }
+
+  const attendedDays = [...dayWeights.values()].reduce(
+    (total, weight) => total + weight,
+    0
+  );
+  return attendedDays >= requiredDays;
+};
+
 const getActiveLeaveTypes = async (db, companyId, specificLeaveTypeId = null) => {
   const query = db('leave_types')
     .where({ company_id: companyId, status: 'active' })
-    .select('id', 'name', 'annual_limit');
+    .select('id', 'name', 'annual_limit', 'is_paid', 'status');
 
   if (specificLeaveTypeId) {
     query.andWhere({ id: specificLeaveTypeId });
@@ -213,7 +295,7 @@ const assignLeaveBalancesForEmployee = async (
 
   const employee = await db('employees')
     .where({ id: employeeId, company_id: companyId })
-    .select('id', 'status', 'employment_type')
+    .select('id', 'status', 'employment_type', 'gender', 'doj', 'created_at')
     .first();
 
   if (!employee) {
@@ -227,7 +309,21 @@ const assignLeaveBalancesForEmployee = async (
     return { success: true, inserted: 0, reason: 'employee_not_eligible' };
   }
 
-  const leaveTypes = await getActiveLeaveTypes(db, companyId, specificLeaveTypeId);
+  const leaveTypes = [];
+  for (const leaveType of await getActiveLeaveTypes(db, companyId, specificLeaveTypeId)) {
+    if (
+      isLeaveTypeEligibleForEmployee(leaveType, employee) &&
+      await hasRequiredAttendanceForLeaveType({
+        db,
+        companyId,
+        employee,
+        leaveType,
+        asOfDate: options.asOfDate || new Date()
+      })
+    ) {
+      leaveTypes.push(leaveType);
+    }
+  }
   if (!leaveTypes.length) {
     return { success: true, inserted: 0, reason: 'no_active_leave_types' };
   }
@@ -265,30 +361,44 @@ const backfillLeaveBalancesForLeaveType = async (
 
   const employees = await db('employees')
     .where({ company_id: companyId })
-    .select('id', 'status', 'employment_type');
+    .select('id', 'status', 'employment_type', 'gender', 'doj', 'created_at');
 
-  const eligibleEmployeeIds = employees
-    .filter((e) => isEmployeeActive(e.status) && isEmployeeFullTime(e.employment_type))
-    .map((e) => e.id);
+  const eligibleEmployees = employees.filter(
+    (employee) =>
+      isEmployeeActive(employee.status) &&
+      isEmployeeFullTime(employee.employment_type) &&
+      leaveTypes.some((leaveType) =>
+        isLeaveTypeEligibleForEmployee(leaveType, employee),
+      ),
+  );
 
-  if (!eligibleEmployeeIds.length) {
+  if (!eligibleEmployees.length) {
     return { success: true, employeesProcessed: 0, inserted: 0, reason: 'no_eligible_employees' };
   }
 
   let inserted = 0;
-  for (const employeeId of eligibleEmployeeIds) {
+  for (const employee of eligibleEmployees) {
+    const eligibleLeaveTypes = [];
+    for (const leaveType of leaveTypes) {
+      if (
+        isLeaveTypeEligibleForEmployee(leaveType, employee) &&
+        await hasRequiredAttendanceForLeaveType({
+          db, companyId, employee, leaveType, asOfDate: options.asOfDate || new Date()
+        })
+      ) eligibleLeaveTypes.push(leaveType);
+    }
     inserted += await createMissingLeaveBalances({
       db,
       companyId,
-      employeeId,
-      leaveTypes,
+      employeeId: employee.id,
+      leaveTypes: eligibleLeaveTypes,
       year
     });
   }
 
   return {
     success: true,
-    employeesProcessed: eligibleEmployeeIds.length,
+    employeesProcessed: eligibleEmployees.length,
     inserted
   };
 };
@@ -321,19 +431,31 @@ const reconcileMissingLeaveBalances = async (options = {}) => {
 
     const employees = await db('employees')
       .where({ company_id: cid })
-      .select('id', 'status', 'employment_type');
+      .select('id', 'status', 'employment_type', 'gender', 'doj', 'created_at');
 
-    const eligibleEmployeeIds = employees
-      .filter((e) => isEmployeeActive(e.status) && isEmployeeFullTime(e.employment_type))
-      .map((e) => e.id);
+    const eligibleEmployees = employees.filter(
+      (employee) =>
+        isEmployeeActive(employee.status) &&
+        isEmployeeFullTime(employee.employment_type),
+    );
 
-    employeesProcessed += eligibleEmployeeIds.length;
-    for (const employeeId of eligibleEmployeeIds) {
+    employeesProcessed += eligibleEmployees.length;
+    for (const employee of eligibleEmployees) {
+      const eligibleLeaveTypes = [];
+      for (const leaveType of leaveTypes) {
+        if (
+          isLeaveTypeEligibleForEmployee(leaveType, employee) &&
+          await hasRequiredAttendanceForLeaveType({
+            db, companyId: cid, employee, leaveType,
+            asOfDate: options.asOfDate || new Date()
+          })
+        ) eligibleLeaveTypes.push(leaveType);
+      }
       inserted += await createMissingLeaveBalances({
         db,
         companyId: cid,
-        employeeId,
-        leaveTypes,
+        employeeId: employee.id,
+        leaveTypes: eligibleLeaveTypes,
         year
       });
     }
@@ -422,5 +544,6 @@ module.exports = {
   reconcileMissingLeaveBalances,
   getLeaveCycleForDate,
   isEmployeeFullTime,
-  isEmployeeActive
+  isEmployeeActive,
+  isLeaveTypeEligibleForEmployee
 };

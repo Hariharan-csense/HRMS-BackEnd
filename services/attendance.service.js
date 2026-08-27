@@ -282,14 +282,19 @@ async function doCheckIn({
     const checkInMinute = new Date(checkInTime);
     checkInMinute.setSeconds(0, 0);
 
-    const lateCutoff = new Date(shiftStart.getTime() + gracePeriodMinutes * 60 * 1000);
+    // CSense's optional LSK allowance is relative to the employee's shift,
+    // not a fixed clock time. For example, a 09:30 shift remains on time
+    // through 10:00 and becomes late after that.
+    const allowedLateMinutes = Boolean(withLsk) ? 30 : gracePeriodMinutes;
+    const lateCutoff = new Date(shiftStart.getTime() + allowedLateMinutes * 60 * 1000);
     const halfDayCutoff = new Date(shiftStart.getTime() + halfDayThresholdHours * 60 * 60 * 1000);
+    const statusPunchTime = withLsk ? checkInTime : checkInMinute;
 
-    if (checkInMinute > halfDayCutoff) {
+    if (statusPunchTime > halfDayCutoff) {
       attendanceStatus = 'half_day';
-    } else if (checkInMinute > lateCutoff) {
+    } else if (statusPunchTime > lateCutoff) {
       attendanceStatus = 'late';
-    } else if (checkInMinute > shiftStart && gracePeriodMinutes > 0) {
+    } else if (!withLsk && checkInMinute > shiftStart && gracePeriodMinutes > 0) {
       attendanceStatus = await hasGraceDayAvailable({
         companyId,
         employeeId,
@@ -299,19 +304,6 @@ async function doCheckIn({
         ? 'grace'
         : 'late';
     }
-  }
-
-  // LSK employees have an approved arrival window from 09:30 through 10:00.
-  // Keep this decision in the service so every client and downstream payroll
-  // calculation receives the same persisted attendance status.
-  const lskWindowStart = new Date(checkInTime);
-  lskWindowStart.setHours(9, 30, 0, 0);
-  const lskWindowEnd = new Date(checkInTime);
-  lskWindowEnd.setHours(10, 0, 0, 0);
-  const isWithinLskWindow =
-    Boolean(withLsk) && checkInTime >= lskWindowStart && checkInTime <= lskWindowEnd;
-  if (isFirstPunch && isWithinLskWindow) {
-    attendanceStatus = 'present';
   }
 
   const insertPayload = {

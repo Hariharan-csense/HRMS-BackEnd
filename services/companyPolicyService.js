@@ -7,6 +7,7 @@ const DEFAULT_POLICY = {
     casualLeaveNames: ["casual leave", "cl", "casual"],
     casualLeavePerMonth: 1,
     casualLeaveAccrual: "monthly_start",
+    casualLeaveMinimumAttendanceDays: 30,
     includePendingLeaveInUsage: true,
   },
   permission: {
@@ -86,9 +87,15 @@ const normalizePolicy = (raw = {}) => {
         ? leave.casualLeaveNames
         : defaults.leave.casualLeaveNames,
       casualLeavePerMonth: normalizeNumber(leave.casualLeavePerMonth, 1),
+      casualLeaveMinimumAttendanceDays: normalizeNumber(
+        leave.casualLeaveMinimumAttendanceDays,
+        30,
+      ),
       casualLeaveAccrual:
-        leave.casualLeaveAccrual === "after_full_month"
-          ? "after_full_month"
+        ["after_full_month", "after_attendance_days"].includes(
+          leave.casualLeaveAccrual,
+        )
+          ? leave.casualLeaveAccrual
           : "monthly_start",
       includePendingLeaveInUsage: leave.includePendingLeaveInUsage !== false,
     },

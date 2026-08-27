@@ -13,6 +13,7 @@ const {
   backfillLeaveBalancesForLeaveType,
   reconcileMissingLeaveBalances,
   getLeaveCycleForDate,
+  isLeaveTypeEligibleForEmployee,
 } = require("../services/leaveBalanceService");
 const { validateLeavePolicy } = require("../services/companyPolicyService");
 
@@ -20,6 +21,19 @@ const normalizeWorkflowText = (value) =>
   String(value || "")
     .toLowerCase()
     .trim();
+
+const isCanonicalUnpaidLeaveType = (leaveType) => {
+  const name = normalizeWorkflowText(leaveType?.name);
+  const isPaid = leaveType?.is_paid === true || Number(leaveType?.is_paid) === 1;
+  return !isPaid && [
+    "unpaid leave",
+    "loss of pay",
+    "lop",
+  ].includes(name);
+};
+
+const isProbationEmployee = (employee) =>
+  normalizeWorkflowText(employee?.employment_type).includes("probation");
 
 const resolveWorkflowRole = (user = {}) => {
   const normalizedRole = normalizeWorkflowText(user.role);
@@ -548,58 +562,20 @@ const applyLeave = async (req, res) => {
         return res.status(400).json({ message: "Invalid leave type" });
       }
 
-      // If employee is on probation, treat leave as unpaid (loss of pay)
-      if (normalizeWorkflowText(employee.employment_type) === "probation") {
-        // Try to find an existing unpaid leave type for the company
-        // Do not use an arbitrary unpaid type here. "Half Day" can be
-        // configured as unpaid, but it is a duration/type of request and must
-        // never replace a full-day Casual Leave selection.
-        let unpaid = await knex("leave_types")
-          .where({ company_id: companyId, is_paid: false })
-          .whereRaw("LOWER(TRIM(name)) IN (?, ?, ?)", [
-            "unpaid leave",
-            "loss of pay",
-            "lop",
-          ])
-          .first();
-
-        if (!unpaid) {
-          // Create a company-scoped Unpaid Leave type if not present
-          // Generate leave type ID (LVT001 format)
-          const lastLeaveType = await knex("leave_types")
-            .where({ company_id: companyId })
-            .orderBy("id", "desc")
-            .first();
-
-          let nextNumber = 1;
-          if (lastLeaveType && lastLeaveType.leave_type_id) {
-            const match = lastLeaveType.leave_type_id.match(/LVT(\d+)/);
-            if (match) {
-              nextNumber = parseInt(match[1]) + 1;
-            }
-          }
-
-          const lt_code = `LVT${nextNumber.toString().padStart(3, "0")}`;
-          await knex("leave_types").insert({
-            leave_type_id: lt_code,
-            name: "Unpaid Leave",
-            is_paid: false,
-            annual_limit: 0,
-            carry_forward: 0,
-            encashable: false,
-            description: "Auto-created unpaid leave for probation employees",
-            status: "active",
-            company_id: companyId,
+      // Probation employees may request only full-day Unpaid Leave/LOP.
+      // Never silently convert a paid or half-day request into another type.
+      if (isProbationEmployee(employee)) {
+        if (isHalfDay) {
+          if (req.file) fs.unlinkSync(req.file.path);
+          return res.status(400).json({
+            message: "Employees on probation can apply only for full-day Unpaid Leave",
           });
-
-          unpaid = await knex("leave_types")
-            .where({ leave_type_id: lt_code, company_id: companyId })
-            .first();
         }
-
-        if (unpaid) {
-          leave_type_id = unpaid.id; // override to unpaid leave
-          leaveType = unpaid;
+        if (!isCanonicalUnpaidLeaveType(leaveType)) {
+          if (req.file) fs.unlinkSync(req.file.path);
+          return res.status(400).json({
+            message: "Employees on probation can apply only for Unpaid Leave",
+          });
         }
       }
 
@@ -1163,13 +1139,36 @@ const getLeaveTypes = async (req, res) => {
   }
 
   try {
-    const types = await knex("leave_types")
+    const employee = await resolveEmployeeProfile(req, companyId);
+    const probationRestricted =
+      normalizeWorkflowText(req.user?.type) === "employee" &&
+      isProbationEmployee(employee);
+
+    const typesQuery = knex("leave_types")
       .where({ company_id: companyId, status: "active" })
       .orderBy("name");
+
+    if (probationRestricted) {
+      typesQuery
+        .andWhere({ is_paid: false })
+        .whereRaw("LOWER(TRIM(name)) IN (?, ?, ?)", [
+          "unpaid leave",
+          "loss of pay",
+          "lop",
+        ]);
+    }
+
+    let types = await typesQuery;
+    if (normalizeWorkflowText(req.user?.type) === "employee" && employee) {
+      types = types.filter((leaveType) =>
+        isLeaveTypeEligibleForEmployee(leaveType, employee),
+      );
+    }
 
     res.json({
       success: true,
       leaveTypes: types,
+      probationRestricted,
     });
   } catch (error) {
     console.error("Get leave types error:", error);
@@ -1341,6 +1340,7 @@ const getLeaveBalance = async (req, res) => {
         "emp.first_name",
         "emp.last_name",
         "emp.department_id",
+        "emp.gender",
         "lb.company_id",
         "lb.leave_type_id",
         "lb.opening_balance",
@@ -1348,6 +1348,9 @@ const getLeaveBalance = async (req, res) => {
         "lb.available",
         "lb.year",
         "lt.name as leave_type_name",
+        "lt.is_paid as leave_type_is_paid",
+        "lt.annual_limit as leave_type_annual_limit",
+        "lt.status as leave_type_status",
       )
       .where("lb.company_id", company_id)
       .andWhere("lb.year", year);
@@ -1370,7 +1373,9 @@ const getLeaveBalance = async (req, res) => {
       query.andWhere("lb.employee_id", employee?.id || 0);
     }
 
-    const rows = await query;
+    const rows = (await query).filter((row) =>
+      isLeaveTypeEligibleForEmployee(row, row),
+    );
 
     const result = {
       company_id,
