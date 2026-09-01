@@ -49,7 +49,7 @@ const handleEmployeeUpload = (req, res, next) => {
 };
 
 // Add employee - with subscription verification
-router.post('/add', protect, requirePermission("employees", "create", { submodule: "list" }), checkUserCreationSubscription, handleEmployeeUpload, addEmployee);
+router.post('/add', protect, requirePermission("employees", "create", { submodule: "list" }), handleEmployeeUpload, checkUserCreationSubscription, addEmployee);
 
 // Get all employees - with general subscription check
 router.get('/', protect, requirePermission("employees", "view", { submodule: "list" }), getEmployees);

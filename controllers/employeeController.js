@@ -447,6 +447,7 @@ const addEmployee = async (req, res) => {
     ifsc_code,
     role = "employee",
     location_tracking_enabled = 0,
+    subscription_billing_cycle = "monthly",
   } = req.body;
 
   try {
@@ -560,6 +561,12 @@ const addEmployee = async (req, res) => {
         ? 1
         : 0;
 
+    const normalizedEmail = email && String(email).trim() ? String(email).trim().toLowerCase() : null;
+    const normalizedMobile = mobile && String(mobile).trim() ? String(mobile).trim() : null;
+    const normalizedSubscriptionCycle = String(
+      subscription_billing_cycle || "monthly",
+    ).toLowerCase() === "yearly" ? "yearly" : "monthly";
+
     let employeeId;
     let message;
     // ======================
@@ -597,8 +604,8 @@ const addEmployee = async (req, res) => {
           dob: dob || null,
           blood_group: blood_group || null,
           marital_status: marital_status || null,
-          email: email.trim().toLowerCase(),
-          mobile: mobile || null,
+          email: normalizedEmail,
+          mobile: normalizedMobile,
           office_phone: office_phone || null,
           office_email: office_email || null,
           emergency_contact_name: emergency_contact_name || null,
@@ -623,6 +630,7 @@ const addEmployee = async (req, res) => {
           esic: esic || null,
           role: finalRoleName,
           location_tracking_enabled: normalizedLocationTrackingEnabled,
+          subscription_billing_cycle: normalizedSubscriptionCycle,
         });
 
       employeeId = id;
@@ -646,8 +654,8 @@ const addEmployee = async (req, res) => {
         companyId,
         values: {
           employee_id,
-          email,
-          mobile,
+          email: normalizedEmail,
+          mobile: normalizedMobile,
           office_phone,
           office_email,
           emergency_contact_phone,
@@ -671,9 +679,13 @@ const addEmployee = async (req, res) => {
         return res.status(400).json({ message: bankDuplicateMessage });
       }
 
-      // Generate temporary password
-      const tempPassword = generateTemporaryPassword();
-      const hashedPassword = await bcrypt.hash(tempPassword, 10);
+      // Generate password only if email is provided
+      let hashedPassword = null;
+      let tempPassword = null;
+      if (normalizedEmail) {
+        tempPassword = generateTemporaryPassword();
+        hashedPassword = await bcrypt.hash(tempPassword, 10);
+      }
 
       const [newId] = await knex("employees").insert({
         company_id: companyId,
@@ -684,8 +696,8 @@ const addEmployee = async (req, res) => {
         dob: dob || null,
         blood_group: blood_group || null,
         marital_status: marital_status || null,
-        email: email.trim().toLowerCase(),
-        mobile: mobile || null,
+        email: normalizedEmail,
+        mobile: normalizedMobile,
         office_phone: office_phone || null,
         office_email: office_email || null,
         emergency_contact_name: emergency_contact_name || null,
@@ -711,45 +723,48 @@ const addEmployee = async (req, res) => {
         password: hashedPassword,
         role: finalRoleName,
         location_tracking_enabled: normalizedLocationTrackingEnabled,
+        subscription_billing_cycle: normalizedSubscriptionCycle,
       });
 
       console.log(
-        `[EMPLOYEE CREATION] New employee created: ${newId}, ${email.trim().toLowerCase()}`,
+        `[EMPLOYEE CREATION] New employee created: ${newId}, email: ${normalizedEmail || "N/A"}`,
       );
 
       employeeId = newId;
 
-      // Send welcome email with temporary password
-      try {
-        await sendEmployeeWelcomeMail({
-          name: `${first_name.trim()} ${last_name.trim()}`,
-          email: email.trim().toLowerCase(),
-          password: tempPassword,
-          role: finalRoleName,
-        });
+      // Send welcome email with temporary password only if email is provided
+      if (normalizedEmail && tempPassword) {
+        try {
+          await sendEmployeeWelcomeMail({
+            name: `${first_name.trim()} ${last_name.trim()}`,
+            email: normalizedEmail,
+            password: tempPassword,
+            role: finalRoleName,
+          });
+          message =
+            "Employee added successfully! Welcome email sent with temporary password.";
+        } catch (emailError) {
+          console.error("Error sending welcome email:", emailError);
+          // Avoid leaving behind an account whose temporary password was never
+          // delivered. Related rows are cascade-deleted with the employee.
+          await knex("employees")
+            .where({ id: newId, company_id: companyId })
+            .del();
+          cleanupFiles(req.files);
+          return res.status(502).json({
+            message:
+              "Employee was not created because the welcome email could not be delivered. Please verify the email address and mail configuration.",
+          });
+        }
+      } else {
         message =
-          "Employee added successfully! Welcome email sent with temporary password.";
-      } catch (emailError) {
-        console.error("Error sending welcome email:", emailError);
-        // Avoid leaving behind an account whose temporary password was never
-        // delivered. Related rows are cascade-deleted with the employee.
-        await knex("employees")
-          .where({ id: newId, company_id: companyId })
-          .del();
-        cleanupFiles(req.files);
-        return res.status(502).json({
-          message:
-            "Employee was not created because the welcome email could not be delivered. Please verify the email address and mail configuration.",
-        });
+          "Employee added successfully! (No login credentials created as email was not provided)";
       }
 
       // Initialize leave balance
       await initializeLeaveBalance(employeeId, companyId);
     }
 
-    // ======================
-    // HANDLE BANK DETAILS
-    // ======================
     // ======================
     // HANDLE BANK DETAILS
     // ======================
@@ -785,18 +800,9 @@ const addEmployee = async (req, res) => {
     // ======================
     // HANDLE EMPLOYEE DOCUMENTS (multiple fields)
     // ======================
-    // ======================
-    // HANDLE EMPLOYEE DOCUMENTS (multiple fields)
-    // ======================
-    // ======================
-    // HANDLE EMPLOYEE DOCUMENTS - FINAL WORKING VERSION
-    // ======================
     let allFiles = [];
 
     if (req.files) {
-      console.log("req.files received:", req.files); // ← DEBUG: இதை போடு
-
-      // Multer fields() returns object with fieldname as key
       Object.keys(req.files).forEach((fieldname) => {
         const files = req.files[fieldname];
         if (Array.isArray(files)) {
@@ -806,8 +812,6 @@ const addEmployee = async (req, res) => {
         }
       });
     }
-
-    console.log(`Total files to save: ${allFiles.length}`); // ← DEBUG
 
     if (allFiles.length > 0) {
       const documents = await buildEmployeeDocumentRows(
@@ -1268,6 +1272,7 @@ const updateEmployee = async (req, res) => {
     role,
     shift_id,
     location_tracking_enabled,
+    subscription_billing_cycle,
   } = req.body;
 
   try {
@@ -1295,9 +1300,18 @@ const updateEmployee = async (req, res) => {
     if (marital_status !== undefined)
       updateData.marital_status = marital_status || null;
     if (email !== undefined) {
-      updateData.email = email.trim().toLowerCase();
+      const normalizedEmail = String(email || "").trim().toLowerCase();
+      updateData.email = normalizedEmail || null;
+
+      // Clearing the email also removes the employee's login credentials.
+      if (!normalizedEmail) {
+        updateData.password = null;
+      }
     }
-    if (mobile !== undefined) updateData.mobile = mobile || null;
+    if (mobile !== undefined) {
+      const normalizedMobile = String(mobile || "").trim();
+      updateData.mobile = normalizedMobile || null;
+    }
     if (office_phone !== undefined)
       updateData.office_phone = office_phone || null;
     if (office_email !== undefined) {
@@ -1382,6 +1396,12 @@ const updateEmployee = async (req, res) => {
           ? 1
           : 0;
     }
+    if (subscription_billing_cycle !== undefined) {
+      updateData.subscription_billing_cycle =
+        String(subscription_billing_cycle).toLowerCase() === "yearly"
+          ? "yearly"
+          : "monthly";
+    }
 
     // Role handling with HR restriction
     if (role !== undefined) {
@@ -1439,6 +1459,52 @@ const updateEmployee = async (req, res) => {
       if (trackingSeatError) {
         cleanupFiles(req.files);
         return res.status(403).json({ message: trackingSeatError });
+      }
+    }
+
+    if (
+      updateData.subscription_billing_cycle &&
+      updateData.subscription_billing_cycle !==
+        String(employee.subscription_billing_cycle || "monthly").toLowerCase()
+    ) {
+      const cycleSubscription = await knex("company_subscriptions")
+        .where({
+          company_id: companyId,
+          status: "active",
+          billing_cycle: updateData.subscription_billing_cycle,
+        })
+        .where("end_date", ">=", knex.fn.now())
+        .orderBy("created_at", "desc")
+        .first();
+
+      if (!cycleSubscription) {
+        cleanupFiles(req.files);
+        return res.status(403).json({
+          message: `No active ${updateData.subscription_billing_cycle} subscription seats are available.`,
+          user_limit_exceeded: true,
+        });
+      }
+
+      const assignedRow = await knex("employees")
+        .where({
+          company_id: companyId,
+          subscription_billing_cycle:
+            updateData.subscription_billing_cycle,
+        })
+        .whereNot("id", id)
+        .count("* as count")
+        .first();
+      const assignedCount = Number(assignedRow?.count || 0);
+      const seatLimit = Number(cycleSubscription.max_users || 0);
+
+      if (seatLimit > 0 && assignedCount >= seatLimit) {
+        cleanupFiles(req.files);
+        return res.status(403).json({
+          message: `${updateData.subscription_billing_cycle === "yearly" ? "Yearly" : "Monthly"} seat limit exceeded. All ${seatLimit} seats are assigned.`,
+          user_limit_exceeded: true,
+          current_users: assignedCount,
+          max_users: seatLimit,
+        });
       }
     }
 

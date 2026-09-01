@@ -22,6 +22,12 @@ const getDayWindow = (date) => {
   return { start, end };
 };
 
+// Covers overnight shifts while preventing an abandoned punch from blocking
+// an employee indefinitely. A normal or overnight shift must close within this
+// rolling window.
+const getOpenPunchWindowStart = (date) =>
+  new Date(new Date(date).getTime() - 36 * 60 * 60 * 1000);
+
 const getMonthWindow = (date) => {
   const start = new Date(date);
   start.setDate(1);
@@ -175,14 +181,13 @@ async function doCheckIn({
     throw new Error('Invalid punch time');
   }
 
-  const { start: attendanceDayStart, end: attendanceDayEnd } = getDayWindow(effectivePunchTime);
-
   const existing = await knex('attendance')
     .where('employee_id', employeeId)
     .where('company_id', companyId)
-    .where('check_in', '>=', attendanceDayStart)
-    .where('check_in', '<', attendanceDayEnd)
+    .where('check_in', '>=', getOpenPunchWindowStart(effectivePunchTime))
+    .where('check_in', '<=', effectivePunchTime)
     .whereNull('check_out')
+    .orderBy('check_in', 'desc')
     .first();
 
   if (existing) throw new Error('Already checked in');
@@ -345,18 +350,15 @@ async function doCheckOut({
     throw new Error('Invalid punch time');
   }
 
-  // Match the local-day convention used by check-in and MySQL DATE(check_in).
-  // Using toISOString() here shifts early-morning punches to the previous UTC
-  // date in positive-offset time zones, so the shared record cannot be found.
-  const attendanceDay = formatDateOnly(effectivePunchTime);
-
   const record = await knex('attendance')
     .where({
       employee_id: employeeId,
       company_id: companyId
     })
     .whereNull('check_out')
-    .whereRaw('DATE(check_in) = ?', [attendanceDay])
+    .where('check_in', '>=', getOpenPunchWindowStart(effectivePunchTime))
+    .where('check_in', '<=', effectivePunchTime)
+    .orderBy('check_in', 'desc')
     .first();
 
   if (!record) throw new Error('No active check-in');

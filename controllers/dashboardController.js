@@ -4,6 +4,8 @@ const { getCompanyPolicy } = require("../services/companyPolicyService");
 const {
   isLeaveTypeEligibleForEmployee,
   assignLeaveBalancesForEmployee,
+  reconcileMissingLeaveBalances,
+  getLeaveCycleForDate,
 } = require("../services/leaveBalanceService");
 
 const getRelativeTime = (dateString) => {
@@ -105,17 +107,30 @@ const getAdminDashboardData = async (req, res) => {
       .first();
     const totalEmployees = Number(totalEmployeesResult?.count || 0);
 
-    const attendanceTodayRaw = await knex("attendance")
-      .where({ company_id: companyId })
-      .whereRaw("DATE(check_in) = ?", [today]);
+    const attendanceTodayRaw = await knex("attendance as a")
+      .innerJoin("employees as e", function () {
+        this.on("a.employee_id", "=", "e.id").andOn(
+          "a.company_id",
+          "=",
+          "e.company_id",
+        );
+      })
+      .where("a.company_id", companyId)
+      .where("e.status", "active")
+      .whereRaw("DATE(a.check_in) = ?", [today])
+      .select("a.*");
 
-    const presentToday = attendanceTodayRaw.filter((a) =>
-      ["present", "late"].includes(
-        String(a.status || "")
-          .toLowerCase()
-          .trim(),
-      ),
-    ).length;
+    const presentToday = new Set(
+      attendanceTodayRaw
+        .filter((a) =>
+          ["present", "late"].includes(
+            String(a.status || "")
+              .toLowerCase()
+              .trim(),
+          ),
+        )
+        .map((a) => Number(a.employee_id)),
+    ).size;
     const totalAttendanceToday = attendanceTodayRaw.length;
     const flaggedToday = attendanceTodayRaw.filter(
       (a) => a.auto_flag === 1,
@@ -125,6 +140,8 @@ const getAdminDashboardData = async (req, res) => {
       .leftJoin("employees as e", "a.employee_id", "e.id")
       .leftJoin("departments as d", "e.department_id", "d.id")
       .where("a.company_id", companyId)
+      .where("e.company_id", companyId)
+      .where("e.status", "active")
       .whereRaw("DATE(a.check_in) = ?", [today])
       .whereRaw("LOWER(TRIM(a.status)) IN ('present','late')")
       .select(
@@ -139,11 +156,27 @@ const getAdminDashboardData = async (req, res) => {
       )
       .orderBy("a.check_in", "asc");
 
-    const presentYesterdayResult = await knex("attendance")
-      .where({ company_id: companyId })
-      .whereRaw("DATE(check_in) = ?", [yesterdayStr])
-      .whereRaw("LOWER(TRIM(status)) IN ('present','late')")
-      .count("* as count")
+    // An employee can have more than one attendance row for a day. Keep one
+    // entry in the dashboard modal so its list matches the KPI count.
+    const uniquePresentTodayEmployees = Array.from(
+      new Map(
+        presentTodayEmployees.map((employee) => [employee.id, employee]),
+      ).values(),
+    );
+
+    const presentYesterdayResult = await knex("attendance as a")
+      .innerJoin("employees as e", function () {
+        this.on("a.employee_id", "=", "e.id").andOn(
+          "a.company_id",
+          "=",
+          "e.company_id",
+        );
+      })
+      .where("a.company_id", companyId)
+      .where("e.status", "active")
+      .whereRaw("DATE(a.check_in) = ?", [yesterdayStr])
+      .whereRaw("LOWER(TRIM(a.status)) IN ('present','late')")
+      .countDistinct("a.employee_id as count")
       .first();
     const presentYesterday = Number(presentYesterdayResult?.count || 0);
 
@@ -194,22 +227,52 @@ const getAdminDashboardData = async (req, res) => {
       .orderBy("la.created_at", "desc")
       .limit(20);
 
-    const leaveUtilization = await knex("leave_balances")
-      .where({ company_id: companyId })
+    // Keep the dashboard in sync with approved leave applications. Balances can
+    // otherwise remain stale when an approval was imported or updated outside
+    // the normal leave-balance screen.
+    const leaveCycle = await getLeaveCycleForDate(knex, companyId, today);
+    await reconcileMissingLeaveBalances({
+      companyId,
+      year: leaveCycle.year,
+      cycle: leaveCycle,
+    });
+
+    const leaveUtilization = await knex("leave_balances as lb")
+      .join("employees as e", "lb.employee_id", "e.id")
+      .where("lb.company_id", companyId)
+      .where("lb.year", leaveCycle.year)
+      .whereRaw("LOWER(TRIM(COALESCE(e.status, ''))) = ?", ["active"])
       .select(
-        knex.raw("SUM(availed) as used"),
-        knex.raw("SUM(availed + available) as total"),
+        knex.raw("COALESCE(SUM(lb.availed), 0) as used"),
+        knex.raw("COALESCE(SUM(lb.available), 0) as remaining"),
       )
       .first();
 
     const usedLeave = Number(leaveUtilization?.used || 0);
-    const totalLeave = Number(leaveUtilization?.total || usedLeave || 1);
-    const remainingLeave = totalLeave - usedLeave;
-    const leaveBalanceHealth = Math.round((remainingLeave / totalLeave) * 100);
+    const remainingLeave = Number(leaveUtilization?.remaining || 0);
+    const totalLeave = usedLeave + remainingLeave;
+    const leaveBalanceHealth =
+      totalLeave > 0 ? Math.round((remainingLeave / totalLeave) * 100) : 0;
+    const utilizedPercentage =
+      totalLeave > 0 ? Number(((usedLeave / totalLeave) * 100).toFixed(1)) : 0;
+    const availablePercentage =
+      totalLeave > 0
+        ? Number(((remainingLeave / totalLeave) * 100).toFixed(1))
+        : 0;
 
     const leaveData = [
-      { name: "Used", value: usedLeave, fill: "#ef4444" },
-      { name: "Remaining", value: remainingLeave, fill: "#10b981" },
+      {
+        name: "Utilized",
+        value: utilizedPercentage,
+        unit: "%",
+        fill: "#ef4444",
+      },
+      {
+        name: "Available",
+        value: availablePercentage,
+        unit: "%",
+        fill: "#10b981",
+      },
     ];
 
     // ==================== Dynamic Metrics ====================
@@ -622,7 +685,7 @@ const getAdminDashboardData = async (req, res) => {
       recentJoinings,
       upcomingBirthdays,
       upcomingHolidays,
-      presentTodayEmployees: presentTodayEmployees.map((emp) => ({
+      presentTodayEmployees: uniquePresentTodayEmployees.map((emp) => ({
         id: emp.id,
         employeeId: emp.employee_id,
         name:

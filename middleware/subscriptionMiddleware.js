@@ -26,11 +26,34 @@ const checkUserCreationSubscription = async (req, res, next) => {
       });
     }
 
-    // Get company's current subscription
-    const subscription = await getActiveSubscriptionQuery(companyId)
-      .first();
+    const requestedCycle = ["yearly", "annual", "year"].includes(
+      String(req.body?.subscription_billing_cycle || "monthly").toLowerCase(),
+    )
+      ? "yearly"
+      : "monthly";
+
+    const activeSubscriptions = await getActiveSubscriptionQuery(companyId);
+    const trialSubscription = activeSubscriptions.find(
+      (item) => item.status === "trial",
+    );
+    const subscription =
+      trialSubscription ||
+      activeSubscriptions.find(
+        (item) =>
+          String(item.billing_cycle || "monthly").toLowerCase() ===
+          requestedCycle,
+      );
 
     if (!subscription) {
+      if (activeSubscriptions.length > 0) {
+        return res.status(403).json({
+          message: `No active ${requestedCycle} subscription seats are available. Please purchase ${requestedCycle} seats before assigning an employee to this billing cycle.`,
+          user_limit_exceeded: true,
+          billing_cycle: requestedCycle,
+          current_users: 0,
+          max_users: 0,
+        });
+      }
       req.subscription = null;
       req.userCount = 0;
       req.maxUsers = 0;
@@ -54,6 +77,11 @@ const checkUserCreationSubscription = async (req, res, next) => {
     // Get current employee count
     const currentEmployeeCount = await db('employees')
       .where('company_id', companyId)
+      .modify((queryBuilder) => {
+        if (subscription.status !== "trial") {
+          queryBuilder.where("subscription_billing_cycle", requestedCycle);
+        }
+      })
       .count('* as count')
       .first();
 
@@ -62,7 +90,7 @@ const checkUserCreationSubscription = async (req, res, next) => {
 
     if (maxUsers > 0 && currentUsers >= maxUsers) {
       return res.status(403).json({
-        message: `User limit exceeded. Your plan allows ${maxUsers} users, but you already have ${currentUsers}. Please upgrade your plan to add more employees.`,
+        message: `${requestedCycle === "yearly" ? "Yearly" : "Monthly"} seat limit exceeded. You have ${maxUsers} seats and all are assigned. Please purchase more ${requestedCycle} seats.`,
         user_limit_exceeded: true,
         current_users: currentUsers,
         max_users: maxUsers
@@ -73,6 +101,7 @@ const checkUserCreationSubscription = async (req, res, next) => {
     req.subscription = subscription;
     req.userCount = currentUsers;
     req.maxUsers = maxUsers;
+    req.subscriptionBillingCycle = requestedCycle;
     
     next();
   } catch (error) {

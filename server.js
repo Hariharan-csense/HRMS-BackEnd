@@ -9,6 +9,9 @@ const http = require("http");
 const { Server } = require("socket.io");
 const { setIo } = require("./socket");
 const { initializeFirebaseAdmin } = require("./services/firebaseAdmin");
+const {
+  closeExpiredRequirements,
+} = require("./controllers/jobRequirementsController");
 const app = express();
 const PORT = process.env.PORT || 3000;
 const server = http.createServer(app);
@@ -222,5 +225,17 @@ app.use("*", (req, res) => {
 // Start server
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  const syncExpiredRequirements = () => {
+    closeExpiredRequirements().catch((error) => {
+      console.error("Failed to auto-close expired job requirements:", error);
+    });
+  };
+
+  syncExpiredRequirements();
+  const requirementClosingTimer = setInterval(
+    syncExpiredRequirements,
+    15 * 60 * 1000,
+  );
+  requirementClosingTimer.unref();
   //console.log(`Uploads available at: http://localhost:${PORT}/uploads`);
 });

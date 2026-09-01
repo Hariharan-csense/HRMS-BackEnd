@@ -252,6 +252,38 @@ const computePricing = (plan, usersCount, billingCycle) => {
   };
 };
 
+const computeSeatMixPricing = (plan, payload = {}) => {
+  const mixed = payload.monthly_users !== undefined || payload.yearly_users !== undefined;
+  if (!mixed) {
+    const users = resolveSelectedUsers(payload.users_count);
+    const item = computePricing(plan, users, payload.billing_cycle);
+    return {
+      monthly_users: item.billing_cycle === "monthly" ? users : 0,
+      yearly_users: item.billing_cycle === "yearly" ? users : 0,
+      monthly_amount: item.billing_cycle === "monthly" ? item.total_amount : 0,
+      yearly_amount: item.billing_cycle === "yearly" ? item.total_amount : 0,
+      total_users: users,
+      total_amount: item.total_amount,
+      total_payable: roundMoney(item.total_amount * 1.18),
+    };
+  }
+  const monthlyUsers = Math.max(0, Math.floor(Number(payload.monthly_users || 0)));
+  const yearlyUsers = Math.max(0, Math.floor(Number(payload.yearly_users || 0)));
+  const monthly = computePricing(plan, monthlyUsers, "monthly");
+  const yearly = computePricing(plan, yearlyUsers, "yearly");
+  return {
+    monthly_users: monthlyUsers,
+    yearly_users: yearlyUsers,
+    monthly_amount: monthly.total_amount,
+    yearly_amount: yearly.total_amount,
+    total_users: monthlyUsers + yearlyUsers,
+    total_amount: roundMoney(monthly.total_amount + yearly.total_amount),
+    total_payable: roundMoney(
+      (monthly.total_amount + yearly.total_amount) * 1.18,
+    ),
+  };
+};
+
 // Get all subscription plans
 const getPlans = async (req, res) => {
   try {
@@ -310,7 +342,7 @@ const createUpgradeOrder = async (req, res) => {
       });
     }
 
-    const { plan_id, users_count, billing_cycle } = req.body;
+    const { plan_id } = req.body;
     // Determine company context: prefer req.user.company_id, allow superadmin to specify company_id in body
     let companyId =
       req.user && req.user.company_id ? req.user.company_id : null;
@@ -347,10 +379,15 @@ const createUpgradeOrder = async (req, res) => {
       });
     }
 
-    const selectedUsers = resolveSelectedUsers(users_count);
-    const pricing = computePricing(plan, selectedUsers, billing_cycle);
+    const pricing = computeSeatMixPricing(plan, req.body);
+    if (pricing.total_users <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Select at least one monthly or yearly user",
+      });
+    }
 
-    const amountPaise = Math.round(Number(pricing.total_amount) * 100);
+    const amountPaise = Math.round(Number(pricing.total_payable) * 100);
     if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
       return res.status(400).json({
         success: false,
@@ -380,9 +417,11 @@ const createUpgradeOrder = async (req, res) => {
           id: plan.id,
           name: plan.name,
           price: Number(plan.monthly_price ?? plan.price ?? 0),
-          billing_cycle: pricing.billing_cycle,
+          billing_cycle: "mixed",
           display_price: pricing.total_amount,
-          users_count: selectedUsers,
+          users_count: pricing.total_users,
+          monthly_users: pricing.monthly_users,
+          yearly_users: pricing.yearly_users,
         },
         key_id: process.env.RAZORPAY_KEY_ID,
       },
@@ -433,6 +472,8 @@ const verifyUpgradePayment = async (req, res) => {
       plan_id,
       users_count,
       billing_cycle,
+      monthly_users,
+      yearly_users,
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature,
@@ -474,62 +515,56 @@ const verifyUpgradePayment = async (req, res) => {
       });
     }
 
-    const selectedUsers = resolveSelectedUsers(users_count);
-    const pricing = computePricing(plan, selectedUsers, billing_cycle);
-    const paidAmount = pricing.total_amount;
+    const pricing = computeSeatMixPricing(plan, {
+      users_count,
+      billing_cycle,
+      monthly_users,
+      yearly_users,
+    });
+    if (pricing.total_users <= 0) {
+      await trx.rollback();
+      return res.status(400).json({ success: false, message: "Select at least one monthly or yearly user" });
+    }
+    const paidAmount = pricing.total_payable;
 
     const startDate = moment().toDate();
-    const endDate = getEndDateForPlan(startDate, pricing.billing_cycle);
-
-    const currentSubscription = await trx("company_subscriptions")
-      .where("company_id", companyId)
-      .orderBy("created_at", "desc")
-      .first();
-
-    let subscriptionId;
-    if (currentSubscription) {
-      await trx("company_subscriptions")
-        .where("id", currentSubscription.id)
-        .update({
-          plan_id: plan_id,
-          start_date: startDate,
-          end_date: endDate,
-          status: "active",
-          max_users: selectedUsers,
-          storage_gb: plan.storage_gb || 1,
-          billing_cycle: pricing.billing_cycle,
-          paid_amount: paidAmount,
-          last_payment_date: new Date(),
-          next_billing_date: endDate,
-          payment_details: JSON.stringify({
-            provider: "razorpay",
-            razorpay_order_id,
-            razorpay_payment_id,
-          }),
-          updated_at: new Date(),
-        });
-      subscriptionId = currentSubscription.id;
-    } else {
-      const inserted = await trx("company_subscriptions").insert({
-        company_id: companyId,
-        plan_id: plan_id,
+    const purchasedPools = [];
+    for (const pool of [
+      { cycle: "monthly", users: pricing.monthly_users, amount: pricing.monthly_amount },
+      { cycle: "yearly", users: pricing.yearly_users, amount: pricing.yearly_amount },
+    ]) {
+      if (pool.users <= 0) continue;
+      const endDate = getEndDateForPlan(startDate, pool.cycle);
+      const existing = await trx("company_subscriptions")
+        .where({ company_id: companyId, billing_cycle: pool.cycle })
+        .orderBy("created_at", "desc")
+        .first();
+      const values = {
+        plan_id,
         start_date: startDate,
         end_date: endDate,
         status: "active",
-        max_users: selectedUsers,
+        max_users: pool.users,
         storage_gb: plan.storage_gb || 1,
-        billing_cycle: pricing.billing_cycle,
-        paid_amount: paidAmount,
+        billing_cycle: pool.cycle,
+        paid_amount: pool.amount,
         last_payment_date: new Date(),
         next_billing_date: endDate,
-        payment_details: JSON.stringify({
-          provider: "razorpay",
-          razorpay_order_id,
-          razorpay_payment_id,
-        }),
-      });
-      subscriptionId = inserted[0];
+        payment_details: JSON.stringify({ provider: "razorpay", razorpay_order_id, razorpay_payment_id }),
+        updated_at: new Date(),
+      };
+      let id;
+      if (existing) {
+        await trx("company_subscriptions").where("id", existing.id).update(values);
+        id = existing.id;
+      } else {
+        const inserted = await trx("company_subscriptions").insert({ company_id: companyId, ...values });
+        id = inserted[0];
+      }
+      purchasedPools.push({ id, billing_cycle: pool.cycle, users: pool.users, end_date: endDate });
     }
+    const subscriptionId = purchasedPools[0].id;
+    const endDate = purchasedPools[purchasedPools.length - 1].end_date;
 
     await trx("subscription_payments").insert({
       company_id: companyId,
@@ -540,7 +575,7 @@ const verifyUpgradePayment = async (req, res) => {
       payment_reference: razorpay_order_id,
       status: "completed",
       payment_date: new Date(),
-      notes: JSON.stringify({ provider: "razorpay", razorpay_signature }),
+      notes: JSON.stringify({ provider: "razorpay", razorpay_signature, seat_pools: purchasedPools }),
     });
 
     await trx.commit();
@@ -553,6 +588,7 @@ const verifyUpgradePayment = async (req, res) => {
         plan_name: plan.name,
         amount_paid: paidAmount,
         next_billing_date: endDate,
+        seat_pools: purchasedPools,
       },
     });
   } catch (error) {
@@ -1362,7 +1398,7 @@ const createAddonOrder = async (req, res) => {
       });
     }
 
-    const subscription = await db("company_subscriptions")
+    let subscription = await db("company_subscriptions")
       .where("company_id", companyId)
       .whereIn("status", ["trial", "active"])
       .orderBy("created_at", "desc")
@@ -1918,6 +1954,48 @@ const getCompanySubscription = async (req, res) => {
       .orderBy("company_subscriptions.created_at", "desc")
       .first();
 
+    const activeSeatPools = await db("company_subscriptions")
+      .where("company_id", companyId)
+      .where(function () {
+        this.where(function () {
+          this.where("status", "active").where("end_date", ">=", db.fn.now());
+        }).orWhere(function () {
+          this.where("status", "trial").where(
+            "trial_end_date",
+            ">=",
+            db.fn.now(),
+          );
+        });
+      })
+      .orderBy("created_at", "desc");
+
+    if (activeSeatPools.length > 0) {
+      const activePrimary = activeSeatPools.find(
+        (pool) => Number(pool.id) === Number(subscription?.id),
+      );
+      if (!activePrimary) {
+        const primaryId = activeSeatPools[0].id;
+        subscription = await db("company_subscriptions")
+          .select(
+            "company_subscriptions.*",
+            "subscription_plans.name as plan_name",
+            "subscription_plans.description as plan_description",
+            `${monthlyPriceField} as plan_price`,
+            "company_subscriptions.max_users as plan_max_users",
+            storageField
+              ? `subscription_plans.${storageField} as plan_storage_gb`
+              : db.raw("NULL as plan_storage_gb"),
+          )
+          .join(
+            "subscription_plans",
+            "company_subscriptions.plan_id",
+            "subscription_plans.id",
+          )
+          .where("company_subscriptions.id", primaryId)
+          .first();
+      }
+    }
+
     if (!subscription) {
       return res.json({
         success: true,
@@ -1958,10 +2036,43 @@ const getCompanySubscription = async (req, res) => {
       ? effectiveEndMoment.diff(today, "days")
       : 0;
 
+    const assignedByCycleRows = await db("employees")
+      .where("company_id", companyId)
+      .select("subscription_billing_cycle")
+      .count("* as assigned_users")
+      .groupBy("subscription_billing_cycle");
+    const assignedByCycle = Object.fromEntries(
+      assignedByCycleRows.map((row) => [
+        row.subscription_billing_cycle || "monthly",
+        Number(row.assigned_users || 0),
+      ]),
+    );
+    const seatPools = activeSeatPools.map((pool) => ({
+      id: Number(pool.id),
+      billing_cycle: normalizeBillingCycle(pool.billing_cycle),
+      max_users: Number(pool.max_users || 0),
+      assigned_users:
+        assignedByCycle[normalizeBillingCycle(pool.billing_cycle)] || 0,
+      available_users: Math.max(
+        0,
+        Number(pool.max_users || 0) -
+          (assignedByCycle[normalizeBillingCycle(pool.billing_cycle)] || 0),
+      ),
+      end_date: pool.end_date,
+      status: pool.status,
+    }));
+    const totalMaxUsers = seatPools.reduce(
+      (sum, pool) => sum + pool.max_users,
+      0,
+    );
+
     res.json({
       success: true,
       data: {
         ...subscription,
+        max_users: totalMaxUsers || Number(subscription.max_users || 0),
+        plan_max_users: totalMaxUsers || Number(subscription.max_users || 0),
+        seat_pools: seatPools,
         is_internal_company: Boolean(internalCompany),
         addons: await getSubscriptionAddons(subscription.id),
         days_remaining: Math.max(0, daysRemaining),
@@ -2080,14 +2191,16 @@ const upgradeSubscription = async (req, res) => {
       });
     }
 
-    // Get current subscription
+    const selectedUsers = resolveSelectedUsers(users_count);
+    const pricing = computePricing(plan, selectedUsers, billing_cycle);
+
+    // Monthly and yearly seats are maintained as independent pools.
     const currentSubscription = await db("company_subscriptions")
       .where("company_id", companyId)
+      .where("billing_cycle", pricing.billing_cycle)
       .orderBy("created_at", "desc")
       .first();
 
-    const selectedUsers = resolveSelectedUsers(users_count);
-    const pricing = computePricing(plan, selectedUsers, billing_cycle);
     const paidAmount = pricing.total_amount;
 
     const startDate = moment().toDate();

@@ -67,6 +67,9 @@ const getDayWindow = (date = new Date()) => {
   return { start, end };
 };
 
+const getOpenPunchWindowStart = (date = new Date()) =>
+  new Date(new Date(date).getTime() - 36 * 60 * 60 * 1000);
+
 const normalizeRequestedTime = (value) => {
   const normalized = String(value || "").trim();
   if (!normalized) return null;
@@ -453,14 +456,16 @@ const getAttendanceStatus = async (req, res) => {
 
     const employeeId = await resolveAttendanceEmployeeId(req);
 
-    const { start: todayStart, end: tomorrowStart } = getDayWindow();
+    const now = new Date();
+    const { start: todayStart, end: tomorrowStart } = getDayWindow(now);
 
     const activeAttendance = await knex("attendance")
       .where("employee_id", employeeId)
       .where("company_id", companyId)
-      .where("check_in", ">=", todayStart)
-      .where("check_in", "<", tomorrowStart)
+      .where("check_in", ">=", getOpenPunchWindowStart(now))
+      .where("check_in", "<=", now)
       .whereNull("check_out")
+      .orderBy("check_in", "desc")
       .first();
 
     const todayAttendance = await knex("attendance")
@@ -909,14 +914,15 @@ const parseOptionalLocation = (rawLocation) => {
 };
 
 const resolveFacialAttendanceAction = async ({ companyId, employeeId }) => {
-  const { start: todayStart, end: tomorrowStart } = getDayWindow();
+  const now = new Date();
 
   const activeAttendance = await knex("attendance")
     .where("employee_id", employeeId)
     .where("company_id", companyId)
-    .where("check_in", ">=", todayStart)
-    .where("check_in", "<", tomorrowStart)
+    .where("check_in", ">=", getOpenPunchWindowStart(now))
+    .where("check_in", "<=", now)
     .whereNull("check_out")
+    .orderBy("check_in", "desc")
     .first();
 
   if (activeAttendance) return "check-out";

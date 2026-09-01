@@ -1,10 +1,30 @@
   const knex = require('../db/db');
 
+  const closeExpiredRequirements = async (companyId, requirementId = null) => {
+    const query = knex('job_requirements')
+      .whereNot('status', 'closed')
+      .whereNotNull('closing_date')
+      // Keep it open through the closing date; close it the next day.
+      .whereRaw('closing_date < CURRENT_DATE');
+
+    if (companyId) {
+      query.andWhere('company_id', companyId);
+    }
+
+    if (requirementId) {
+      query.andWhere('id', requirementId);
+    }
+
+    return query.update({ status: 'closed', updated_at: knex.fn.now() });
+  };
+
   // Get all job requirements for a company
   const getJobRequirements = async (req, res) => {
     try {
       const companyId = req.user.company_id;
       const { status, urgency, search } = req.query;
+
+      await closeExpiredRequirements(companyId);
 
       let query = knex('job_requirements')
         .where('company_id', companyId)
@@ -47,6 +67,8 @@
     try {
       const { id } = req.params;
       const companyId = req.user.company_id;
+
+      await closeExpiredRequirements(companyId, id);
 
       const requirement = await knex('job_requirements')
         .where({
@@ -117,6 +139,8 @@
         created_by: req.user.id
       });
 
+      await closeExpiredRequirements(companyId, requirementId);
+
       const requirement = await knex('job_requirements')
         .where({ id: requirementId, company_id: companyId })
         .first();
@@ -165,6 +189,8 @@
           message: 'Job requirement not found'
         });
       }
+
+      await closeExpiredRequirements(companyId, id);
 
       // Then fetch the updated record
       const updatedRequirement = await knex('job_requirements')
@@ -267,6 +293,8 @@
     try {
       const companyId = req.user.company_id;
 
+      await closeExpiredRequirements(companyId);
+
       const stats = await knex('job_requirements')
         .where('company_id', companyId)
         .select(
@@ -300,5 +328,6 @@
     updateJobRequirement,
     deleteJobRequirement,
     updateFilledPositions,
-    getJobRequirementsStats
+    getJobRequirementsStats,
+    closeExpiredRequirements
   };
