@@ -68,6 +68,7 @@ const parseLeadIndicatorDefinitions = (value) => {
         .map((item) => ({
           label: String(item?.label || "").trim(),
           type: item?.type === "yesno" ? "yesno" : "number",
+          frequency: item?.frequency === "weekly" ? "weekly" : "daily",
           targetValue: String(item?.targetValue ?? item?.target ?? "").trim(),
           minimumValue: String(item?.minimumValue ?? item?.minimum ?? "").trim(),
         }))
@@ -78,6 +79,7 @@ const parseLeadIndicatorDefinitions = (value) => {
   return legacyLeadIndicatorLines(raw).map((label) => ({
     label,
     type: "number",
+    frequency: "daily",
     targetValue: "",
     minimumValue: "",
   }));
@@ -214,8 +216,14 @@ const getLeadIndicatorSignals = async ({ templateIds }) => {
     indicators.forEach((indicator, indicatorIndex) => {
       const rowDraft = daily?.[`li-${indicatorIndex}`] || {};
       const dayEntries = rowDraft && typeof rowDraft === "object" ? rowDraft : {};
-      const dayKeys = expectedDayKeys.length
-        ? expectedDayKeys
+      const expectedEntryKeys = indicator.frequency === "weekly"
+        ? Array.from(
+            { length: elapsedDays ? Math.ceil(elapsedDays / 7) : 0 },
+            (_, index) => `week-${index + 1}`,
+          )
+        : expectedDayKeys;
+      const dayKeys = expectedEntryKeys.length
+        ? expectedEntryKeys
         : Object.keys(dayEntries).length
           ? Object.keys(dayEntries)
           : ["today"];
@@ -233,7 +241,11 @@ const getLeadIndicatorSignals = async ({ templateIds }) => {
             parameterId: Number(row.parameterId || 0) || null,
             parameterName: row.parameterName || "KPI Parameter",
             indicator: indicator.label,
-            day: dayKey === "today" ? "" : String(dayKey).padStart(2, "0"),
+            day: dayKey === "today"
+              ? ""
+              : String(dayKey).startsWith("week-")
+                ? `Week ${String(dayKey).replace("week-", "")}`
+                : String(dayKey).padStart(2, "0"),
             value: String(dayEntries[dayKey] ?? "").trim(),
             targetValue: indicator.targetValue,
             minimumValue: indicator.minimumValue,
@@ -855,6 +867,51 @@ const buildDepartmentKpiPerformance = (scorecards = []) => {
     );
 };
 
+const buildMonthlyReviewComparison = (scorecards = [], now = new Date()) => {
+  const currentStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+  );
+  const previousStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
+  );
+  const nextStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+  );
+
+  const summarize = (start, end) => {
+    const rows = scorecards.filter(
+      (item) => item.monthDate >= start && item.monthDate < end,
+    );
+    return {
+      month: `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}`,
+      monthLabel: new Intl.DateTimeFormat("en-US", {
+        month: "long",
+        year: "numeric",
+        timeZone: "UTC",
+      }).format(start),
+      reviewCount: rows.length,
+      averageScore: rows.length
+        ? round2(rows.reduce((sum, item) => sum + item.score, 0) / rows.length)
+        : 0,
+      lowKpiCount: rows.filter((item) => item.score < 70).length,
+      topPerformerCount: rows.filter((item) => item.score >= 70).length,
+    };
+  };
+
+  const current = summarize(currentStart, nextStart);
+  const previous = summarize(previousStart, currentStart);
+
+  return {
+    current,
+    previous,
+    changes: {
+      reviewCount: current.reviewCount - previous.reviewCount,
+      averageScore: round2(current.averageScore - previous.averageScore),
+      lowKpiCount: current.lowKpiCount - previous.lowKpiCount,
+    },
+  };
+};
+
 const getKpiDashboardWidgets = async (req, res) => {
   try {
     const companyId = Number(req.user?.company_id || 0) || null;
@@ -905,12 +962,20 @@ const getKpiDashboardWidgets = async (req, res) => {
       requestedEmployeeId,
     });
 
-    const { templates, templateIds } = await getKpiTemplateData({
-      companyId,
-      employeeIds: scope.employeeIds,
-      selectedYear: normalizedYear,
-      selectedMonth: normalizedMonth,
-    });
+    const [{ templates, templateIds }, comparisonTemplateData] = await Promise.all([
+      getKpiTemplateData({
+        companyId,
+        employeeIds: scope.employeeIds,
+        selectedYear: normalizedYear,
+        selectedMonth: normalizedMonth,
+      }),
+      getKpiTemplateData({
+        companyId,
+        employeeIds: scope.employeeIds,
+        selectedYear: null,
+        selectedMonth: null,
+      }),
+    ]);
     const employeeDepartmentLookup = await getEmployeeDepartmentLookup({
       employeeTable: scope.employeeTable,
       employeeColumns: scope.employeeColumns,
@@ -938,6 +1003,16 @@ const getKpiDashboardWidgets = async (req, res) => {
         };
       })
       .filter((item) => !Number.isNaN(item.monthDate.getTime()));
+
+    const comparisonScorecards = comparisonTemplateData.templates
+      .map((template) => ({
+        monthDate: new Date(template.scoreDate || template.createdAt),
+        score: round2(template.totalScore),
+      }))
+      .filter((item) => !Number.isNaN(item.monthDate.getTime()));
+    const monthlyReviewComparison = buildMonthlyReviewComparison(
+      comparisonScorecards,
+    );
 
     const averageKpiScore = validScorecards.length
       ? round2(
@@ -1046,6 +1121,7 @@ const getKpiDashboardWidgets = async (req, res) => {
       kpiTrend: kpiPerformanceTrend,
       kpiPerformanceTrend,
       departmentKpiPerformance,
+      monthlyReviewComparison,
       competencyGrowthPct,
       correctiveActionStatus,
       correctiveActionTotal,

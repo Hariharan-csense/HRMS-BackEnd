@@ -1699,7 +1699,7 @@ const getAddonUserAssignments = async (req, res) => {
       });
     }
 
-    const subscription = await db("company_subscriptions")
+    let subscription = await db("company_subscriptions")
       .where("company_id", companyId)
       .whereIn("status", ["trial", "active"])
       .orderBy("created_at", "desc")
@@ -1969,6 +1969,15 @@ const getCompanySubscription = async (req, res) => {
       })
       .orderBy("created_at", "desc");
 
+    const allSeatPools = await db("company_subscriptions")
+      .where("company_id", companyId)
+      .orderBy("created_at", "desc");
+    const latestPoolByCycle = new Map();
+    allSeatPools.forEach((pool) => {
+      const cycle = normalizeBillingCycle(pool.billing_cycle);
+      if (!latestPoolByCycle.has(cycle)) latestPoolByCycle.set(cycle, pool);
+    });
+
     if (activeSeatPools.length > 0) {
       const activePrimary = activeSeatPools.find(
         (pool) => Number(pool.id) === Number(subscription?.id),
@@ -2061,6 +2070,26 @@ const getCompanySubscription = async (req, res) => {
       end_date: pool.end_date,
       status: pool.status,
     }));
+    const seatPoolStatus = Array.from(latestPoolByCycle.values()).map((pool) => {
+      const cycle = normalizeBillingCycle(pool.billing_cycle);
+      const effectiveEndDate = pool.status === "trial"
+        ? pool.trial_end_date
+        : pool.end_date;
+      const isActive =
+        ["active", "trial"].includes(String(pool.status)) &&
+        effectiveEndDate &&
+        moment(effectiveEndDate).isSameOrAfter(moment());
+      return {
+        id: Number(pool.id),
+        plan_id: Number(pool.plan_id),
+        billing_cycle: cycle,
+        max_users: Number(pool.max_users || 0),
+        assigned_users: assignedByCycle[cycle] || 0,
+        end_date: effectiveEndDate,
+        status: isActive ? "active" : "expired",
+        is_active: Boolean(isActive),
+      };
+    });
     const totalMaxUsers = seatPools.reduce(
       (sum, pool) => sum + pool.max_users,
       0,
@@ -2073,6 +2102,8 @@ const getCompanySubscription = async (req, res) => {
         max_users: totalMaxUsers || Number(subscription.max_users || 0),
         plan_max_users: totalMaxUsers || Number(subscription.max_users || 0),
         seat_pools: seatPools,
+        seat_pool_status: seatPoolStatus,
+        is_free_plan: Number(subscription.plan_price || 0) === 0,
         is_internal_company: Boolean(internalCompany),
         addons: await getSubscriptionAddons(subscription.id),
         days_remaining: Math.max(0, daysRemaining),
@@ -2109,6 +2140,13 @@ const startTrial = async (req, res) => {
     const existingSubscription = await db("company_subscriptions")
       .where("company_id", companyId)
       .whereIn("status", ["trial", "active"])
+      .where(function () {
+        this.where("end_date", ">=", db.fn.now()).orWhere(
+          "trial_end_date",
+          ">=",
+          db.fn.now(),
+        );
+      })
       .first();
 
     if (existingSubscription) {
@@ -2132,6 +2170,47 @@ const startTrial = async (req, res) => {
     const pricing = computePricing(plan, selectedUsers, billing_cycle);
 
     const startDate = moment().toDate();
+    const isFreePlan =
+      Number(pricing.price_per_user || 0) === 0 &&
+      Number(pricing.total_amount || 0) === 0;
+
+    if (isFreePlan) {
+      const endDate = moment(startDate).add(100, "years").toDate();
+      const existingFreePool = await db("company_subscriptions")
+        .where({ company_id: companyId, billing_cycle: pricing.billing_cycle })
+        .orderBy("created_at", "desc")
+        .first();
+      const values = {
+        plan_id,
+        start_date: startDate,
+        end_date: endDate,
+        trial_end_date: null,
+        status: "active",
+        max_users: selectedUsers,
+        storage_gb: plan.storage_gb || 1,
+        billing_cycle: pricing.billing_cycle,
+        paid_amount: 0,
+        next_billing_date: null,
+        updated_at: new Date(),
+      };
+      let subscriptionId;
+      if (existingFreePool) {
+        await db("company_subscriptions").where("id", existingFreePool.id).update(values);
+        subscriptionId = existingFreePool.id;
+      } else {
+        [subscriptionId] = await db("company_subscriptions").insert({
+          company_id: companyId,
+          ...values,
+          created_at: new Date(),
+        });
+      }
+      return res.status(201).json({
+        success: true,
+        message: "Free plan activated successfully",
+        data: { subscription_id: subscriptionId, plan_name: plan.name },
+      });
+    }
+
     const trialEndDate = moment(startDate)
       .add(plan.trial_days, "days")
       .toDate();

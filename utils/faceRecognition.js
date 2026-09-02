@@ -643,14 +643,18 @@ const findEmployeeByDescriptor = async (
   const threshold = Number(options.threshold) || 0.5;
   const minimumMargin = Number(options.minimumMargin) || 0.04;
 
-  // Always synchronize templates from employee document photos before
-  // matching. Previously this ran only when the entire face_templates table
-  // was empty, so after the first employee was registered every later
-  // employee was never enrolled and could never match. Cached/persisted
-  // descriptors make this inexpensive after the initial synchronization, and
-  // the file cache key also refreshes a template when its photo is replaced.
-  await synchronizeCompanyDescriptors(companyId);
-  const templates = await getCompanyPersistedDescriptors(companyId);
+  // Use persisted descriptors immediately on normal scans. Refreshing every
+  // employee photo is comparatively expensive, so keep that work in the
+  // background and only block the first scan when no templates exist yet.
+  let templates = await getCompanyPersistedDescriptors(companyId);
+  if (!templates.length) {
+    await synchronizeCompanyDescriptors(companyId);
+    templates = await getCompanyPersistedDescriptors(companyId);
+  } else {
+    void synchronizeCompanyDescriptors(companyId).catch((error) => {
+      console.warn("Background face descriptor sync failed:", error.message);
+    });
+  }
 
   if (!templates.length) {
     const error = new Error(

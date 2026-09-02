@@ -1104,7 +1104,7 @@ const facialRecognitionDescriptorAttendance = async (req, res) => {
       attendance = await doCheckIn({
         employeeId,
         companyId,
-        imageData: null,
+        imageData: req.file?.path || null,
         location,
         deviceInfo,
         shiftId: shift?.id || null,
@@ -1115,7 +1115,7 @@ const facialRecognitionDescriptorAttendance = async (req, res) => {
       const checkoutResult = await doCheckOut({
         employeeId,
         companyId,
-        imageData: null,
+        imageData: req.file?.path || null,
         location,
         deviceInfo,
       });

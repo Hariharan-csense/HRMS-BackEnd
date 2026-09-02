@@ -81,6 +81,7 @@ router.post(
   requirePermission("attendance", "create", {
     submodule: "facial_recognition",
   }),
+  uploadAttendanceImage("image"),
   facialRecognitionDescriptorAttendance,
 );
 
