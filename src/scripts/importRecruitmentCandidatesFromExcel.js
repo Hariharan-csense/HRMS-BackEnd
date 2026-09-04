@@ -2,7 +2,7 @@ require("dotenv").config();
 
 const path = require("path");
 const knex = require("../db/db");
-const XLSX = require("../../frontend/node_modules/xlsx");
+const XLSX = require("../../../FrontEnd/node_modules/xlsx");
 
 const EXCEL_PATH = process.argv[2];
 const COMPANY_ID = Number(process.argv[3] || 51);

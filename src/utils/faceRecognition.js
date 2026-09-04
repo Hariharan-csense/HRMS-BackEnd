@@ -14,7 +14,7 @@ faceapi.env.monkeyPatch({
 // from employee_documents.file_path, e.g. /uploads/employees/company_51/photo...
 const modelsDir = process.env.FACE_MODEL_DIR
   ? path.resolve(process.env.FACE_MODEL_DIR)
-  : path.join(__dirname, "../../models");
+  : path.join(__dirname, "../../../models");
 
 let modelsLoaded = false;
 let modelLoadError = null;
@@ -100,7 +100,7 @@ const resolveUploadPath = (filePath) => {
   if (isWindowsAbsolute || isUncPath) return rawPath;
 
   const normalized = rawPath.replace(/^[/\\]+/, "");
-  return path.join(__dirname, "../../", normalized);
+  return path.join(__dirname, "../../../", normalized);
 };
 
 const getFaceDetectionOptions = () =>

@@ -3,7 +3,7 @@ const path = require("path");
 const cors = require("cors");
 const dotenv = require("dotenv");
 dotenv.config();
-dotenv.config({ path: path.join(__dirname, ".env"), override: false });
+dotenv.config({ path: path.join(__dirname, "..", ".env"), override: false });
 const fs = require("fs");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -57,8 +57,8 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-const rootUploadsPath = path.resolve(__dirname, "..", "uploads");
-const backendUploadsPath = path.resolve(__dirname, "uploads");
+const rootUploadsPath = path.resolve(__dirname, "..", "..", "uploads");
+const backendUploadsPath = path.resolve(__dirname, "..", "uploads");
 const serveUploadedFile = (req, res, next) => {
   const relativeUploadPath = String(req.path || "")
     .replace(/^\/backend\/uploads\/?/, "")
@@ -89,7 +89,7 @@ app.use("/backend/uploads", express.static(backendUploadsPath));
 app.use("/uploads", express.static(rootUploadsPath));
 app.use("/uploads", express.static(backendUploadsPath));
 // Serve uploaded files (images, documents, etc.)
-const uploadsPath = path.resolve(__dirname, "../uploads");
+const uploadsPath = path.resolve(__dirname, "../../uploads");
 app.use("/uploads", express.static(uploadsPath));
 
 // Import routes

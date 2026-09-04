@@ -865,8 +865,8 @@ const resolveUploadAbsolutePath = (storedPath) => {
   if (!storedPath) return null;
   const relativePath = String(storedPath).replace(/^\/+/, "");
   const candidates = [
+    path.resolve(__dirname, "..", "..", "..", relativePath),
     path.resolve(__dirname, "..", "..", relativePath),
-    path.resolve(__dirname, "..", relativePath),
   ];
   return candidates.find(
     (filePath) => fs.existsSync(filePath) && fs.statSync(filePath).isFile(),

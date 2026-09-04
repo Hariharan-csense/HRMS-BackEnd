@@ -2445,7 +2445,7 @@ const updateStorageUsage = async (companyId) => {
 
     const companyUploadsPath = path.join(
       __dirname,
-      "../uploads/company_",
+      "../../uploads/company_",
       companyId,
     );
     let totalSizeMB = 0;

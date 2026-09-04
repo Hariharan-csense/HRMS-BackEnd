@@ -42,6 +42,7 @@ const saveBase64AttendanceImage = ({
       __dirname,
       "..",
       "..",
+      "..",
       "uploads",
       "attendance",
       `company_${companyId}`

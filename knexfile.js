@@ -13,10 +13,10 @@ module.exports = {
       timezone: 'Z'
     },
     migrations: {
-      directory: './migrations'
+      directory: './src/db/migrations'
     },
     seeds: {
-      directory: './db/seeds'
+      directory: './src/db/seeds'
     }
   }
 };

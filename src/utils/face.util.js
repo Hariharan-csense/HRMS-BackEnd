@@ -12,7 +12,7 @@ async function saveImage(imageData, employeeId = null, type = 'checkin') {
   try {
     // If imageData is a file path, copy it to uploads directory
     if (imageData && typeof imageData === 'string') {
-      const uploadsDir = path.join(__dirname, '../uploads/attendance');
+      const uploadsDir = path.join(__dirname, '../../uploads/attendance');
       
       // Create uploads directory if it doesn't exist
       if (!fs.existsSync(uploadsDir)) {

@@ -2,7 +2,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 
-const baseUploadDir = path.join(__dirname, "../../uploads/kpi-attachments");
+const baseUploadDir = path.join(__dirname, "../../../uploads/kpi-attachments");
 
 if (!fs.existsSync(baseUploadDir)) {
   fs.mkdirSync(baseUploadDir, { recursive: true });

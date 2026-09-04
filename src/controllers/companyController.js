@@ -4,7 +4,7 @@ const fs = require('fs');
 const knex = require('../db/db');
 const { generateAutoNumber } = require('../utils/generateAutoNumber');
 
-const uploadRoot = path.resolve(__dirname, '..', '..', 'uploads', 'company-logos');
+const uploadRoot = path.resolve(__dirname, '..', '..', '..', 'uploads', 'company-logos');
 
 const toPublicAssetPath = (filename) => (filename ? `/uploads/company-logos/${filename}` : null);
 
@@ -29,7 +29,7 @@ const cleanupUploadedAssets = (req) => {
 
 const toAbsoluteAssetPath = (assetPath) => {
   if (!assetPath) return null;
-  return path.resolve(__dirname, '..', '..', String(assetPath).replace(/^\/+/, ''));
+  return path.resolve(__dirname, '..', '..', '..', String(assetPath).replace(/^\/+/, ''));
 };
 
 const removeAssetFileIfExists = (assetPath) => {

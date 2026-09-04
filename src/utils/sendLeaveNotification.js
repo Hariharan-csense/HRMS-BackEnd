@@ -41,7 +41,7 @@ const sendLeaveNotification = async (toEmails, application, employeeInfo, leaveT
     html,
     attachments: application.attachment_path ? [{
       filename: path.basename(application.attachment_path),
-      path: path.join(__dirname, '..', application.attachment_path)
+      path: path.join(__dirname, '..', '..', application.attachment_path)
     }] : []
   });
 };

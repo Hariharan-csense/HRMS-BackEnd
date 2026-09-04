@@ -837,7 +837,7 @@ const assetPathToBase64 = (assetPath) => {
 
   const relativePath = String(assetPath).replace(/^\/+/, "");
   const candidates = [
-    path.resolve(__dirname, "..", "..", relativePath),
+    path.resolve(__dirname, "..", "..", "..", relativePath),
     path.join(process.cwd(), "..", relativePath),
     path.join(process.cwd(), relativePath),
   ];

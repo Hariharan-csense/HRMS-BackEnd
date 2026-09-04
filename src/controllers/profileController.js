@@ -394,6 +394,7 @@ const deleteMyAccountAndOrganization = async (req, res) => {
       const logoPath = path.join(
         __dirname,
         "..",
+        "..",
         company.logo.replace(/^\/+/, ""),
       );
       if (fs.existsSync(logoPath)) {
@@ -401,7 +402,7 @@ const deleteMyAccountAndOrganization = async (req, res) => {
       }
     }
 
-    const uploadRoot = path.join(__dirname, "..", "uploads");
+    const uploadRoot = path.join(__dirname, "..", "..", "uploads");
     const companyFolderName = `company_${companyId}`;
     const companyUploadDirs = [
       path.join(uploadRoot, "attendance", companyFolderName),

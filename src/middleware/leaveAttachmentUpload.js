@@ -4,7 +4,7 @@ const path = require("path");
 const fs = require("fs");
 
 // Base upload directory
-const baseUploadDir = path.join(__dirname, "../../uploads/leave-attachments");
+const baseUploadDir = path.join(__dirname, "../../../uploads/leave-attachments");
 
 // Ensure base directory exists
 if (!fs.existsSync(baseUploadDir)) {

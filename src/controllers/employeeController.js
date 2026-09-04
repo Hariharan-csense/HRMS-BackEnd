@@ -1748,7 +1748,7 @@ const deleteEmployee = async (req, res) => {
     // Delete document files
     const docs = await knex("employee_documents").where({ employee_id: id });
     docs.forEach((doc) => {
-      const filePath = path.join(__dirname, "..", "..", doc.file_path);
+      const filePath = path.join(__dirname, "..", "..", "..", doc.file_path);
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     });
 

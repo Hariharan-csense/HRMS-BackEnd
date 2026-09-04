@@ -46,7 +46,7 @@ const sendLeaveStatusNotification = async (
         ? [
             {
               filename: path.basename(application.attachment_path),
-              path: path.join(__dirname, "..", application.attachment_path),
+              path: path.join(__dirname, "..", "..", application.attachment_path),
             },
           ]
         : [],
