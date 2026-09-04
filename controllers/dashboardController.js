@@ -796,6 +796,7 @@ const getEmployeeDashboardData = async (req, res) => {
       ? new Date(activityTime).toLocaleTimeString("en-US", {
           hour: "2-digit",
           minute: "2-digit",
+          timeZone: "Asia/Kolkata",
         })
       : null;
 
