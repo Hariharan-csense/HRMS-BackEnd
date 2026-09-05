@@ -1,5 +1,11 @@
 // src/controllers/adminDashboardController.js
 const knex = require("../db/db"); // Adjust path if needed
+const {
+  addDaysToDateKey,
+  formatTime,
+  getDateKey,
+  getZonedDateParts,
+} = require("../utils/dateTime");
 const { getCompanyPolicy } = require("../services/companyPolicyService");
 const {
   isLeaveTypeEligibleForEmployee,
@@ -96,9 +102,8 @@ const getAdminDashboardData = async (req, res) => {
         .json({ message: "You are not assigned to any company" });
     }
 
-    const today = new Date().toISOString().split("T")[0];
-    const yesterday = new Date(Date.now() - 86400000);
-    const yesterdayStr = yesterday.toISOString().split("T")[0];
+    const today = getDateKey();
+    const yesterdayStr = addDaysToDateKey(today, -1);
 
     // ==================== Base Data ====================
     const totalEmployeesResult = await knex("employees")
@@ -470,8 +475,7 @@ const getAdminDashboardData = async (req, res) => {
     }));
 
     // Upcoming Birthdays
-    const currentMonth = new Date().getMonth() + 1;
-    const currentDay = new Date().getDate();
+    const { month: currentMonth, day: currentDay } = getZonedDateParts();
 
     // Ensure birthdays are scoped to the requested company only
     const upcomingBirthdaysRaw = await knex("employees as e")
@@ -744,9 +748,8 @@ const getEmployeeDashboardData = async (req, res) => {
         .json({ message: "You are not assigned to any company" });
     }
 
-    const today = new Date().toISOString().split("T")[0];
-    const currentMonth = new Date().getMonth() + 1;
-    const currentYear = new Date().getFullYear();
+    const today = getDateKey();
+    const { month: currentMonth, year: currentYear } = getZonedDateParts();
 
     // Get every attendance session for today. The first punch owns the day's
     // status (late/half-day is decided at first check-in), while later rows may
@@ -793,11 +796,7 @@ const getEmployeeDashboardData = async (req, res) => {
       ? latestAttendance.check_out || latestAttendance.check_in
       : null;
     const formattedActivityTime = activityTime
-      ? new Date(activityTime).toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          timeZone: "Asia/Kolkata",
-        })
+      ? formatTime(activityTime, { locale: "en-US" })
       : null;
 
     // Get leave balance
@@ -1393,9 +1392,8 @@ const getHRDashboardData = async (req, res) => {
         .json({ message: "You are not assigned to any company" });
     }
 
-    const today = new Date().toISOString().split("T")[0];
-    const currentMonth = new Date().getMonth() + 1;
-    const currentYear = new Date().getFullYear();
+    const today = getDateKey();
+    const { month: currentMonth, year: currentYear } = getZonedDateParts();
 
     // Get total employees
     const totalEmployeesResult = await knex("employees")
@@ -1473,8 +1471,7 @@ const getFinanceDashboardData = async (req, res) => {
         .json({ message: "You are not assigned to any company" });
     }
 
-    const currentMonth = new Date().getMonth() + 1;
-    const currentYear = new Date().getFullYear();
+    const { month: currentMonth, year: currentYear } = getZonedDateParts();
 
     console.log(
       `Fetching data for companyId: ${companyId}, Year: ${currentYear}, Month: ${currentMonth}`,
@@ -1678,7 +1675,8 @@ const getEmployeeAnalyticsData = async (req, res) => {
       return { month: m.short, score, target: 90 };
     });
 
-    const currentMonthKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
+    const currentDateParts = getZonedDateParts();
+    const currentMonthKey = `${currentDateParts.year}-${String(currentDateParts.month).padStart(2, "0")}`;
     const currentMonth = attendanceByMonth[currentMonthKey] || {
       present: 0,
       absent: 0,
@@ -1708,7 +1706,7 @@ const getEmployeeAnalyticsData = async (req, res) => {
       .where({
         "lb.company_id": companyId,
         "lb.employee_id": employeeId,
-        "lb.year": new Date().getFullYear(),
+        "lb.year": currentDateParts.year,
       })
       .select("lt.name as leave_type_name", "lb.available", "lb.availed");
 

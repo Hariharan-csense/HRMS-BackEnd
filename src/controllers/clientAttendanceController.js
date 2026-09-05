@@ -1,4 +1,5 @@
 const knex = require('../db/db');
+const { getDateKey } = require('../utils/dateTime');
 const { hasAnyRole } = require('../middleware/authMiddleware');
 const { isClientAssignedToEmployee } = require('../utils/clientAssignments');
 
@@ -38,7 +39,7 @@ const getTodayClientAttendance = async (req, res) => {
     const companyId = req.user.company_id;
     const role = req.user.role;
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = getDateKey();
 
     // ===============================
     // BASE QUERY
@@ -91,7 +92,7 @@ const checkInToClient = async (req, res) => {
   try {
     const employeeId = req.user.id;
     const { clientId, latitude, longitude, location, notes } = req.body;
-    const today = new Date().toISOString().split('T')[0];
+    const today = getDateKey();
     const now = new Date();
 
     // Verify client is assigned to this employee
@@ -345,7 +346,7 @@ const getClientAttendanceHistory = async (req, res) => {
 const getActiveCheckIn = async (req, res) => {
   try {
     const employeeId = req.user.id;
-    const today = new Date().toISOString().split('T')[0];
+    const today = getDateKey();
 
     const activeCheckIn = await knex('client_attendance')
       .leftJoin('clients', 'client_attendance.client_id', 'clients.id')

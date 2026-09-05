@@ -6,7 +6,16 @@ const { sendEmailWithAttachment } = require('../utils/mailer'); // your SMTP mod
 
 const generatePdfFromHtml = (html, pdfPath) =>
   new Promise((resolve, reject) => {
-    pdf.create(html, { format: 'A4' }).toFile(pdfPath, (err, result) => {
+    pdf.create(html, {
+      format: 'A4',
+      // Keep PhantomJS isolated from an incompatible host OpenSSL config.
+      childProcessOptions: {
+        env: {
+          ...process.env,
+          OPENSSL_CONF: process.platform === 'win32' ? 'NUL' : '/dev/null'
+        }
+      }
+    }).toFile(pdfPath, (err, result) => {
       if (err) return reject(err);
       resolve(result);
     });

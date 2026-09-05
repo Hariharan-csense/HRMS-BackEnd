@@ -1,4 +1,5 @@
 const knex = require('../db/db');
+const { getDateKey } = require('../utils/dateTime');
 const { isClientAssignedToEmployee } = require('../utils/clientAssignments');
 
 // Calculate distance between two coordinates in meters
@@ -157,7 +158,7 @@ const checkInWithGeoFence = async (req, res) => {
   try {
     const employeeId = req.user.id;
     const { clientId, latitude, longitude, location, notes } = req.body;
-    const today = new Date().toISOString().split('T')[0];
+    const today = getDateKey();
     const now = new Date();
 
     // Verify client is assigned to this employee

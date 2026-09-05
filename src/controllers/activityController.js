@@ -1,5 +1,11 @@
 // controllers/activityController.js
 const knex = require("../db/db");
+const {
+  APP_TIME_ZONE,
+  addDaysToDateKey,
+  formatTime,
+  getDateKey,
+} = require("../utils/dateTime");
 
 // @desc    Get user activities
 // @route   GET /api/activities
@@ -144,25 +150,21 @@ const logActivity = async (req, res) => {
 // Helper function to format date
 function formatDate(dateString) {
   const date = new Date(dateString);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const activityDate = new Date(
-    date.getFullYear(),
-    date.getMonth(),
-    date.getDate(),
-  );
+  if (Number.isNaN(date.getTime())) return "Unknown time";
 
-  if (activityDate.getTime() === today.getTime()) {
-    return `Today at ${date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}`;
+  const today = getDateKey();
+  const activityDate = getDateKey(date);
+
+  if (activityDate === today) {
+    return `Today at ${formatTime(date, { locale: "en-US", hour: "numeric" })}`;
   }
 
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (activityDate.getTime() === yesterday.getTime()) {
-    return `Yesterday at ${date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}`;
+  if (activityDate === addDaysToDateKey(today, -1)) {
+    return `Yesterday at ${formatTime(date, { locale: "en-US", hour: "numeric" })}`;
   }
 
   return date.toLocaleDateString("en-US", {
+    timeZone: APP_TIME_ZONE,
     month: "short",
     day: "numeric",
     year: "numeric",

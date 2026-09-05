@@ -1,6 +1,7 @@
 const knex = require("../db/db");
 const { hasAnyRole } = require("../middleware/authMiddleware");
 const { validateLoanPolicy } = require("../services/companyPolicyService");
+const { getDateKey } = require("../utils/dateTime");
 
 const PRIVILEGED_ROLES = ["admin", "hr", "finance", "ceo", "superadmin"];
 
@@ -11,7 +12,7 @@ const toNumber = (value, fallback = 0) => {
 
 const roundTo2 = (value) => Number((Number(value) || 0).toFixed(2));
 
-const todayKey = () => new Date().toISOString().slice(0, 10);
+const todayKey = () => getDateKey();
 
 const normalizeMonth = (value) => {
   const text = String(value || "").trim();

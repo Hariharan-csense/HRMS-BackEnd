@@ -1,6 +1,7 @@
 const knex = require("../db/db");
 const fs = require("fs");
 const path = require("path");
+const { warmEmployeeFaceDescriptor } = require("../utils/faceRecognition");
 
 const resolveEmployeeIdFromAuth = async (req) => {
   const companyId = Number(req.user?.company_id);
@@ -229,6 +230,18 @@ const updateMyProfile = async (req, res) => {
       name: updatedEmployee.first_name,
       company_id: companyId,
     });
+
+    if (req.file && req.uploadedProfilePath) {
+      void warmEmployeeFaceDescriptor(employeeId, companyId).then(
+        (result) => {
+          if (!result.ready) {
+            console.warn("Profile face template was not updated:", result);
+          }
+        },
+        (error) =>
+          console.warn("Profile face template update failed:", error.message),
+      );
+    }
 
     res.json({
       success: true,

@@ -1934,25 +1934,25 @@ const getCompanySubscription = async (req, res) => {
 
     const internalCompany = await getInternalFullAccessCompany(companyId, db);
 
-    const subscription = await db("company_subscriptions")
-      .select(
-        "company_subscriptions.*",
-        "subscription_plans.name as plan_name",
-        "subscription_plans.description as plan_description",
-        `${monthlyPriceField} as plan_price`,
-        "company_subscriptions.max_users as plan_max_users",
-        storageField
-          ? `subscription_plans.${storageField} as plan_storage_gb`
-          : db.raw("NULL as plan_storage_gb"),
-      )
-      .join(
-        "subscription_plans",
-        "company_subscriptions.plan_id",
-        "subscription_plans.id",
-      )
-      .where("company_subscriptions.company_id", companyId)
-      .orderBy("company_subscriptions.created_at", "desc")
-      .first();
+   let subscription = await db("company_subscriptions")
+     .select(
+       "company_subscriptions.*",
+       "subscription_plans.name as plan_name",
+       "subscription_plans.description as plan_description",
+       `${monthlyPriceField} as plan_price`,
+       "company_subscriptions.max_users as plan_max_users",
+       storageField
+         ? `subscription_plans.${storageField} as plan_storage_gb`
+         : db.raw("NULL as plan_storage_gb"),
+     )
+     .join(
+       "subscription_plans",
+       "company_subscriptions.plan_id",
+       "subscription_plans.id",
+     )
+     .where("company_subscriptions.company_id", companyId)
+     .orderBy("company_subscriptions.created_at", "desc")
+     .first();
 
     const activeSeatPools = await db("company_subscriptions")
       .where("company_id", companyId)

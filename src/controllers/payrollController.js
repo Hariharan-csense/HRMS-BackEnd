@@ -6,6 +6,7 @@ const handlebars = require("handlebars");
 const pdf = require("html-pdf");
 const { sendEmailWithAttachment } = require("../utils/mailer"); // SMTP module
 const { calculateHourlyPayroll, calculateShiftHours } = require("../utils/hourlyPayroll");
+const { getDateKey } = require("../utils/dateTime");
 
 const ensurePayrollAuditTable = async () => {
   const exists = await knex.schema.hasTable("payroll_audit_trail");
@@ -517,6 +518,16 @@ const generatePdfFromHtml = (html, pdfPath) => {
     pdf
       .create(html, {
         format: "A4",
+        // PhantomJS (used internally by html-pdf) is linked against an old
+        // OpenSSL version. Do not let it parse the host machine's modern or
+        // malformed OpenSSL config, which makes PDF generation exit before it
+        // starts with DEF_LOAD_BIO / "missing equal sign" errors.
+        childProcessOptions: {
+          env: {
+            ...process.env,
+            OPENSSL_CONF: process.platform === "win32" ? "NUL" : "/dev/null",
+          },
+        },
         border: {
           top: "8mm",
           right: "8mm",
@@ -1610,7 +1621,7 @@ const processPayroll = async (req, res) => {
       overtime_hours: overtimeHours,
       normal_pay: normalPay,
       overtime_pay: overtimePay,
-      current_date: new Date().toISOString().slice(0, 10),
+      current_date: getDateKey(),
     });
 
     const pdfDir = path.join(__dirname, "temp");
@@ -2235,7 +2246,7 @@ const payslipPreview = async (req, res) => {
       overtime_hours: payroll.overtime_hours || 0,
       normal_pay: payroll.normal_pay || 0,
       overtime_pay: payroll.overtime_pay || 0,
-      current_date: new Date().toISOString().slice(0, 10),
+      current_date: getDateKey(),
     };
 
     // ===============================

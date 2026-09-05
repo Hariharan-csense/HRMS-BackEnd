@@ -10,6 +10,7 @@ const {
   calculateLeaveForConfirmedEmployee,
 } = require("../controllers/leaveController");
 const { isEmployeeFullTime } = require("../services/leaveBalanceService");
+const { warmEmployeeFaceDescriptor } = require("../utils/faceRecognition");
 
 const EMPLOYEE_DUPLICATE_FIELD_CONFIG = [
   {
@@ -824,6 +825,17 @@ const addEmployee = async (req, res) => {
       console.log(
         `Successfully inserted ${allFiles.length} documents for employee ${employeeId}`,
       );
+      if (allFiles.some((file) => file.fieldname === "photo")) {
+        void warmEmployeeFaceDescriptor(employeeId, companyId).then(
+          (result) => {
+            if (!result.ready) {
+              console.warn("Employee face template was not created:", result);
+            }
+          },
+          (error) =>
+            console.warn("Employee face template build failed:", error.message),
+        );
+      }
     } else {
       console.log("No files uploaded for this employee");
     }
@@ -1681,6 +1693,17 @@ const updateEmployee = async (req, res) => {
       console.log(
         `Uploaded ${allFiles.length} new documents for employee ${id}`,
       );
+      if (allFiles.some((file) => file.fieldname === "photo")) {
+        void warmEmployeeFaceDescriptor(id, companyId).then(
+          (result) => {
+            if (!result.ready) {
+              console.warn("Employee face template was not updated:", result);
+            }
+          },
+          (error) =>
+            console.warn("Employee face template update failed:", error.message),
+        );
+      }
     }
 
     // Department head assignment (only if role or department changed)

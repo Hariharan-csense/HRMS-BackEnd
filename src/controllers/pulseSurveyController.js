@@ -5,6 +5,7 @@ const {
   normalizeMobileNumber,
   sendOwnChatTemplate,
 } = require("../utils/kpiOwnChat");
+const { getDateKey } = require("../utils/dateTime");
 
 const requireAuthType = (req, res) => {
   if (!req.user) {
@@ -571,11 +572,7 @@ const getSurveyEmployeeId = (user) => {
 };
 
 const getLocalDateKey = (value = new Date()) => {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return new Date().toISOString().slice(0, 10);
-  }
-  return date.toISOString().slice(0, 10);
+  return getDateKey(value) || getDateKey();
 };
 
 const getPulseSurveyCategory = (survey) => {

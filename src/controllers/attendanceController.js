@@ -9,6 +9,7 @@ const {
   findEmployeeByFace,
 } = require("../utils/faceRecognition");
 const { applyEmployeeAssignmentFilter } = require("../utils/clientAssignments");
+const { APP_TIME_ZONE, getDateKey, getMonthKey } = require("../utils/dateTime");
 
 // Resolve the real employees.id for the logged-in user.
 // - employee login: req.user.id already points to employees.id
@@ -2779,7 +2780,7 @@ const getLiveLocationHistory = async (req, res) => {
 
 const getAttendanceMonthlyReport = async (req, res) => {
   const companyId = req.user.company_id;
-  const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+  const month = String(req.query.month || getMonthKey());
   if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ message: "Month must be YYYY-MM" });
 
   try {
@@ -3029,6 +3030,7 @@ const exportLocationHistory = async (req, res) => {
           const year = date.getFullYear();
           const dateStr = `${day}/${month}/${year}`;
           const timeStr = date.toLocaleTimeString("en-IN", {
+            timeZone: APP_TIME_ZONE,
             hour: "2-digit",
             minute: "2-digit",
             second: "2-digit",
@@ -3053,7 +3055,7 @@ const exportLocationHistory = async (req, res) => {
         res.setHeader("Content-Type", "text/csv; charset=utf-8");
         res.setHeader(
           "Content-Disposition",
-          `attachment;filename="all_employees_location_history_${new Date().toISOString().split("T")[0]}.csv"`,
+          `attachment;filename="all_employees_location_history_${getDateKey()}.csv"`,
         );
         return res.send(csv);
       } else if (format === "json") {
@@ -3178,6 +3180,7 @@ const exportLocationHistory = async (req, res) => {
 
         // Compact time format (HH:MM:SS) for better spreadsheet compatibility
         const timeStr = date.toLocaleTimeString("en-IN", {
+          timeZone: APP_TIME_ZONE,
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
@@ -3234,7 +3237,7 @@ const exportLocationHistory = async (req, res) => {
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader(
         "Content-Disposition",
-        `attachment;filename="${employee.employee_id}_location_history_${new Date().toISOString().split("T")[0]}.csv"`,
+        `attachment;filename="${employee.employee_id}_location_history_${getDateKey()}.csv"`,
       );
       return res.send(csv);
     } else if (format === "json") {

@@ -1,5 +1,6 @@
 const db = require('../db/db');
 const { sendEmail } = require('../utils/mailer');
+const { getDateKey } = require('../utils/dateTime');
 
 const buildEmployeeName = (record) =>
   `${record?.first_name || ''} ${record?.last_name || ''}`.trim() || record?.first_name || 'Unknown';
@@ -42,7 +43,7 @@ const syncFinalSettlementChecklist = async (companyId, employeeId) => {
     .update({
       final_settlement: true,
       status: allDone ? 'completed' : 'in-progress',
-      completed_date: allDone ? new Date().toISOString().slice(0, 10) : null,
+      completed_date: allDone ? getDateKey() : null,
     });
 
   if (allDone) {

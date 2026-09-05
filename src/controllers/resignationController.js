@@ -1,4 +1,5 @@
 const knex = require("../db/db");
+const { getDateKey } = require("../utils/dateTime");
 
 /**
  * GET all resignations (logged-in user's company)
@@ -70,7 +71,7 @@ const createResignation = async (req, res) => {
       last_working_day,
       reason,
       approval_status,
-      created_at: new Date().toISOString().slice(0, 10),
+      created_at: getDateKey(),
     });
 
     const createdResignation = await knex("resignations")

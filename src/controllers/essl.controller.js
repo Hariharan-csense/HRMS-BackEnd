@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const knex = require("../db/db");
 const { doCheckIn, doCheckOut } = require("../services/attendance.service");
+const { getDateKey } = require("../utils/dateTime");
 
 const normalizePunchTime = (value) => {
   if (!value) return new Date();
@@ -291,7 +292,7 @@ const resolveAttendanceContext = async (req) => {
     employeeCode: payload.employeeCode,
     company,
   });
-  const attendanceDay = payload.punchTime.toISOString().slice(0, 10);
+  const attendanceDay = getDateKey(payload.punchTime);
   const active = await knex("attendance")
     .where({
       employee_id: employee.id,

@@ -356,9 +356,10 @@ const getEmployeePhotoCandidates = async (companyId) => {
     "fieldname",
   );
 
-  const rows = await knex("employees as e")
+  const documentRows = await knex("employees as e")
     .innerJoin("employee_documents as d", "e.id", "d.employee_id")
     .where("e.company_id", companyId)
+    .whereRaw("LOWER(TRIM(COALESCE(e.status, 'active'))) = ?", ["active"])
     .modify((queryBuilder) => {
       if (hasType && hasFieldname) {
         queryBuilder.whereRaw("LOWER(COALESCE(d.type, d.fieldname, '')) = ?", [
@@ -385,13 +386,98 @@ const getEmployeePhotoCandidates = async (companyId) => {
       "d.created_at as document_created_at",
     );
 
-  return rows.sort((a, b) => {
+  // Profile photos are also valid enrollment sources. This covers employees
+  // whose photo was uploaded from My Profile instead of the Documents tab.
+  const profileRows = await knex("employees as e")
+    .where("e.company_id", companyId)
+    .whereRaw("LOWER(TRIM(COALESCE(e.status, 'active'))) = ?", ["active"])
+    .whereNotNull("e.profile_photo")
+    .whereRaw("TRIM(e.profile_photo) <> ''")
+    .select(
+      "e.id",
+      "e.employee_id",
+      "e.first_name",
+      "e.last_name",
+      "e.email",
+      "e.department_id",
+      "e.designation_id",
+      "e.status",
+      "e.profile_photo as photo_path",
+      "e.updated_at as document_created_at",
+    )
+    .then((rows) =>
+      rows.map((row) => ({
+        ...row,
+        document_id: 0,
+        photo_source: "profile_photo",
+      })),
+    );
+
+  return [...documentRows, ...profileRows].sort((a, b) => {
     const dateA = new Date(a.document_created_at || 0).getTime();
     const dateB = new Date(b.document_created_at || 0).getTime();
     return (
       dateB - dateA || Number(b.document_id || 0) - Number(a.document_id || 0)
     );
   });
+};
+
+const getCompanyPhotoDescriptors = async (companyId) => {
+  const candidates = await getEmployeePhotoCandidates(companyId);
+  const templates = [];
+  const matchedEmployeeIds = new Set();
+
+  for (const employee of candidates) {
+    const employeeId = Number(employee.id);
+    if (matchedEmployeeIds.has(employeeId)) continue;
+
+    const storedPhotoPath = resolveUploadPath(employee.photo_path);
+    if (!storedPhotoPath || !fs.existsSync(storedPhotoPath)) continue;
+
+    try {
+      const descriptor = await getEmployeeDocumentDescriptor(
+        employee,
+        storedPhotoPath,
+      );
+      templates.push({ employee, descriptor });
+      matchedEmployeeIds.add(employeeId);
+    } catch (error) {
+      console.warn(
+        `Face template build skipped for employee ${employee.employee_id || employee.id}:`,
+        error.message,
+      );
+    }
+  }
+
+  return templates;
+};
+
+const warmEmployeeFaceDescriptor = async (employeeId, companyId) => {
+  const candidates = (await getEmployeePhotoCandidates(companyId)).filter(
+    (employee) => Number(employee.id) === Number(employeeId),
+  );
+  const failures = [];
+
+  for (const employee of candidates) {
+    const storedPhotoPath = resolveUploadPath(employee.photo_path);
+    if (!storedPhotoPath || !fs.existsSync(storedPhotoPath)) {
+      failures.push(`Photo file missing: ${employee.photo_path}`);
+      continue;
+    }
+
+    try {
+      await getEmployeeDocumentDescriptor(employee, storedPhotoPath);
+      return { ready: true, employeeId: Number(employeeId) };
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  return {
+    ready: false,
+    employeeId: Number(employeeId),
+    reason: failures[0] || "No employee photo is available",
+  };
 };
 
 const warmFaceDescriptorCache = async (companyId) => {
@@ -656,9 +742,16 @@ const findEmployeeByDescriptor = async (
     });
   }
 
+  // The scanner must still work while the face_templates migration is being
+  // rolled out. Descriptors built from employee photos are cached in memory
+  // and become persisted automatically as soon as the table is available.
+  if (!templates.length) {
+    templates = await getCompanyPhotoDescriptors(companyId);
+  }
+
   if (!templates.length) {
     const error = new Error(
-      "No employee face templates are ready. Please re-upload clear employee document photos or allow the server to build templates once.",
+      "No usable employee face photo was found. Upload a clear front-facing photo in Employee Documents or My Profile, then try again.",
     );
     error.statusCode = 400;
     throw error;
@@ -759,5 +852,6 @@ module.exports = {
   findEmployeeByFace,
   verifyEmployeeFace,
   warmFaceDescriptorCache,
+  warmEmployeeFaceDescriptor,
   loadModels,
 };

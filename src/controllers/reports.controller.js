@@ -128,6 +128,24 @@ const normalizeTimeForReport = (value) => {
   return `${String(match[1]).padStart(2, "0")}:${match[2]}:${match[3] || "00"}`;
 };
 
+const formatAttendanceTimeForReport = (value) => {
+  if (!value) return null;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return normalizeTimeForReport(value);
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+
+  return `${part("hour")}:${part("minute")}:${part("second")}`;
+};
+
 const timeToSecondsForReport = (value) => {
   const time = normalizeTimeForReport(value);
   if (!time) return null;
@@ -372,8 +390,8 @@ const getAttendanceReport = async (req, res) => {
         knex.raw("TIME_FORMAT(sh.end_time, '%H:%i:%s') as scheduledEndTime"),
         "a.status",
         knex.raw("DATE_FORMAT(a.check_in, '%Y-%m-%d') as date"),
-        knex.raw("TIME_FORMAT(a.check_in, '%H:%i:%s') as checkInTime"),
-        knex.raw("TIME_FORMAT(a.check_out, '%H:%i:%s') as checkOutTime"),
+        "a.check_in as checkInTimestamp",
+        "a.check_out as checkOutTimestamp",
         "a.hours_worked as hoursWorked",
         "a.overtime_hours as overtimeHours",
         "a.device_info as deviceInfo",
@@ -523,8 +541,12 @@ const getAttendanceReport = async (req, res) => {
       `${employeePkId || ""}-${toDateKey(date) || ""}`;
 
     const attendanceDetailRows = attendanceRows.map((row) => {
-      const rawCheckInTime = normalizeTimeForReport(row.checkInTime);
-      const rawCheckOutTime = normalizeTimeForReport(row.checkOutTime);
+      const rawCheckInTime = formatAttendanceTimeForReport(
+        row.checkInTimestamp,
+      );
+      const rawCheckOutTime = formatAttendanceTimeForReport(
+        row.checkOutTimestamp,
+      );
       const scheduledStartTime = normalizeTimeForReport(row.scheduledStartTime);
       const scheduledEndTime = normalizeTimeForReport(row.scheduledEndTime);
       const canUseScheduledFallback = isPresentLikeStatus(row.status);

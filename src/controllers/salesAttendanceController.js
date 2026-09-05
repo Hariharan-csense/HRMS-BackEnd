@@ -1,4 +1,5 @@
 const knex = require('../db/db');
+const { getDateKey } = require('../utils/dateTime');
 
 
 // const getSalesAttendanceComparison = async (req, res) => {
@@ -185,8 +186,8 @@ const getSalesAttendanceComparison = async (req, res) => {
     const { startDate, endDate } = req.query;
     const companyId = req.user.company_id;
 
-    const start = startDate || new Date().toISOString().split('T')[0];
-    const end = endDate || new Date().toISOString().split('T')[0];
+    const start = startDate || getDateKey();
+    const end = endDate || getDateKey();
 
     /* =====================================================
        1️⃣ SALES EMPLOYEES (ROLE = employee + SALES DEPT/DESIGNATION)
@@ -495,7 +496,7 @@ const getSalesEmployeeDetail = async (req, res) => {
       .whereNotNull('check_in')
       .whereRaw('DATE(check_in) BETWEEN ? AND ?', [
         startDate || '1970-01-01',
-        endDate || new Date().toISOString().split('T')[0]
+        endDate || getDateKey()
       ]);
 
     // =========================
@@ -518,7 +519,7 @@ const getSalesEmployeeDetail = async (req, res) => {
       .where('employee_id', employeeId)
       .whereBetween('date', [
         startDate || '1970-01-01',
-        endDate || new Date().toISOString().split('T')[0]
+        endDate || getDateKey()
       ]);
 
     // =========================

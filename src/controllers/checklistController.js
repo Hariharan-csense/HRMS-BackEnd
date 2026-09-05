@@ -1,4 +1,5 @@
 const knex = require("../db/db");
+const { getDateKey } = require("../utils/dateTime");
 
 const getAllChecklists = async (req, res) => {
   const company_id = req.user.company_id;
@@ -105,7 +106,7 @@ const updateChecklistItem = async (req, res) => {
       .where({ id, company_id })
       .update({
         status: allDone ? "completed" : "in-progress",
-        completed_date: allDone ? new Date().toISOString().slice(0, 10) : null,
+        completed_date: allDone ? getDateKey() : null,
       });
 
     // If all checklist items are completed, update employee status to 'Inactive'
