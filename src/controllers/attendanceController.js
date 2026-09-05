@@ -86,7 +86,21 @@ const normalizeRequestedTime = (value) => {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 };
 
-const buildDateTime = (date, time) => `${date} ${time}`;
+const buildDateTime = (date, time) => new Date(`${date}T${time}+05:30`);
+
+const attendanceTimeSelects = (alias = "a") => [
+  knex.raw(
+    `DATE_FORMAT(DATE_ADD(${alias}.check_in, INTERVAL 330 MINUTE), '%Y-%m-%d %H:%i:%s') as check_in`,
+  ),
+  knex.raw(
+    `DATE_FORMAT(DATE_ADD(${alias}.check_out, INTERVAL 330 MINUTE), '%Y-%m-%d %H:%i:%s') as check_out`,
+  ),
+];
+
+const istDateTimeSelect = (column, aliasName) =>
+  knex.raw(
+    `DATE_FORMAT(${column}, '%Y-%m-%d %H:%i:%s') as ${aliasName}`,
+  );
 
 const formatDateOnly = (value) => {
   if (!value) return null;
@@ -461,6 +475,7 @@ const getAttendanceStatus = async (req, res) => {
     const { start: todayStart, end: tomorrowStart } = getDayWindow(now);
 
     const activeAttendance = await knex("attendance")
+      .select("attendance.*", ...attendanceTimeSelects("attendance"))
       .where("employee_id", employeeId)
       .where("company_id", companyId)
       .where("check_in", ">=", getOpenPunchWindowStart(now))
@@ -470,6 +485,7 @@ const getAttendanceStatus = async (req, res) => {
       .first();
 
     const todayAttendance = await knex("attendance")
+      .select("attendance.*", ...attendanceTimeSelects("attendance"))
       .where("employee_id", employeeId)
       .where("company_id", companyId)
       .where("check_in", ">=", todayStart)
@@ -1420,6 +1436,7 @@ const getAttendanceLogs = async (req, res) => {
       .clone()
       .select(
         "a.*",
+        ...attendanceTimeSelects("a"),
         "e.first_name",
         "e.last_name",
         "e.employee_id as employee_code",
@@ -1543,6 +1560,7 @@ const getAttendanceByEmployeeAndMonth = async (req, res) => {
     }
 
     const attendance = await knex("attendance")
+      .select("attendance.*", ...attendanceTimeSelects("attendance"))
       .where({ employee_id: employee.id, company_id: companyId })
       .whereBetween("check_in", [
         startDate.toISOString(),
@@ -1866,7 +1884,9 @@ const getEmployeeSummary = async (req, res) => {
       query = query.whereBetween("check_in", [start, end]);
     }
 
-    const records = await query.orderBy("check_in", "desc");
+    const records = await query
+      .select("attendance.*", ...attendanceTimeSelects("attendance"))
+      .orderBy("check_in", "desc");
 
     // Attendance may have multiple sessions in a day (break -> checkout -> checkin).
     // So we group by DATE(check_in) and derive day-level status from the FIRST punch.
@@ -2009,8 +2029,8 @@ const getOverrides = async (req, res) => {
       "requested_by",
       "approved_by",
       "status",
-      "created_at",
-      "updated_at",
+      istDateTimeSelect("created_at", "created_at"),
+      istDateTimeSelect("updated_at", "updated_at"),
     );
 
     if (!overrides.length) {

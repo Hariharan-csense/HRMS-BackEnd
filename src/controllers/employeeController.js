@@ -449,6 +449,7 @@ const addEmployee = async (req, res) => {
     role = "employee",
     location_tracking_enabled = 0,
     subscription_billing_cycle = "monthly",
+    subscription_plan_id,
   } = req.body;
 
   try {
@@ -567,6 +568,9 @@ const addEmployee = async (req, res) => {
     const normalizedSubscriptionCycle = String(
       subscription_billing_cycle || "monthly",
     ).toLowerCase() === "yearly" ? "yearly" : "monthly";
+    const normalizedSubscriptionPlanId = Number(
+      subscription_plan_id || req.subscriptionPlanId || req.subscription?.plan_id || 0,
+    ) || null;
 
     let employeeId;
     let message;
@@ -632,6 +636,7 @@ const addEmployee = async (req, res) => {
           role: finalRoleName,
           location_tracking_enabled: normalizedLocationTrackingEnabled,
           subscription_billing_cycle: normalizedSubscriptionCycle,
+          subscription_plan_id: normalizedSubscriptionPlanId,
         });
 
       employeeId = id;
@@ -725,6 +730,7 @@ const addEmployee = async (req, res) => {
         role: finalRoleName,
         location_tracking_enabled: normalizedLocationTrackingEnabled,
         subscription_billing_cycle: normalizedSubscriptionCycle,
+        subscription_plan_id: normalizedSubscriptionPlanId,
       });
 
       console.log(
@@ -1285,6 +1291,7 @@ const updateEmployee = async (req, res) => {
     shift_id,
     location_tracking_enabled,
     subscription_billing_cycle,
+    subscription_plan_id,
   } = req.body;
 
   try {
@@ -1414,6 +1421,14 @@ const updateEmployee = async (req, res) => {
           ? "yearly"
           : "monthly";
     }
+    if (subscription_plan_id !== undefined) {
+      const parsedPlanId = Number(subscription_plan_id);
+      if (!Number.isInteger(parsedPlanId) || parsedPlanId <= 0) {
+        cleanupFiles(req.files);
+        return res.status(400).json({ message: "Select a valid subscription package" });
+      }
+      updateData.subscription_plan_id = parsedPlanId;
+    }
 
     // Role handling with HR restriction
     if (role !== undefined) {
@@ -1474,16 +1489,24 @@ const updateEmployee = async (req, res) => {
       }
     }
 
-    if (
-      updateData.subscription_billing_cycle &&
-      updateData.subscription_billing_cycle !==
-        String(employee.subscription_billing_cycle || "monthly").toLowerCase()
-    ) {
+    const targetSubscriptionCycle =
+      updateData.subscription_billing_cycle ||
+      String(employee.subscription_billing_cycle || "monthly").toLowerCase();
+    const targetSubscriptionPlanId = Number(
+      updateData.subscription_plan_id || employee.subscription_plan_id || 0,
+    );
+    const subscriptionAssignmentChanged =
+      targetSubscriptionCycle !==
+        String(employee.subscription_billing_cycle || "monthly").toLowerCase() ||
+      targetSubscriptionPlanId !== Number(employee.subscription_plan_id || 0);
+
+    if (subscriptionAssignmentChanged) {
       const cycleSubscription = await knex("company_subscriptions")
         .where({
           company_id: companyId,
           status: "active",
-          billing_cycle: updateData.subscription_billing_cycle,
+          plan_id: targetSubscriptionPlanId,
+          billing_cycle: targetSubscriptionCycle,
         })
         .where("end_date", ">=", knex.fn.now())
         .orderBy("created_at", "desc")
@@ -1492,7 +1515,7 @@ const updateEmployee = async (req, res) => {
       if (!cycleSubscription) {
         cleanupFiles(req.files);
         return res.status(403).json({
-          message: `No active ${updateData.subscription_billing_cycle} subscription seats are available.`,
+          message: `No active selected package with ${targetSubscriptionCycle} billing seats is available.`,
           user_limit_exceeded: true,
         });
       }
@@ -1500,8 +1523,8 @@ const updateEmployee = async (req, res) => {
       const assignedRow = await knex("employees")
         .where({
           company_id: companyId,
-          subscription_billing_cycle:
-            updateData.subscription_billing_cycle,
+          subscription_plan_id: targetSubscriptionPlanId,
+          subscription_billing_cycle: targetSubscriptionCycle,
         })
         .whereNot("id", id)
         .count("* as count")
@@ -1512,7 +1535,7 @@ const updateEmployee = async (req, res) => {
       if (seatLimit > 0 && assignedCount >= seatLimit) {
         cleanupFiles(req.files);
         return res.status(403).json({
-          message: `${updateData.subscription_billing_cycle === "yearly" ? "Yearly" : "Monthly"} seat limit exceeded. All ${seatLimit} seats are assigned.`,
+          message: `${targetSubscriptionCycle === "yearly" ? "Yearly" : "Monthly"} seats for the selected package are full. All ${seatLimit} seats are assigned.`,
           user_limit_exceeded: true,
           current_users: assignedCount,
           max_users: seatLimit,

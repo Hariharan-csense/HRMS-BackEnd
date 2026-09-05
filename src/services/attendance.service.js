@@ -22,6 +22,15 @@ const getDayWindow = (date) => {
   return { start, end };
 };
 
+const attendanceTimeSelects = (alias = 'attendance') => [
+  knex.raw(
+    `DATE_FORMAT(DATE_ADD(${alias}.check_in, INTERVAL 330 MINUTE), '%Y-%m-%d %H:%i:%s') as check_in`
+  ),
+  knex.raw(
+    `DATE_FORMAT(DATE_ADD(${alias}.check_out, INTERVAL 330 MINUTE), '%Y-%m-%d %H:%i:%s') as check_out`
+  )
+];
+
 // Covers overnight shifts while preventing an abandoned punch from blocking
 // an employee indefinitely. A normal or overnight shift must close within this
 // rolling window.
@@ -331,6 +340,7 @@ async function doCheckIn({
   const [insertId] = await knex('attendance').insert(insertPayload);
 
   const attendance = await knex('attendance')
+    .select('attendance.*', ...attendanceTimeSelects('attendance'))
     .where('id', insertId)
     .first();
 
@@ -404,6 +414,7 @@ async function doCheckOut({
     });
 
   const attendance = await knex('attendance')
+    .select('attendance.*', ...attendanceTimeSelects('attendance'))
     .where('id', record.id)
     .first();
 

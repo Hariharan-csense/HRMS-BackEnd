@@ -536,7 +536,11 @@ const verifyUpgradePayment = async (req, res) => {
       if (pool.users <= 0) continue;
       const endDate = getEndDateForPlan(startDate, pool.cycle);
       const existing = await trx("company_subscriptions")
-        .where({ company_id: companyId, billing_cycle: pool.cycle })
+        .where({
+          company_id: companyId,
+          plan_id,
+          billing_cycle: pool.cycle,
+        })
         .orderBy("created_at", "desc")
         .first();
       const values = {
@@ -561,7 +565,7 @@ const verifyUpgradePayment = async (req, res) => {
         const inserted = await trx("company_subscriptions").insert({ company_id: companyId, ...values });
         id = inserted[0];
       }
-      purchasedPools.push({ id, billing_cycle: pool.cycle, users: pool.users, end_date: endDate });
+      purchasedPools.push({ id, plan_id: Number(plan_id), plan_name: plan.name, billing_cycle: pool.cycle, users: pool.users, end_date: endDate });
     }
     const subscriptionId = purchasedPools[0].id;
     const endDate = purchasedPools[purchasedPools.length - 1].end_date;
@@ -1954,28 +1958,64 @@ const getCompanySubscription = async (req, res) => {
      .orderBy("company_subscriptions.created_at", "desc")
      .first();
 
-    const activeSeatPools = await db("company_subscriptions")
-      .where("company_id", companyId)
+    const activeSeatPools = await db("company_subscriptions as cs")
+      .leftJoin("subscription_plans as sp", "cs.plan_id", "sp.id")
+      .select("cs.*", "sp.name as plan_name", "sp.description as plan_description")
+      .where("cs.company_id", companyId)
       .where(function () {
         this.where(function () {
-          this.where("status", "active").where("end_date", ">=", db.fn.now());
+          this.where("cs.status", "active").where("cs.end_date", ">=", db.fn.now());
         }).orWhere(function () {
-          this.where("status", "trial").where(
-            "trial_end_date",
+          this.where("cs.status", "trial").where(
+            "cs.trial_end_date",
             ">=",
             db.fn.now(),
           );
         });
       })
-      .orderBy("created_at", "desc");
+      .orderBy("cs.created_at", "desc");
 
-    const allSeatPools = await db("company_subscriptions")
-      .where("company_id", companyId)
-      .orderBy("created_at", "desc");
-    const latestPoolByCycle = new Map();
+    const allSeatPools = await db("company_subscriptions as cs")
+      .leftJoin("subscription_plans as sp", "cs.plan_id", "sp.id")
+      .select("cs.*", "sp.name as plan_name")
+      .where("cs.company_id", companyId)
+      .orderBy("cs.created_at", "desc");
+
+    // Employee logins receive their assigned package as the effective plan so
+    // module access follows Basic/Advanced per employee. Company admins still
+    // receive the company's primary subscription plus every purchasable pool.
+    if (req.user?.type === "employee") {
+      const assignedEmployee = await db("employees")
+        .where({ id: req.user.id, company_id: companyId })
+        .first("subscription_plan_id", "subscription_billing_cycle");
+      const assignedPool = activeSeatPools.find(
+        (pool) =>
+          Number(pool.plan_id) === Number(assignedEmployee?.subscription_plan_id) &&
+          normalizeBillingCycle(pool.billing_cycle) ===
+            normalizeBillingCycle(assignedEmployee?.subscription_billing_cycle),
+      );
+      if (assignedPool) {
+        subscription = await db("company_subscriptions")
+          .select(
+            "company_subscriptions.*",
+            "subscription_plans.name as plan_name",
+            "subscription_plans.description as plan_description",
+            `${monthlyPriceField} as plan_price`,
+            "company_subscriptions.max_users as plan_max_users",
+            storageField
+              ? `subscription_plans.${storageField} as plan_storage_gb`
+              : db.raw("NULL as plan_storage_gb"),
+          )
+          .join("subscription_plans", "company_subscriptions.plan_id", "subscription_plans.id")
+          .where("company_subscriptions.id", assignedPool.id)
+          .first();
+      }
+    }
+    const latestPoolByPlanAndCycle = new Map();
     allSeatPools.forEach((pool) => {
       const cycle = normalizeBillingCycle(pool.billing_cycle);
-      if (!latestPoolByCycle.has(cycle)) latestPoolByCycle.set(cycle, pool);
+      const key = `${pool.plan_id}:${cycle}`;
+      if (!latestPoolByPlanAndCycle.has(key)) latestPoolByPlanAndCycle.set(key, pool);
     });
 
     if (activeSeatPools.length > 0) {
@@ -2045,33 +2085,35 @@ const getCompanySubscription = async (req, res) => {
       ? effectiveEndMoment.diff(today, "days")
       : 0;
 
-    const assignedByCycleRows = await db("employees")
+    const assignedByPoolRows = await db("employees")
       .where("company_id", companyId)
-      .select("subscription_billing_cycle")
+      .select("subscription_plan_id", "subscription_billing_cycle")
       .count("* as assigned_users")
-      .groupBy("subscription_billing_cycle");
-    const assignedByCycle = Object.fromEntries(
-      assignedByCycleRows.map((row) => [
-        row.subscription_billing_cycle || "monthly",
+      .groupBy("subscription_plan_id", "subscription_billing_cycle");
+    const assignedByPool = Object.fromEntries(
+      assignedByPoolRows.map((row) => [
+        `${row.subscription_plan_id}:${normalizeBillingCycle(row.subscription_billing_cycle)}`,
         Number(row.assigned_users || 0),
       ]),
     );
-    const seatPools = activeSeatPools.map((pool) => ({
+    const seatPools = activeSeatPools.map((pool) => {
+      const cycle = normalizeBillingCycle(pool.billing_cycle);
+      const assignedUsers = assignedByPool[`${pool.plan_id}:${cycle}`] || 0;
+      return {
       id: Number(pool.id),
-      billing_cycle: normalizeBillingCycle(pool.billing_cycle),
+      plan_id: Number(pool.plan_id),
+      plan_name: pool.plan_name,
+      plan_description: pool.plan_description,
+      billing_cycle: cycle,
       max_users: Number(pool.max_users || 0),
-      assigned_users:
-        assignedByCycle[normalizeBillingCycle(pool.billing_cycle)] || 0,
-      available_users: Math.max(
-        0,
-        Number(pool.max_users || 0) -
-          (assignedByCycle[normalizeBillingCycle(pool.billing_cycle)] || 0),
-      ),
+      assigned_users: assignedUsers,
+      available_users: Math.max(0, Number(pool.max_users || 0) - assignedUsers),
       end_date: pool.end_date,
       status: pool.status,
-    }));
-    const seatPoolStatus = Array.from(latestPoolByCycle.values()).map((pool) => {
+    }});
+    const seatPoolStatus = Array.from(latestPoolByPlanAndCycle.values()).map((pool) => {
       const cycle = normalizeBillingCycle(pool.billing_cycle);
+      const assignedUsers = assignedByPool[`${pool.plan_id}:${cycle}`] || 0;
       const effectiveEndDate = pool.status === "trial"
         ? pool.trial_end_date
         : pool.end_date;
@@ -2082,9 +2124,10 @@ const getCompanySubscription = async (req, res) => {
       return {
         id: Number(pool.id),
         plan_id: Number(pool.plan_id),
+        plan_name: pool.plan_name,
         billing_cycle: cycle,
         max_users: Number(pool.max_users || 0),
-        assigned_users: assignedByCycle[cycle] || 0,
+        assigned_users: assignedUsers,
         end_date: effectiveEndDate,
         status: isActive ? "active" : "expired",
         is_active: Boolean(isActive),
@@ -2177,7 +2220,7 @@ const startTrial = async (req, res) => {
     if (isFreePlan) {
       const endDate = moment(startDate).add(100, "years").toDate();
       const existingFreePool = await db("company_subscriptions")
-        .where({ company_id: companyId, billing_cycle: pricing.billing_cycle })
+        .where({ company_id: companyId, plan_id, billing_cycle: pricing.billing_cycle })
         .orderBy("created_at", "desc")
         .first();
       const values = {

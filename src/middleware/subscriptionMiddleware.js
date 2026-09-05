@@ -31,6 +31,7 @@ const checkUserCreationSubscription = async (req, res, next) => {
     )
       ? "yearly"
       : "monthly";
+    const requestedPlanId = Number(req.body?.subscription_plan_id || 0);
 
     const activeSubscriptions = await getActiveSubscriptionQuery(companyId);
     const trialSubscription = activeSubscriptions.find(
@@ -41,13 +42,14 @@ const checkUserCreationSubscription = async (req, res, next) => {
       activeSubscriptions.find(
         (item) =>
           String(item.billing_cycle || "monthly").toLowerCase() ===
-          requestedCycle,
+            requestedCycle &&
+          (!requestedPlanId || Number(item.plan_id) === requestedPlanId),
       );
 
     if (!subscription) {
       if (activeSubscriptions.length > 0) {
         return res.status(403).json({
-          message: `No active ${requestedCycle} subscription seats are available. Please purchase ${requestedCycle} seats before assigning an employee to this billing cycle.`,
+          message: `No active package with ${requestedCycle} billing seats is available. Please select a purchased package or buy seats first.`,
           user_limit_exceeded: true,
           billing_cycle: requestedCycle,
           current_users: 0,
@@ -79,7 +81,9 @@ const checkUserCreationSubscription = async (req, res, next) => {
       .where('company_id', companyId)
       .modify((queryBuilder) => {
         if (subscription.status !== "trial") {
-          queryBuilder.where("subscription_billing_cycle", requestedCycle);
+          queryBuilder
+            .where("subscription_billing_cycle", requestedCycle)
+            .where("subscription_plan_id", subscription.plan_id);
         }
       })
       .count('* as count')
@@ -102,6 +106,7 @@ const checkUserCreationSubscription = async (req, res, next) => {
     req.userCount = currentUsers;
     req.maxUsers = maxUsers;
     req.subscriptionBillingCycle = requestedCycle;
+    req.subscriptionPlanId = Number(subscription.plan_id);
     
     next();
   } catch (error) {
