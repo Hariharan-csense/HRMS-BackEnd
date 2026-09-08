@@ -2,9 +2,10 @@
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { resolveUploadPath } = require("../utils/uploadPaths");
 
 // Single directory for company brand assets.
-const uploadDir = path.join(__dirname, "../../../uploads/company-logos");
+const uploadDir = resolveUploadPath("company-logos");
 
 // Ensure directory exists
 if (!fs.existsSync(uploadDir)) {

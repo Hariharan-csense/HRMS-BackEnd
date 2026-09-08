@@ -3,10 +3,12 @@ const { transporter } = require('../utils/mailer');
 const handlebars = require('handlebars');
 const fs = require('fs');
 const path = require('path');
+const { uploadRoot } = require('./uploadPaths');
+const { resolveTemplatePath } = require('./templatePaths');
 
 
 const sendLeaveNotification = async (toEmails, application, employeeInfo, leaveType) => {
-  const templatePath = path.join(__dirname, '../templates/leaveNotification.hbs');
+  const templatePath = resolveTemplatePath('leaveNotification.hbs');
   const templateSource = fs.readFileSync(templatePath, 'utf8');
   const template = handlebars.compile(templateSource);
 
@@ -33,15 +35,22 @@ const sendLeaveNotification = async (toEmails, application, employeeInfo, leaveT
     currentYear
   });
 
+  const attachmentPath = application.attachment_path
+    ? path.join(
+        uploadRoot,
+        String(application.attachment_path).replace(/^\/?uploads\/?/, ''),
+      )
+    : null;
+
   await transporter.sendMail({
     from: `"HRMS System" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
     to: toEmails.join(', '),
     replyTo: employeeInfo.employee_email, // ← Manager reply பண்ணினா employee-க்கு direct போகும்
     subject: `New Leave Request - ${employeeInfo.employee_name} (${application.days} days${halfDaySessionLabel ? `, ${halfDaySessionLabel}` : ''})`,
     html,
-    attachments: application.attachment_path ? [{
+    attachments: attachmentPath ? [{
       filename: path.basename(application.attachment_path),
-      path: path.join(__dirname, '..', '..', application.attachment_path)
+      path: attachmentPath
     }] : []
   });
 };

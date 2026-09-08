@@ -636,7 +636,7 @@ const applyLeavePermission = async (req, res) => {
       // ===============================
       let attachmentPath = null;
       if (req.file) {
-        attachmentPath = `/uploads/leave-permission-attachments/${req.file.filename}`;
+        attachmentPath = `/uploads/leave-attachments/company_${companyId}/${req.file.filename}`;
       }
 
       // ===============================

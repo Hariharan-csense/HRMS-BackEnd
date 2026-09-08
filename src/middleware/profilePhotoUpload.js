@@ -1,9 +1,10 @@
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { resolveUploadPath } = require('../utils/uploadPaths');
 
 // Base upload directory
-const baseUploadDir = path.join(__dirname, '../../../uploads/employees');
+const baseUploadDir = resolveUploadPath('employees');
 
 // Ensure base directory exists
 if (!fs.existsSync(baseUploadDir)) {

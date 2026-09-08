@@ -1,14 +1,16 @@
 const { transporter } = require("./mailer");
 const handlebars = require("handlebars");
 const fs = require("fs");
-const path = require("path");
+const { resolveTemplatePath } = require("./templatePaths");
 
 const sendOfferLetterEmail = async (offerLetter) => {
   try {
-    const templatePath = path.join(
-      __dirname,
-      "../templates/offerLetterEmail.hbs",
-    );
+    let templatePath = null;
+    try {
+      templatePath = resolveTemplatePath("offerLetterEmail.hbs");
+    } catch {
+      templatePath = null;
+    }
 
     // If template doesn't exist, send plain text email
     let html;

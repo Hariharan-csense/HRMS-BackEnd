@@ -2,7 +2,7 @@
 const { transporter } = require("../utils/mailer");
 const handlebars = require("handlebars");
 const fs = require("fs");
-const path = require("path");
+const { resolveTemplatePath } = require("./templatePaths");
 
 const sendLeavePermissionNotification = async (
   toEmails,
@@ -10,10 +10,7 @@ const sendLeavePermissionNotification = async (
   employeeInfo,
 ) => {
   try {
-    const templatePath = path.join(
-      __dirname,
-      "../templates/leavePermissionNotification.hbs",
-    );
+    const templatePath = resolveTemplatePath("leavePermissionNotification.hbs");
     const templateSource = fs.readFileSync(templatePath, "utf8");
     const template = handlebars.compile(templateSource);
 
@@ -62,9 +59,8 @@ const sendLeavePermissionStatusNotification = async (
   status,
 ) => {
   try {
-    const templatePath = path.join(
-      __dirname,
-      "../templates/leavePermissionStatusNotification.hbs",
+    const templatePath = resolveTemplatePath(
+      "leavePermissionStatusNotification.hbs",
     );
     const templateSource = fs.readFileSync(templatePath, "utf8");
     const template = handlebars.compile(templateSource);

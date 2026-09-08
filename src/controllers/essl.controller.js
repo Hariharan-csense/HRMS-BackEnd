@@ -4,6 +4,7 @@ const path = require("path");
 const knex = require("../db/db");
 const { doCheckIn, doCheckOut } = require("../services/attendance.service");
 const { getDateKey } = require("../utils/dateTime");
+const { resolveUploadPath } = require("../utils/uploadPaths");
 
 const normalizePunchTime = (value) => {
   if (!value) return new Date();
@@ -39,15 +40,7 @@ const saveBase64AttendanceImage = ({
     const buffer = Buffer.from(base64Content, "base64");
     if (!buffer.length) return null;
 
-    const uploadDir = path.join(
-      __dirname,
-      "..",
-      "..",
-      "..",
-      "uploads",
-      "attendance",
-      `company_${companyId}`
-    );
+    const uploadDir = resolveUploadPath("attendance", `company_${companyId}`);
     fs.mkdirSync(uploadDir, { recursive: true });
 
     const normalizedPunchType = String(punchType || "checkin").toLowerCase();

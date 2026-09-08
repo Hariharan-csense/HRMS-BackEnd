@@ -2,6 +2,8 @@ const { transporter } = require("./mailer");
 const handlebars = require("handlebars");
 const fs = require("fs");
 const path = require("path");
+const { uploadRoot } = require("./uploadPaths");
+const { resolveTemplatePath } = require("./templatePaths");
 
 const sendLeaveStatusNotification = async (
   application,
@@ -9,10 +11,7 @@ const sendLeaveStatusNotification = async (
   status,
 ) => {
   try {
-    const templatePath = path.join(
-      __dirname,
-      "../templates/leaveNotification.hbs",
-    );
+    const templatePath = resolveTemplatePath("leaveNotification.hbs");
     const templateSource = fs.readFileSync(templatePath, "utf8");
     const template = handlebars.compile(templateSource);
 
@@ -37,16 +36,23 @@ const sendLeaveStatusNotification = async (
     console.log("➡️ TO (Employee):", employeeInfo.employee_email);
     console.log("➡️ Status:", status);
 
+    const attachmentPath = application.attachment_path
+      ? path.join(
+          uploadRoot,
+          String(application.attachment_path).replace(/^\/?uploads\/?/, ""),
+        )
+      : null;
+
     const info = await transporter.sendMail({
       from: `"HRMS System" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
       to: employeeInfo.employee_email,
       subject: `Leave Request ${status.charAt(0).toUpperCase() + status.slice(1)} - ${employeeInfo.employee_name}`,
       html,
-      attachments: application.attachment_path
+      attachments: attachmentPath
         ? [
             {
               filename: path.basename(application.attachment_path),
-              path: path.join(__dirname, "..", "..", application.attachment_path),
+              path: attachmentPath,
             },
           ]
         : [],

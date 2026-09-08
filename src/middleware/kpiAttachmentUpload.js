@@ -1,8 +1,9 @@
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { resolveUploadPath } = require("../utils/uploadPaths");
 
-const baseUploadDir = path.join(__dirname, "../../../uploads/kpi-attachments");
+const baseUploadDir = resolveUploadPath("kpi-attachments");
 
 if (!fs.existsSync(baseUploadDir)) {
   fs.mkdirSync(baseUploadDir, { recursive: true });

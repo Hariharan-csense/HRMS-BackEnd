@@ -2,7 +2,7 @@
 const { transporter } = require("./mailer");
 const handlebars = require("handlebars");
 const fs = require("fs");
-const path = require("path");
+const { resolveTemplatePath } = require("./templatePaths");
 
 handlebars.registerHelper("eq", function (a, b) {
   return a === b;
@@ -29,10 +29,7 @@ const sendExpenseStatusNotification = async (
       return;
     }
 
-    const templatePath = path.join(
-      __dirname,
-      "../templates/expenseStatusNotification.hbs",
-    );
+    const templatePath = resolveTemplatePath("expenseStatusNotification.hbs");
     const templateSource = fs.readFileSync(templatePath, "utf8");
     const template = handlebars.compile(templateSource);
 

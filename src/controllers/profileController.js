@@ -2,6 +2,7 @@ const knex = require("../db/db");
 const fs = require("fs");
 const path = require("path");
 const { warmEmployeeFaceDescriptor } = require("../utils/faceRecognition");
+const { uploadRoot, resolveUploadPath } = require("../utils/uploadPaths");
 
 const resolveEmployeeIdFromAuth = async (req) => {
   const companyId = Number(req.user?.company_id);
@@ -308,120 +309,132 @@ const deleteMyAccountAndOrganization = async (req, res) => {
     }
 
     await knex.transaction(async (trx) => {
-      const employeeRows = await trx("employees")
-        .where({ company_id: companyId })
-        .select("id");
-      const userRows = await trx("users")
-        .where({ company_id: companyId })
-        .select("id");
-      const employeeIds = employeeRows.map((r) => r.id);
-      const userIds = userRows.map((r) => r.id);
+      await trx.raw("SET FOREIGN_KEY_CHECKS = 0");
 
-      const companyColumnTablesRaw = await trx.raw(`
-        SELECT DISTINCT TABLE_NAME
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND COLUMN_NAME = 'company_id'
-      `);
-      const companyColumnTables = (companyColumnTablesRaw[0] || []).map(
-        (r) => r.TABLE_NAME,
-      );
+      try {
+        const employeeRows = await trx("employees")
+          .where({ company_id: companyId })
+          .select("id");
+        const userRows = await trx("users")
+          .where({ company_id: companyId })
+          .select("id");
+        const employeeIds = employeeRows.map((r) => r.id);
+        const userIds = userRows.map((r) => r.id);
 
-      const doNotDeleteByCompany = new Set([
-        "companies",
-        "knex_migrations",
-        "knex_migrations_lock",
-      ]);
-      const deleteCompanyLast = new Set(["users", "employees"]);
-
-      for (const tableName of companyColumnTables) {
-        if (
-          doNotDeleteByCompany.has(tableName) ||
-          deleteCompanyLast.has(tableName)
-        )
-          continue;
-        await trx(tableName).where("company_id", companyId).del();
-      }
-
-      if (employeeIds.length > 0) {
-        const employeeColumnTablesRaw = await trx.raw(`
-          SELECT DISTINCT c.TABLE_NAME
-          FROM INFORMATION_SCHEMA.COLUMNS c
-          LEFT JOIN INFORMATION_SCHEMA.COLUMNS c2
-            ON c.TABLE_SCHEMA = c2.TABLE_SCHEMA
-           AND c.TABLE_NAME = c2.TABLE_NAME
-           AND c2.COLUMN_NAME = 'company_id'
-          WHERE c.TABLE_SCHEMA = DATABASE()
-            AND c.COLUMN_NAME = 'employee_id'
-            AND c2.COLUMN_NAME IS NULL
+        const companyColumnTablesRaw = await trx.raw(`
+          SELECT DISTINCT TABLE_NAME
+          FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND COLUMN_NAME = 'company_id'
         `);
-        const employeeColumnTables = (employeeColumnTablesRaw[0] || []).map(
+        const companyColumnTables = (companyColumnTablesRaw[0] || []).map(
           (r) => r.TABLE_NAME,
         );
 
-        for (const tableName of employeeColumnTables) {
+        const doNotDeleteByCompany = new Set([
+          "companies",
+          "knex_migrations",
+          "knex_migrations_lock",
+        ]);
+        const deleteCompanyLast = new Set(["users", "employees"]);
+
+        for (const tableName of companyColumnTables) {
           if (
-            ["employees", "knex_migrations", "knex_migrations_lock"].includes(
-              tableName,
-            )
+            doNotDeleteByCompany.has(tableName) ||
+            deleteCompanyLast.has(tableName)
           )
             continue;
-          await trx(tableName).whereIn("employee_id", employeeIds).del();
+          await trx(tableName).where("company_id", companyId).del();
         }
-      }
 
-      if (userIds.length > 0) {
-        const userColumnTablesRaw = await trx.raw(`
-          SELECT DISTINCT c.TABLE_NAME
-          FROM INFORMATION_SCHEMA.COLUMNS c
-          LEFT JOIN INFORMATION_SCHEMA.COLUMNS c2
-            ON c.TABLE_SCHEMA = c2.TABLE_SCHEMA
-           AND c.TABLE_NAME = c2.TABLE_NAME
-           AND c2.COLUMN_NAME = 'company_id'
-          WHERE c.TABLE_SCHEMA = DATABASE()
-            AND c.COLUMN_NAME = 'user_id'
-            AND c2.COLUMN_NAME IS NULL
-        `);
-        const userColumnTables = (userColumnTablesRaw[0] || []).map(
-          (r) => r.TABLE_NAME,
-        );
+        if (employeeIds.length > 0) {
+          const employeeColumnTablesRaw = await trx.raw(`
+            SELECT DISTINCT c.TABLE_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS c
+            LEFT JOIN INFORMATION_SCHEMA.COLUMNS c2
+              ON c.TABLE_SCHEMA = c2.TABLE_SCHEMA
+             AND c.TABLE_NAME = c2.TABLE_NAME
+             AND c2.COLUMN_NAME = 'company_id'
+            WHERE c.TABLE_SCHEMA = DATABASE()
+              AND c.COLUMN_NAME = 'employee_id'
+              AND c2.COLUMN_NAME IS NULL
+          `);
+          const employeeColumnTables = (employeeColumnTablesRaw[0] || []).map(
+            (r) => r.TABLE_NAME,
+          );
 
-        for (const tableName of userColumnTables) {
-          if (
-            ["users", "knex_migrations", "knex_migrations_lock"].includes(
-              tableName,
+          for (const tableName of employeeColumnTables) {
+            if (
+              ["employees", "knex_migrations", "knex_migrations_lock"].includes(
+                tableName,
+              )
             )
-          )
-            continue;
-          await trx(tableName).whereIn("user_id", userIds).del();
+              continue;
+            await trx(tableName).whereIn("employee_id", employeeIds).del();
+          }
         }
+
+        if (userIds.length > 0) {
+          const userColumnTablesRaw = await trx.raw(`
+            SELECT DISTINCT c.TABLE_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS c
+            LEFT JOIN INFORMATION_SCHEMA.COLUMNS c2
+              ON c.TABLE_SCHEMA = c2.TABLE_SCHEMA
+             AND c.TABLE_NAME = c2.TABLE_NAME
+             AND c2.COLUMN_NAME = 'company_id'
+            WHERE c.TABLE_SCHEMA = DATABASE()
+              AND c.COLUMN_NAME = 'user_id'
+              AND c2.COLUMN_NAME IS NULL
+          `);
+          const userColumnTables = (userColumnTablesRaw[0] || []).map(
+            (r) => r.TABLE_NAME,
+          );
+
+          for (const tableName of userColumnTables) {
+            if (
+              ["users", "knex_migrations", "knex_migrations_lock"].includes(
+                tableName,
+              )
+            )
+              continue;
+            await trx(tableName).whereIn("user_id", userIds).del();
+          }
+        }
+
+        await trx("employees").where("company_id", companyId).del();
+        await trx("users").where("company_id", companyId).del();
+        await trx("companies").where({ id: companyId }).del();
+      } finally {
+        await trx.raw("SET FOREIGN_KEY_CHECKS = 1");
       }
-
-      await trx("employees").where("company_id", companyId).del();
-
-      await trx("users").where("company_id", companyId).del();
-      await trx("companies").where({ id: companyId }).del();
     });
 
     if (company.logo) {
       const logoPath = path.join(
-        __dirname,
-        "..",
-        "..",
-        company.logo.replace(/^\/+/, ""),
+        uploadRoot,
+        company.logo.replace(/^\/?uploads\/?/, ""),
       );
       if (fs.existsSync(logoPath)) {
         fs.unlinkSync(logoPath);
       }
     }
 
-    const uploadRoot = path.join(__dirname, "..", "..", "uploads");
+    if (company.signature) {
+      const signaturePath = path.join(
+        uploadRoot,
+        company.signature.replace(/^\/?uploads\/?/, ""),
+      );
+      if (fs.existsSync(signaturePath)) {
+        fs.unlinkSync(signaturePath);
+      }
+    }
+
     const companyFolderName = `company_${companyId}`;
     const companyUploadDirs = [
-      path.join(uploadRoot, "attendance", companyFolderName),
-      path.join(uploadRoot, "employees", companyFolderName),
-      path.join(uploadRoot, "leave-attachments", companyFolderName),
-      path.join(uploadRoot, "expense-receipts", companyFolderName),
+      resolveUploadPath("attendance", companyFolderName),
+      resolveUploadPath("employees", companyFolderName),
+      resolveUploadPath("leave-attachments", companyFolderName),
+      resolveUploadPath("expense-receipts", companyFolderName),
     ];
 
     for (const dir of companyUploadDirs) {

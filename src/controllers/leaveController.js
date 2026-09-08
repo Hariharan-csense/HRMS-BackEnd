@@ -636,7 +636,7 @@ const applyLeave = async (req, res) => {
       // ===============================
       let attachmentPath = null;
       if (req.file) {
-        attachmentPath = `/uploads/leave-attachments/${req.file.filename}`;
+        attachmentPath = `/uploads/leave-attachments/company_${companyId}/${req.file.filename}`;
       }
 
       // ===============================
@@ -665,7 +665,7 @@ const applyLeave = async (req, res) => {
           .first();
       }
 
-      const [newId] = await knex("leave_applications").insert({
+      const applicationPayload = {
         company_id: companyId,
         application_id,
         employee_id: employeeId,
@@ -675,11 +675,16 @@ const applyLeave = async (req, res) => {
         from_date,
         to_date,
         days,
-        half_day_session: halfDaySession,
         reason,
         attachment_path: attachmentPath,
         status: "pending",
-      });
+      };
+
+      if (await knex.schema.hasColumn("leave_applications", "half_day_session")) {
+        applicationPayload.half_day_session = halfDaySession;
+      }
+
+      const [newId] = await knex("leave_applications").insert(applicationPayload);
 
       const newApplication = await knex("leave_applications")
         .where({ id: newId })
@@ -856,15 +861,19 @@ const applyLeave = async (req, res) => {
       console.log("=========================================================");
 
       // SEND EMAIL
-      await sendLeaveNotification(
-        toEmails,
-        newApplication,
-        {
-          employee_name: employeeName,
-          employee_email: employee.email,
-        },
-        leaveType,
-      );
+      try {
+        await sendLeaveNotification(
+          toEmails,
+          newApplication,
+          {
+            employee_name: employeeName,
+            employee_email: employee.email,
+          },
+          leaveType,
+        );
+      } catch (emailError) {
+        console.error("Leave notification email failed:", emailError);
+      }
 
       // ===============================
       // RESPONSE
@@ -1101,26 +1110,37 @@ const updateLeaveStatus = async (req, res) => {
     // UPDATE LEAVE APPLICATION
     // ===============================
     const approverEmployeeId = await resolveApproverEmployeeId(req, companyId);
+    const updatePayload = {
+      status,
+      approved_by: approverEmployeeId,
+    };
+
+    if (await knex.schema.hasColumn("leave_applications", "approved_at")) {
+      updatePayload.approved_at = knex.fn.now();
+    }
+
+    if (await knex.schema.hasColumn("leave_applications", "remarks")) {
+      updatePayload.remarks = remarks || null;
+    }
 
     await knex("leave_applications")
       .where({ id, company_id: companyId })
-      .update({
-        status,
-        approved_by: approverEmployeeId,
-        approved_at: knex.fn.now(),
-        remarks: remarks || null,
-      });
+      .update(updatePayload);
 
     // ===============================
     // SEND EMAIL TO EMPLOYEE
     // ===============================
     const employeeFullName =
       `${applicant.first_name} ${applicant.last_name || ""}`.trim();
-    await sendLeaveStatusNotification(
-      application,
-      { employee_name: employeeFullName, employee_email: applicant.email },
-      status,
-    );
+    try {
+      await sendLeaveStatusNotification(
+        application,
+        { employee_name: employeeFullName, employee_email: applicant.email },
+        status,
+      );
+    } catch (emailError) {
+      console.error("Leave status notification email failed:", emailError);
+    }
 
     res.json({ success: true, message: `Leave ${status} successfully!` });
   } catch (error) {
@@ -1494,8 +1514,6 @@ const calculateLeaveForConfirmedEmployee = async (employeeId, companyId) => {
 
 const getRelevantUsers = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const userRole = (req.user.role || "").toLowerCase(); // employee role (HR, Manager, Sales, etc.)
     const workflowRole = resolveWorkflowRole(req.user);
     const companyId = req.user.company_id;
 
@@ -1538,17 +1556,30 @@ const getRelevantUsers = async (req, res) => {
     // HR list for admins and then overwrote it with a CEO list, causing the UI
     // to report a false "role mapping mismatch" warning.
     if (workflowRole === "employee") {
-      const employee = await knex("employees")
-        .where({ id: userId, company_id: companyId })
-        .first();
+      const employee = await resolveEmployeeProfile(req, companyId);
 
       if (!employee)
         return res.status(404).json({ message: "Employee not found" });
 
-      const departmentHead = await knex("departments")
-        .where({ id: employee.department_id, company_id: companyId })
-        .select("head_name", "head_id")
-        .first();
+      const hasDepartmentHeadId = await knex.schema.hasColumn(
+        "departments",
+        "head_id",
+      );
+      const hasDepartmentHeadName = await knex.schema.hasColumn(
+        "departments",
+        "head_name",
+      );
+      const departmentHeadColumns = [];
+      if (hasDepartmentHeadId) departmentHeadColumns.push("head_id");
+      if (hasDepartmentHeadName) departmentHeadColumns.push("head_name");
+
+      const departmentHead =
+        employee.department_id && departmentHeadColumns.length > 0
+          ? await knex("departments")
+              .where({ id: employee.department_id, company_id: companyId })
+              .select(...departmentHeadColumns)
+              .first()
+          : null;
 
       const [adminUsers, ceoUsers] = await Promise.all([
         getUsersByRole("admin"),

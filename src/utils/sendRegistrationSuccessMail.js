@@ -1,14 +1,11 @@
 const { transporter } = require("./mailer");
 const handlebars = require("handlebars");
 const fs = require("fs");
-const path = require("path");
+const { resolveTemplatePath } = require("./templatePaths");
 
 const sendRegistrationSuccessMail = async (user, companyName = null) => {
   try {
-    const templatePath = path.join(
-      __dirname,
-      "../templates/registrationSuccess.hbs",
-    );
+    const templatePath = resolveTemplatePath("registrationSuccess.hbs");
 
     const templateSource = fs.readFileSync(templatePath, "utf8");
     const template = handlebars.compile(templateSource);

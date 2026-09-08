@@ -9,6 +9,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const { setIo } = require("./socket");
 const { initializeFirebaseAdmin } = require("./services/firebaseAdmin");
+const { uploadRoot } = require("./utils/uploadPaths");
 const {
   closeExpiredRequirements,
 } = require("./controllers/jobRequirementsController");
@@ -57,8 +58,6 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-const rootUploadsPath = path.resolve(__dirname, "..", "..", "uploads");
-const backendUploadsPath = path.resolve(__dirname, "..", "uploads");
 const serveUploadedFile = (req, res, next) => {
   const relativeUploadPath = String(req.path || "")
     .replace(/^\/backend\/uploads\/?/, "")
@@ -69,28 +68,17 @@ const serveUploadedFile = (req, res, next) => {
     return next();
   }
 
-  const candidates = [
-    path.join(rootUploadsPath, relativeUploadPath),
-    path.join(backendUploadsPath, relativeUploadPath),
-  ];
+  const candidatePath = path.join(uploadRoot, relativeUploadPath);
 
-  const existingFile = candidates.find(
-    (filePath) => fs.existsSync(filePath) && fs.statSync(filePath).isFile(),
-  );
-  if (existingFile) {
-    return res.sendFile(existingFile);
+  if (fs.existsSync(candidatePath) && fs.statSync(candidatePath).isFile()) {
+    return res.sendFile(candidatePath);
   }
 
   return next();
 };
 app.get(["/uploads/*", "/backend/uploads/*"], serveUploadedFile);
-app.use("/backend/uploads", express.static(rootUploadsPath));
-app.use("/backend/uploads", express.static(backendUploadsPath));
-app.use("/uploads", express.static(rootUploadsPath));
-app.use("/uploads", express.static(backendUploadsPath));
-// Serve uploaded files (images, documents, etc.)
-const uploadsPath = path.resolve(__dirname, "../../uploads");
-app.use("/uploads", express.static(uploadsPath));
+app.use("/backend/uploads", express.static(uploadRoot));
+app.use("/uploads", express.static(uploadRoot));
 
 // Import routes
 const demoRoutes = require("./routes/demo");

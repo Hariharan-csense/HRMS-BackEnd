@@ -1,11 +1,10 @@
 const { transporter } = require("./mailer");
 const handlebars = require("handlebars");
 const fs = require("fs");
-const path = require("path");
+const { resolveTemplatePath } = require("./templatePaths");
 
 const sendEmployeeWelcomeMail = async (account) => {
-  const templatePath = path.join(__dirname, "../templates/employeeWelcome.hbs");
-  if (!fs.existsSync(templatePath)) throw new Error("Employee mail template not found");
+  const templatePath = resolveTemplatePath("employeeWelcome.hbs");
 
   const template = handlebars.compile(fs.readFileSync(templatePath, "utf8"));
   const html = template({

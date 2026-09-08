@@ -1,12 +1,12 @@
 const { transporter } = require("./mailer"); // transporter = require('./mailer');
 const handlebars = require("handlebars");
 const fs = require("fs");
-const path = require("path");
+const { resolveTemplatePath } = require("./templatePaths");
 
 // 📩 Ticket Created → Superadmin Mail
 const sendTicketCreatedMail = async (superAdminEmail, ticket, creator) => {
   try {
-    const templatePath = path.join(__dirname, "../templates/ticketCreated.hbs");
+    const templatePath = resolveTemplatePath("ticketCreated.hbs");
     const templateSource = fs.readFileSync(templatePath, "utf8");
     const template = handlebars.compile(templateSource);
 
@@ -46,10 +46,7 @@ const sendTicketCreatedMail = async (superAdminEmail, ticket, creator) => {
 // 📩 Status Updated → Ticket Creator Mail
 const sendTicketStatusUpdateMail = async (userEmail, ticket) => {
   try {
-    const templatePath = path.join(
-      __dirname,
-      "../templates/ticketStatusUpdated.hbs",
-    );
+    const templatePath = resolveTemplatePath("ticketStatusUpdated.hbs");
     const templateSource = fs.readFileSync(templatePath, "utf8");
     const template = handlebars.compile(templateSource);
 

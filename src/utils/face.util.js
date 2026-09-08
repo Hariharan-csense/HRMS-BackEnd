@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { resolveUploadPath } = require('./uploadPaths');
 
 async function verifyFace(employeeId, imageData) {
   // For now always return true
@@ -12,7 +13,7 @@ async function saveImage(imageData, employeeId = null, type = 'checkin') {
   try {
     // If imageData is a file path, copy it to uploads directory
     if (imageData && typeof imageData === 'string') {
-      const uploadsDir = path.join(__dirname, '../../uploads/attendance');
+      const uploadsDir = resolveUploadPath('attendance');
       
       // Create uploads directory if it doesn't exist
       if (!fs.existsSync(uploadsDir)) {
