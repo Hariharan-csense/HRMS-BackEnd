@@ -4,6 +4,25 @@ const { v4: uuidv4 } = require("uuid");
 const isSuperAdminUser = (user = {}) =>
   String(user.role || "").toLowerCase() === "superadmin";
 
+// A company can retain historical trial and paid subscription records.  Always
+// surface the current paid subscription first, instead of joining an arbitrary
+// old trial row.
+const currentSubscriptionJoin = () =>
+  db.raw(`cs.id = (
+    SELECT ranked_cs.id
+    FROM company_subscriptions AS ranked_cs
+    WHERE ranked_cs.company_id = companies.id
+    ORDER BY
+      CASE
+        WHEN ranked_cs.status = 'active' THEN 0
+        WHEN ranked_cs.status = 'trial' THEN 1
+        ELSE 2
+      END,
+      COALESCE(ranked_cs.last_payment_date, ranked_cs.updated_at, ranked_cs.created_at) DESC,
+      ranked_cs.id DESC
+    LIMIT 1
+  )`);
+
 const deleteOrganizationDataForSuperAdmin = async (organizationId) => {
   await db.transaction(async (trx) => {
     await trx.raw("SET FOREIGN_KEY_CHECKS = 0");
@@ -46,14 +65,10 @@ const getOrganizations = async (req, res) => {
     if (isSuperAdminUser(req.user)) {
       console.log("Fetching all companies for superadmin");
       organizations = await db("companies")
-        .leftJoin(
-          "company_subscriptions",
-          "companies.id",
-          "company_subscriptions.company_id",
-        )
+        .leftJoin("company_subscriptions as cs", currentSubscriptionJoin())
         .leftJoin(
           "subscription_plans",
-          "company_subscriptions.plan_id",
+          "cs.plan_id",
           "subscription_plans.id",
         )
         .leftJoin("employees", "companies.id", "employees.company_id")
@@ -64,13 +79,31 @@ const getOrganizations = async (req, res) => {
           "companies.legal_name as owner",
           "companies.created_at",
           "companies.updated_at",
+          db.raw(`(
+            SELECT contact_employee.email
+            FROM employees AS contact_employee
+            WHERE contact_employee.company_id = companies.id
+              AND NULLIF(contact_employee.email, '') IS NOT NULL
+            ORDER BY contact_employee.created_at ASC, contact_employee.id ASC
+            LIMIT 1
+          ) as contactEmail`),
+          db.raw(`(
+            SELECT COALESCE(NULLIF(contact_employee.mobile, ''), NULLIF(contact_employee.email, ''))
+            FROM employees AS contact_employee
+            WHERE contact_employee.company_id = companies.id
+            ORDER BY contact_employee.created_at ASC, contact_employee.id ASC
+            LIMIT 1
+          ) as contact`),
           "subscription_plans.name as plan",
-          "company_subscriptions.trial_end_date",
-          "company_subscriptions.storage_gb as totalStorage",
+          "cs.status as subscriptionStatus",
+          "cs.start_date as subscriptionStartDate",
+          "cs.trial_end_date",
+          "cs.end_date as subscriptionEndDate",
+          "cs.storage_gb as totalStorage",
           db.raw(
-            "DATEDIFF(company_subscriptions.trial_end_date, CURDATE()) as daysLeft",
+            "DATEDIFF(COALESCE(cs.end_date, cs.trial_end_date), CURDATE()) as daysLeft",
           ),
-          db.raw("COALESCE(company_subscriptions.paid_amount, 0) as revenue"),
+          db.raw("COALESCE(cs.paid_amount, 0) as revenue"),
           db.raw("COUNT(DISTINCT employees.id) as user_count"),
         ])
         .groupBy(
@@ -80,9 +113,12 @@ const getOrganizations = async (req, res) => {
           "companies.created_at",
           "companies.updated_at",
           "subscription_plans.name",
-          "company_subscriptions.trial_end_date",
-          "company_subscriptions.storage_gb",
-          "company_subscriptions.paid_amount",
+          "cs.status",
+          "cs.start_date",
+          "cs.trial_end_date",
+          "cs.end_date",
+          "cs.storage_gb",
+          "cs.paid_amount",
         )
         .orderBy("companies.created_at", "desc");
     } else {
@@ -97,14 +133,10 @@ const getOrganizations = async (req, res) => {
         });
       }
       organizations = await db("companies")
-        .leftJoin(
-          "company_subscriptions",
-          "companies.id",
-          "company_subscriptions.company_id",
-        )
+        .leftJoin("company_subscriptions as cs", currentSubscriptionJoin())
         .leftJoin(
           "subscription_plans",
-          "company_subscriptions.plan_id",
+          "cs.plan_id",
           "subscription_plans.id",
         )
         .leftJoin("employees", "companies.id", "employees.company_id")
@@ -116,13 +148,31 @@ const getOrganizations = async (req, res) => {
           "companies.legal_name as owner",
           "companies.created_at",
           "companies.updated_at",
+          db.raw(`(
+            SELECT contact_employee.email
+            FROM employees AS contact_employee
+            WHERE contact_employee.company_id = companies.id
+              AND NULLIF(contact_employee.email, '') IS NOT NULL
+            ORDER BY contact_employee.created_at ASC, contact_employee.id ASC
+            LIMIT 1
+          ) as contactEmail`),
+          db.raw(`(
+            SELECT COALESCE(NULLIF(contact_employee.mobile, ''), NULLIF(contact_employee.email, ''))
+            FROM employees AS contact_employee
+            WHERE contact_employee.company_id = companies.id
+            ORDER BY contact_employee.created_at ASC, contact_employee.id ASC
+            LIMIT 1
+          ) as contact`),
           "subscription_plans.name as plan",
-          "company_subscriptions.trial_end_date",
-          "company_subscriptions.storage_gb as totalStorage",
+          "cs.status as subscriptionStatus",
+          "cs.start_date as subscriptionStartDate",
+          "cs.trial_end_date",
+          "cs.end_date as subscriptionEndDate",
+          "cs.storage_gb as totalStorage",
           db.raw(
-            "DATEDIFF(company_subscriptions.trial_end_date, CURDATE()) as daysLeft",
+            "DATEDIFF(COALESCE(cs.end_date, cs.trial_end_date), CURDATE()) as daysLeft",
           ),
-          db.raw("COALESCE(company_subscriptions.paid_amount, 0) as revenue"),
+          db.raw("COALESCE(cs.paid_amount, 0) as revenue"),
           db.raw("COUNT(DISTINCT employees.id) as user_count"),
         ])
         .groupBy(
@@ -132,9 +182,12 @@ const getOrganizations = async (req, res) => {
           "companies.created_at",
           "companies.updated_at",
           "subscription_plans.name",
-          "company_subscriptions.trial_end_date",
-          "company_subscriptions.storage_gb",
-          "company_subscriptions.paid_amount",
+          "cs.status",
+          "cs.start_date",
+          "cs.trial_end_date",
+          "cs.end_date",
+          "cs.storage_gb",
+          "cs.paid_amount",
         )
         .orderBy("companies.created_at", "desc");
     }
@@ -149,15 +202,20 @@ const getOrganizations = async (req, res) => {
         plan: org.plan,
       });
 
-      // Calculate days left properly
+      const subscriptionStatus = String(org.subscriptionStatus || "").toLowerCase();
+      const isTrial = subscriptionStatus === "trial";
+      const subscriptionEndDate = org.subscriptionEndDate || org.trial_end_date;
+
+      // Days remaining applies to the actual subscription end date. For a
+      // paid plan, a historical trial end date must never make it a trial.
       let calculatedDaysLeft = 0;
-      if (org.trial_end_date) {
-        const trialEndDate = new Date(org.trial_end_date);
+      if (subscriptionEndDate) {
+        const trialEndDate = new Date(subscriptionEndDate);
         const currentDate = new Date();
         const diffTime = trialEndDate - currentDate;
         calculatedDaysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
         console.log(`Days calculation for ${org.name}:`, {
-          trial_end_date: org.trial_end_date,
+          subscription_end_date: subscriptionEndDate,
           current_date: currentDate.toISOString().split("T")[0],
           calculated_days_left: calculatedDaysLeft,
         });
@@ -166,18 +224,19 @@ const getOrganizations = async (req, res) => {
       return {
         id: org.id?.toString() || "",
         name: org.name || "",
-        email: "", // No email field in companies table
+        email: org.contactEmail || "",
+        contact: org.contact || org.contactEmail || "",
         owner: org.owner || "",
-        status:
-          calculatedDaysLeft < 0
+        status: !subscriptionStatus
+          ? "inactive"
+          : calculatedDaysLeft < 0
             ? "expired"
-            : org.trial_end_date && calculatedDaysLeft >= 0
+            : isTrial
               ? "trial"
-              : org.plan?.toLowerCase() === "trial" ||
-                  org.plan?.toLowerCase() === "basic"
-                ? "trial"
-                : "active",
-        plan: org.plan || "Starter",
+              : subscriptionStatus === "active"
+                ? "active"
+                : subscriptionStatus,
+        plan: org.plan || (isTrial ? "Trial" : "Not subscribed"),
         users: org.user_count || 0, // Use user_count from query
         storage: "0MB", // No used storage field available
         totalStorage: `${org.totalStorage || 2}GB`,
@@ -185,6 +244,8 @@ const getOrganizations = async (req, res) => {
         revenue: org.revenue ? `₹${org.revenue}.00` : "₹0.00",
         createdAt: org.created_at,
         updatedAt: org.updated_at,
+        trialStartDate: org.subscriptionStartDate || null,
+        trialEndDate: subscriptionEndDate || null,
         lastLogin: null, // Can be added if needed
       };
     });

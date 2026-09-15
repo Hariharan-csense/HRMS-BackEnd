@@ -469,7 +469,7 @@ const registerUser = async (req, res) => {
             };
 
             if (subscriptionColumns.max_users) {
-              subscriptionData.max_users = 999; // Unlimited users during trial
+              subscriptionData.max_users = 25;
             }
 
             if (subscriptionColumns.storage_gb) {

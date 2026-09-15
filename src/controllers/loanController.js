@@ -14,6 +14,12 @@ const roundTo2 = (value) => Number((Number(value) || 0).toFixed(2));
 
 const todayKey = () => getDateKey();
 
+const getNextMonthValue = () => {
+  const date = new Date();
+  date.setMonth(date.getMonth() + 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+};
+
 const normalizeMonth = (value) => {
   const text = String(value || "").trim();
   return /^\d{4}-\d{2}$/.test(text) ? text : null;
@@ -114,21 +120,32 @@ const createLoanRequest = async (req, res) => {
     }
 
     const requestType = normalizeRequestType(req.body.request_type || req.body.requestType);
+    const isLoanRequest = requestType === "loan";
     const amount = roundTo2(req.body.amount || req.body.loanAmount);
-    const tenureMonths = Math.floor(toNumber(req.body.tenure_months || req.body.tenureMonths));
-    const recoveryStartMonth = normalizeMonth(
+    const requestedTenureMonths = Math.floor(
+      toNumber(req.body.tenure_months || req.body.tenureMonths),
+    );
+    const requestedRecoveryStartMonth = normalizeMonth(
       req.body.recovery_start_month || req.body.recoveryStartMonth,
     );
+    // Salary advances are recovered in one payment in the next payroll month.
+    // These values remain internal, so the employee does not need to enter loan terms.
+    const tenureMonths = isLoanRequest ? requestedTenureMonths : 1;
+    const recoveryStartMonth = isLoanRequest
+      ? requestedRecoveryStartMonth
+      : getNextMonthValue();
     const purpose = String(req.body.purpose || req.body.reason || "").trim();
     const requestDate = req.body.request_date || req.body.requestDate || todayKey();
 
     if (!amount || amount <= 0) {
-      return res.status(400).json({ message: "Enter a valid loan amount" });
+      return res.status(400).json({
+        message: `Enter a valid ${isLoanRequest ? "loan" : "advance"} amount`,
+      });
     }
-    if (!tenureMonths || tenureMonths <= 0) {
+    if (isLoanRequest && (!tenureMonths || tenureMonths <= 0)) {
       return res.status(400).json({ message: "Enter a valid tenure in months" });
     }
-    if (!recoveryStartMonth) {
+    if (isLoanRequest && !recoveryStartMonth) {
       return res.status(400).json({ message: "Recovery start month must be YYYY-MM" });
     }
     if (!purpose) {
@@ -177,7 +194,7 @@ const createLoanRequest = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Loan request submitted successfully",
+      message: `${isLoanRequest ? "Loan" : "Salary advance"} request submitted successfully`,
       loan: serializeLoan(loan),
     });
   } catch (error) {

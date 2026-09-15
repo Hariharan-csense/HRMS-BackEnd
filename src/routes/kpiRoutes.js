@@ -91,14 +91,12 @@ router.patch(
 router.get(
   "/scorecards/assigned-lead-indicators",
   protect,
-  requirePermission("dashboard", "view"),
   getAssignedLeadIndicators,
 );
 
 router.patch(
   "/scorecards/assigned-lead-indicators/:parameterId/:indicatorIndex",
   protect,
-  requirePermission("dashboard", "view"),
   updateAssignedLeadIndicator,
 );
 

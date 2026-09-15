@@ -183,7 +183,7 @@ const createLeadIndicatorNotifications = async ({
           description: `You have been assigned "${indicator.label}" for ${parameter.parameter || parameter.name || "KPI Parameter"}.`,
           type: "info",
           module_id: "kpi",
-          action_url: "/dashboard",
+          action_url: "/KPI/dashboard",
           read: false,
           created_at: new Date(),
         });
@@ -210,7 +210,7 @@ const createLeadIndicatorNotifications = async ({
       body: "A KPI lead indicator has been assigned to you. Please update today's value.",
       data: {
         moduleId: "kpi",
-        actionUrl: "/dashboard",
+        actionUrl: "/KPI/dashboard",
         companyId,
       },
     });
@@ -285,6 +285,8 @@ const mapTemplateRows = (templates, parameterMap) =>
       id: String(template.id),
       userId: String(template.userId || ""),
       userName: template.userName || "Employee",
+      branchId: template.branchId ? String(template.branchId) : "",
+      branchName: template.branchName || "",
       year: createdAt.getFullYear(),
       month: createdAt.getMonth() + 1,
       frequency: template.frequency || "MONTHLY",
@@ -299,14 +301,18 @@ exports.getScorecards = async (req, res) => {
     const role = normalizeRole(req.user?.role);
     const selectedUserId = String(req.query.userId || "").trim();
     const selectedUserIdNumber = toNumber(selectedUserId);
+    const selectedBranchId = toNumber(req.query.branchId);
     const selectedYear = String(req.query.year || "").trim();
     const selectedMonth = String(req.query.month || "").trim();
 
     const query = knex("kpi_templates as t")
       .leftJoin("employees as e", "t.owner_employee_id", "e.id")
+      .leftJoin("branches as b", "t.branch_id", "b.id")
       .select("t.id as id")
       .select("t.owner_employee_id as userId")
+      .select("t.branch_id as branchId")
       .select("t.frequency as frequency")
+      .select("b.name as branchName")
       .select("t.total_score as totalScore")
       .select("t.created_at as createdAt")
       .select({ userName: ownerNameExpr() })
@@ -314,6 +320,7 @@ exports.getScorecards = async (req, res) => {
       .orderBy("t.id", "desc");
 
     if (companyId) query.where("t.company_id", companyId);
+    if (selectedBranchId) query.where("t.branch_id", selectedBranchId);
 
     const scope = getKpiVisibilityScope(req.user);
     const currentEmployeeId = getCurrentEmployeeId(req.user);
@@ -340,6 +347,7 @@ exports.getScorecards = async (req, res) => {
       ? await knex("kpi_parameters")
           .whereIn("kpi_template_id", templateIds)
           .select("id")
+         
           .select("kpi_template_id as templateId")
           .select("name as parameter")
           .select("uom")
@@ -374,8 +382,23 @@ exports.getScorecards = async (req, res) => {
         const matchesMonth =
           !selectedMonth || String(scorecard.month) === selectedMonth;
         return matchesYear && matchesMonth;
+        
       },
     );
+
+    // const mapTemplateRows = (templates, parameterMap) => {
+    //   return templates.map((template) => ({
+    //     id: template.id,
+    //     title: template.title,
+    //     year: template.year,
+    //     month: template.month,
+
+    //     branchId: template.branchId ?? template.branch_id ?? null,
+    //     branchName: template.branchName ?? template.branch_name ?? null,
+
+    //     parameters: parameterMap[template.id] || [],
+    //   }));
+    // };
 
     return res.json(payload);
   } catch (error) {
@@ -393,12 +416,25 @@ exports.createScorecard = async (req, res) => {
 
     const {
       userId,
+      branchId,
       frequency = "MONTHLY",
       totalWeight = 100,
       rows = [],
       year,
       month,
     } = req.body || {};
+
+   const selectedBranchId=Number(branchId);
+   if(!Number.isFinite(selectedBranchId) || selectedBranchId<=0){
+    return res.status(400).json({message:"Branch is required."})
+   }
+
+   const branch =await knex("branches").where({id:selectedBranchId,company_id:companyId}).first("id");
+   if(!branch){
+    return res.status(400).json({message:"Invalid branch."})
+   }
+
+
 
     const ownerEmployeeId = Number(userId);
     if (!Number.isFinite(ownerEmployeeId) || ownerEmployeeId <= 0) {
@@ -415,10 +451,10 @@ exports.createScorecard = async (req, res) => {
     }
 
     const employee = await knex("employees")
-      .where({ id: ownerEmployeeId, company_id: companyId })
-      .first("id", "department_id", "designation_id");
+      .where({ id: ownerEmployeeId, company_id: companyId, branch_id: selectedBranchId })
+      .first("id", "department_id", "designation_id", "branch_id");
     if (!employee) {
-      return res.status(404).json({ message: "Selected employee not found." });
+      return res.status(404).json({ message: "Selected employee does not belong to the specified branch." });
     }
 
     const totalScore = Number(
@@ -430,6 +466,7 @@ exports.createScorecard = async (req, res) => {
       owner_employee_id: ownerEmployeeId,
       department_id: employee.department_id || null,
       designation_id: employee.designation_id || null,
+      branch_id: employee.branch_id || null,
       frequency: String(frequency).toUpperCase(),
       weight: toNumber(totalWeight, 100) ?? 100,
       total_score: totalScore,
@@ -493,7 +530,10 @@ exports.createScorecard = async (req, res) => {
       .where("t.id", templateId)
       .select("t.id as id")
       .select("t.owner_employee_id as userId")
+      .select("t.branch_id as branchId")
       .select("t.frequency as frequency")
+      .leftJoin("branches as b", "t.branch_id", "b.id")
+      .select("b.name as branchName")
       .select("t.total_score as totalScore")
       .select("t.created_at as createdAt")
       .select({ userName: ownerNameExpr() })
@@ -663,7 +703,10 @@ exports.updateScorecard = async (req, res) => {
       .where("t.id", templateId)
       .select("t.id as id")
       .select("t.owner_employee_id as userId")
+      .select("t.branch_id as branchId")
       .select("t.frequency as frequency")
+      .leftJoin("branches as b", "t.branch_id", "b.id")
+      .select("b.name as branchName")
       .select("t.total_score as totalScore")
       .select("t.created_at as createdAt")
       .select({ userName: ownerNameExpr() })
@@ -711,19 +754,12 @@ exports.getAssignedLeadIndicators = async (req, res) => {
       return res.status(400).json({ message: "Employee context missing." });
     }
 
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-    const todayKey = String(now.getDate());
+    const todayKey = String(new Date().getDate());
 
     const rows = await knex("kpi_parameters as p")
       .join("kpi_templates as t", "p.kpi_template_id", "t.id")
       .leftJoin("employees as owner", "t.owner_employee_id", "owner.id")
       .where("t.company_id", companyId)
-      .whereRaw("YEAR(t.created_at) = ? AND MONTH(t.created_at) = ?", [
-        currentYear,
-        currentMonth,
-      ])
       .select("p.id as parameterId")
       .select("p.kpi_template_id as scorecardId")
       .select("p.name as parameterName")

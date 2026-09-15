@@ -52,6 +52,9 @@ const isEmployeeSelfServiceUser = (user = {}) => {
   );
 };
 
+const isSuperAdminUser = (user = {}) =>
+  String(user.role || "").toLowerCase() === "superadmin";
+
 const applyOwnTicketScope = (query, user = {}) => {
   if (!isEmployeeSelfServiceUser(user)) return query;
   const email = String(user.email || "").toLowerCase().trim();
@@ -741,9 +744,11 @@ const updateTicket = async (req, res) => {
     const { id } = req.params;
     const { title, description, remarks, category, status } = req.body;
 
-    const existingTicket = await knex('tickets')
-      .where({ id, company_id: req.user.company_id })
-      .first();
+    const ticketScope = knex('tickets').where({ id });
+    if (!isSuperAdminUser(req.user)) {
+      ticketScope.where({ company_id: req.user.company_id });
+    }
+    const existingTicket = await ticketScope.first();
     if (!existingTicket) {
       return res.status(404).json({ success:false,message:'Ticket not found'});
     }
@@ -773,7 +778,11 @@ const updateTicket = async (req, res) => {
       updateData.remarks = remarks;
     }
 
-    await knex('tickets').where({ id, company_id: req.user.company_id }).update(updateData);
+    const updateScope = knex('tickets').where({ id });
+    if (!isSuperAdminUser(req.user)) {
+      updateScope.where({ company_id: req.user.company_id });
+    }
+    await updateScope.update(updateData);
 
     const ticket = await knex('tickets')
       .leftJoin('users as creator','tickets.created_by','creator.id')

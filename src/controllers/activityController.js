@@ -15,12 +15,12 @@ const getActivities = async (req, res) => {
     const employeeId = req.user.id;
     const companyId = req.user.company_id;
 
-    console.log("ACTIVITY DEBUG - Fetching activities:", {
-      employeeId,
-      companyId,
-      userType: req.user.type,
-      email: req.user.email,
-    });
+    // console.log("ACTIVITY DEBUG - Fetching activities:", {
+    //   employeeId,
+    //   companyId,
+    //   userType: req.user.type,
+    //   email: req.user.email,
+    // });
 
     const activities = await knex("user_activities")
       .join("employees", "user_activities.employee_id", "employees.id")
@@ -36,7 +36,7 @@ const getActivities = async (req, res) => {
       .orderBy("user_activities.created_at", "desc")
       .limit(20); // Get last 20 activities
 
-    console.log("ACTIVITY DEBUG - Activities found:", activities.length);
+    // console.log("ACTIVITY DEBUG - Activities found:", activities.length);
 
     // Format activities for frontend
     const formattedActivities = activities.map((activity) => ({
