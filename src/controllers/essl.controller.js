@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const knex = require("../db/db");
 const { doCheckIn, doCheckOut } = require("../services/attendance.service");
+const { findActiveAttendance } = require("../utils/attendanceSession");
 const { getDateKey } = require("../utils/dateTime");
 const { resolveUploadPath } = require("../utils/uploadPaths");
 
@@ -286,14 +287,11 @@ const resolveAttendanceContext = async (req) => {
     company,
   });
   const attendanceDay = getDateKey(payload.punchTime);
-  const active = await knex("attendance")
-    .where({
-      employee_id: employee.id,
-      company_id: employee.company_id,
-    })
-    .whereNull("check_out")
-    .whereRaw("DATE(check_in) = ?", [attendanceDay])
-    .first();
+  const active = await findActiveAttendance(knex, {
+    employeeId: employee.id,
+    companyId: employee.company_id,
+    at: payload.punchTime,
+  });
 
   return {
     ...payload,

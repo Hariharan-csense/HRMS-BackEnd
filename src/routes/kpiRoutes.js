@@ -20,6 +20,13 @@ const { getKpiReportsSummary } = require("../controllers/kpiReportsController");
 const kpiAttachmentUpload = require("../middleware/kpiAttachmentUpload");
 
 const router = express.Router();
+const hierarchy = require('../controllers/kpiHierarchyController');
+router.get('/hierarchy/templates', protect, requirePermission('kpi', 'view', { submodule: 'scorecard' }), hierarchy.getTemplates);
+router.get('/hierarchy', protect, requirePermission('kpi', 'view', { submodule: 'scorecard' }), hierarchy.getHierarchy);
+router.put('/hierarchy/:employeeId/score', protect, requirePermission('kpi', 'update', { submodule: 'scorecard' }), hierarchy.saveScore);
+router.put('/hierarchy/:employeeId/parent', protect,
+  requirePermission('kpi', 'view', { submodule: 'scorecard' }),
+  requirePermission('employees', 'update', { submodule: 'profile' }), hierarchy.setParent);
 
 router.get(
   "/parameter-reviews",

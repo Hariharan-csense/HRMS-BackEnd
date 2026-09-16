@@ -4,6 +4,7 @@ const { verifyFace, saveImage } = require('../utils/face.util');
 const { getEmployeeShift } = require('../utils/shift.util');
 const { getCompanyPolicy } = require('./companyPolicyService');
 const path = require('path');
+const { findActiveAttendance } = require('../utils/attendanceSession');
 
 const resolveStoredImageUrl = (imageData, companyId) => {
   if (!imageData) return null;
@@ -30,12 +31,6 @@ const attendanceTimeSelects = (alias = 'attendance') => [
     `DATE_FORMAT(DATE_ADD(${alias}.check_out, INTERVAL 330 MINUTE), '%Y-%m-%d %H:%i:%s') as check_out`
   )
 ];
-
-// Covers overnight shifts while preventing an abandoned punch from blocking
-// an employee indefinitely. A normal or overnight shift must close within this
-// rolling window.
-const getOpenPunchWindowStart = (date) =>
-  new Date(new Date(date).getTime() - 36 * 60 * 60 * 1000);
 
 const getMonthWindow = (date) => {
   const start = new Date(date);
@@ -190,14 +185,7 @@ async function doCheckIn({
     throw new Error('Invalid punch time');
   }
 
-  const existing = await knex('attendance')
-    .where('employee_id', employeeId)
-    .where('company_id', companyId)
-    .where('check_in', '>=', getOpenPunchWindowStart(effectivePunchTime))
-    .where('check_in', '<=', effectivePunchTime)
-    .whereNull('check_out')
-    .orderBy('check_in', 'desc')
-    .first();
+  const existing = await findActiveAttendance(knex, { companyId, employeeId, at: effectivePunchTime });
 
   if (existing) throw new Error('Already checked in');
 
@@ -337,7 +325,16 @@ async function doCheckIn({
     insertPayload.client_id = clientId;
   }
 
-  const [insertId] = await knex('attendance').insert(insertPayload);
+  const insertId = await knex.transaction(async (trx) => {
+    // Serialize simultaneous check-in requests for the same employee.
+    await trx('employees').where({ id: employeeId, company_id: companyId }).forUpdate().first();
+    const active = await findActiveAttendance(trx, {
+      companyId, employeeId, at: punchTime ? effectivePunchTime : new Date(),
+    });
+    if (active) throw new Error('Already checked in');
+    const [id] = await trx('attendance').insert(insertPayload);
+    return id;
+  });
 
   const attendance = await knex('attendance')
     .select('attendance.*', ...attendanceTimeSelects('attendance'))
@@ -360,16 +357,7 @@ async function doCheckOut({
     throw new Error('Invalid punch time');
   }
 
-  const record = await knex('attendance')
-    .where({
-      employee_id: employeeId,
-      company_id: companyId
-    })
-    .whereNull('check_out')
-    .where('check_in', '>=', getOpenPunchWindowStart(effectivePunchTime))
-    .where('check_in', '<=', effectivePunchTime)
-    .orderBy('check_in', 'desc')
-    .first();
+  const record = await findActiveAttendance(knex, { companyId, employeeId, at: effectivePunchTime });
 
   if (!record) throw new Error('No active check-in');
 
@@ -401,8 +389,10 @@ async function doCheckOut({
     ? checkOutTime >= shiftEnd
     : false;
 
-  await knex('attendance')
+  const updatedCount = await knex('attendance')
     .where('id', record.id)
+    .where({ company_id: companyId, employee_id: employeeId })
+    .whereNull('check_out')
     .update({
       check_out: checkOutTime,
       hours_worked: hoursWorked,
@@ -412,6 +402,8 @@ async function doCheckOut({
       device_info: deviceInfo,
       status: finalStatus
     });
+
+  if (!updatedCount) throw new Error('No active check-in');
 
   const attendance = await knex('attendance')
     .select('attendance.*', ...attendanceTimeSelects('attendance'))

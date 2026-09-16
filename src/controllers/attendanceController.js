@@ -3,6 +3,7 @@ const knex = require("../db/db");
 const { getIo } = require("../socket");
 const { hasAnyRole } = require("../middleware/authMiddleware");
 const { doCheckIn, doCheckOut } = require("../services/attendance.service");
+const { findActiveAttendance } = require("../utils/attendanceSession");
 const { getEmployeeShift } = require("../utils/shift.util");
 const {
   findEmployeeByDescriptor,
@@ -67,9 +68,6 @@ const getDayWindow = (date = new Date()) => {
 
   return { start, end };
 };
-
-const getOpenPunchWindowStart = (date = new Date()) =>
-  new Date(new Date(date).getTime() - 36 * 60 * 60 * 1000);
 
 const normalizeRequestedTime = (value) => {
   const normalized = String(value || "").trim();
@@ -474,15 +472,7 @@ const getAttendanceStatus = async (req, res) => {
     const now = new Date();
     const { start: todayStart, end: tomorrowStart } = getDayWindow(now);
 
-    const activeAttendance = await knex("attendance")
-      .select("attendance.*", ...attendanceTimeSelects("attendance"))
-      .where("employee_id", employeeId)
-      .where("company_id", companyId)
-      .where("check_in", ">=", getOpenPunchWindowStart(now))
-      .where("check_in", "<=", now)
-      .whereNull("check_out")
-      .orderBy("check_in", "desc")
-      .first();
+    const activeAttendance = await findActiveAttendance(knex, { companyId, employeeId, at: now });
 
     const todayAttendance = await knex("attendance")
       .select("attendance.*", ...attendanceTimeSelects("attendance"))
@@ -933,14 +923,7 @@ const parseOptionalLocation = (rawLocation) => {
 const resolveFacialAttendanceAction = async ({ companyId, employeeId }) => {
   const now = new Date();
 
-  const activeAttendance = await knex("attendance")
-    .where("employee_id", employeeId)
-    .where("company_id", companyId)
-    .where("check_in", ">=", getOpenPunchWindowStart(now))
-    .where("check_in", "<=", now)
-    .whereNull("check_out")
-    .orderBy("check_in", "desc")
-    .first();
+  const activeAttendance = await findActiveAttendance(knex, { companyId, employeeId, at: now });
 
   if (activeAttendance) return "check-out";
 
@@ -948,11 +931,7 @@ const resolveFacialAttendanceAction = async ({ companyId, employeeId }) => {
 };
 
 const assertFacialCheckoutIsNotImmediate = async ({ companyId, employeeId }) => {
-  const activeAttendance = await knex("attendance")
-    .where({ company_id: companyId, employee_id: employeeId })
-    .whereNull("check_out")
-    .orderBy("check_in", "desc")
-    .first();
+  const activeAttendance = await findActiveAttendance(knex, { companyId, employeeId });
 
   if (!activeAttendance?.check_in) return;
 
