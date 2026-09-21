@@ -572,7 +572,34 @@ const getOrganizationStats = async (req, res) => {
   }
 };
 
+// Organizations with recorded KPI usage (at least one scorecard).
+const getKpiOrganizations = async (req, res) => {
+  try {
+    const organizations = await knex('companies as c')
+      .join('kpi_templates as t', 't.company_id', 'c.id')
+      .select('c.id', 'c.company_name')
+      .countDistinct('t.owner_employee_id as kpi_user_count')
+      .groupBy('c.id', 'c.company_name')
+      .orderBy('c.company_name', 'asc');
+
+    return res.status(200).json({
+      success: true,
+      data: organizations.map((organization) => ({
+        ...organization,
+        kpi_user_count: Number(organization.kpi_user_count),
+      })),
+    });
+  } catch (error) {
+    console.error('Error fetching KPI organizations:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch KPI organizations',
+    });
+  }
+};
+
 module.exports = {
+  getKpiOrganizations,
   getAllCompanies,
   getAllTickets,
   getDashboardStats,

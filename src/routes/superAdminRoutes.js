@@ -4,9 +4,10 @@ const {
   getAllTickets,
   getDashboardStats,
   getTicketsByOrganization,
-  getOrganizationStats
+  getOrganizationStats,
+  getKpiOrganizations
 } = require('../controllers/superAdminController');
-const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { protect, adminOnly, superAdminOnly } = require('../middleware/authMiddleware');
 const { requirePermission } = require("../middleware/rbacMiddleware");
 
 const router = express.Router();
@@ -14,6 +15,8 @@ const router = express.Router();
 // All routes require authentication and admin access
 router.use(protect);
 router.use(adminOnly);
+
+router.get('/kpi-organizations', superAdminOnly, getKpiOrganizations);
 
 // GET /api/superadmin/stats - Get dashboard statistics
 router.get('/stats', requirePermission("subscription_plans", "view"), getDashboardStats);
