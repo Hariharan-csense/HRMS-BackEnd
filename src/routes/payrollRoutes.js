@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // src/routes/payrollRoutes.js
 const express = require('express');
 const {
@@ -34,7 +35,7 @@ router.post('/process', protect, requirePermission("payroll", "create", { submod
 router.put('/processing/:id/status', protect, requirePermission("payroll", "update", { submodule: "processing" }), updatePayrollStatus);
 
 // Delete payroll processing record
-router.delete('/processing/:id', protect, requirePermission("payroll", "delete", { submodule: "processing" }), deletePayrollProcessing);
+router.delete('/processing/:id', protect, requirePermission("payroll", "delete", { submodule: "processing" }), requestDeletion("payroll"));
 
 // Get payroll records
 router.get('/', protect, requirePermission("payroll", "view"), getPayrollRecords);
@@ -49,7 +50,7 @@ router.get('/employee/payslips', protect, requirePermission("payroll", "view", {
 router.get('/audit-trail', protect, requirePermission("payroll", "view", { submodule: "audit_trail" }), getPayrollAuditTrail);
 
 // Delete payslip
-router.delete('/payslips/:id', protect, requirePermission("payroll", "delete", { submodule: "payslips" }), deletePayslip);
+router.delete('/payslips/:id', protect, requirePermission("payroll", "delete", { submodule: "payslips" }), requestDeletion("payroll"));
 
 // Generate payslip preview
 router.get('/:employee_id/:month', protect, requirePermission("payroll", "view", { submodule: "payslips" }), payslipPreview);
@@ -58,7 +59,7 @@ router.get('/:employee_id/:month', protect, requirePermission("payroll", "view",
 router.put('/structure/:id', protect, requirePermission("payroll", "update", { submodule: "salary_structure" }), updateSalaryStructure);
 
 // Delete salary structure
-router.delete('/structure/:id', protect, requirePermission("payroll", "delete", { submodule: "salary_structure" }), deleteSalaryStructure);
+router.delete('/structure/:id', protect, requirePermission("payroll", "delete", { submodule: "salary_structure" }), requestDeletion("salary_structure"));
 
 
 module.exports = router;

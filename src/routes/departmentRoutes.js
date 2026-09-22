@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // src/routes/departmentRoutes.js
 const express = require("express");
 const {
@@ -40,8 +41,6 @@ router.put(
 router.delete(
   "/:id",
   protect,
-  requirePermission("organization", "delete", { submodule: "departments" }),
-  deleteDepartment,
-);
+  requirePermission("organization", "delete", { submodule: "departments" }), requestDeletion("department"));
 
 module.exports = router;

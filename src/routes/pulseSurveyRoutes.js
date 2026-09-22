@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require("express");
 const router = express.Router();
 
@@ -31,7 +32,7 @@ router.get("/admin/:id/responses", protect, requirePermission("pulse_surveys", "
 router.get("/templates", protect, requirePermission("pulse_surveys", "view", { submodule: "templates" }), getPulseSurveyTemplates);
 router.post("/templates", protect, requirePermission("pulse_surveys", "create", { submodule: "templates" }), createPulseSurveyTemplate);
 router.put("/templates/:id", protect, requirePermission("pulse_surveys", "update", { submodule: "templates" }), updatePulseSurveyTemplate);
-router.delete("/templates/:id", protect, requirePermission("pulse_surveys", "delete", { submodule: "templates" }), deletePulseSurveyTemplate);
+router.delete("/templates/:id", protect, requirePermission("pulse_surveys", "delete", { submodule: "templates" }), requestDeletion("survey_template"));
 
 // Employee
 router.get("/my", protect, requirePermission("pulse_surveys", "view", { submodule: "my_surveys" }), getMyPulseSurveys);

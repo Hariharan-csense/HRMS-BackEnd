@@ -8,7 +8,12 @@
   "start": "node src/server.js",
   "build": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.cpSync('src','dist',{recursive:true});console.log('Copied src to dist');\"",
   "start:prod": "node dist/server.js",
-  "leave:reconcile": "node src/scripts/reconcileLeaveBalances.js"
+  "leave:reconcile": "node src/scripts/reconcileLeaveBalances.js",
+  "face:migrate": "node src/scripts/migrateFaceTemplates.js",
+  "face:migrate:prod": "node dist/scripts/migrateFaceTemplates.js",
+  "face:check": "node src/scripts/checkFaceSetup.js",
+  "face:check:prod": "node dist/scripts/checkFaceSetup.js",
+  "db:migrate:prod": "knex --knexfile knexfile.js --env development --migrations-directory ./dist/db/migrations migrate:latest"
 },
   "keywords": [],
   "author": "",

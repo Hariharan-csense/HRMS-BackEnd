@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require('express');
 const router = express.Router();
 const {
@@ -26,6 +27,6 @@ router.post('/', requirePermission("my_clients", "create"), createClient);
 router.put('/:id', requirePermission("my_clients", "update"), updateClient);
 
 // DELETE /api/clients/:id - Delete client (admin only)
-router.delete('/:id', requirePermission("my_clients", "delete"), deleteClient);
+router.delete('/:id', requirePermission("my_clients", "delete"), requestDeletion("client"));
 
 module.exports = router;

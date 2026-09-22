@@ -1,3 +1,4 @@
+const { salaryForMonth } = require("../services/salaryHistory");
 // controllers/reports.controller.js
 
 const knex = require("../db/db"); // ← Fixed path (CommonJS require)
@@ -1303,17 +1304,12 @@ const getPayrollReport = async (req, res) => {
       "company_id",
     );
     const payrollColumns = await knex("payroll_processing").columnInfo();
-    const structureColumns = await knex("payroll_structures").columnInfo();
     const hasPayrollColumn = (column) => Boolean(payrollColumns[column]);
-    const hasStructureColumn = (column) => Boolean(structureColumns[column]);
     const payrollNumberSelect = (column, alias) =>
       hasPayrollColumn(column)
         ? knex.raw(`COALESCE(p.${column}, 0) as ${alias}`)
         : knex.raw(`0 as ${alias}`);
-    const structureNumberSelect = (column, alias) =>
-      hasStructureColumn(column)
-        ? knex.raw(`COALESCE(ps.${column}, 0) as ${alias}`)
-        : knex.raw(`0 as ${alias}`);
+    const structureNumberSelect = (_column, alias) => knex.raw(`0 as ${alias}`);
 
     const applyPayrollScope = (query) => {
       if (payrollHasCompanyId) {
@@ -1377,16 +1373,12 @@ const getPayrollReport = async (req, res) => {
       knex("payroll_processing as p")
         .leftJoin("employees as emp", "p.employee_id", "emp.id")
         .leftJoin("departments as d", "emp.department_id", "d.id")
-        .leftJoin("designations as desg", "emp.designation_id", "desg.id")
-        .leftJoin("payroll_structures as ps", function () {
-          this.on("ps.employee_id", "=", "p.employee_id");
-          if (payrollHasCompanyId && hasStructureColumn("company_id")) {
-            this.andOn("ps.company_id", "=", "p.company_id");
-          }
-        }),
+        .leftJoin("designations as desg", "emp.designation_id", "desg.id"),
     )
       .select(
         "p.id",
+        "p.employee_id as salaryEmployeeId",
+        "p.salary_structure_snapshot",
         "emp.employee_id as employeeCode",
         knex.raw(
           "TRIM(CONCAT(COALESCE(emp.first_name,''), ' ', COALESCE(emp.last_name,''))) as employeeName",
@@ -1432,13 +1424,22 @@ const getPayrollReport = async (req, res) => {
         structureNumberSelect("pf", "employerPF"),
         structureNumberSelect("esi", "employerESI"),
         knex.raw(
-          "COALESCE(p.gross, 0) + COALESCE(ps.pf, 0) + COALESCE(ps.esi, 0) as totalCTC",
+          "COALESCE(p.gross, 0) as totalCTC",
         ),
         "p.status",
         knex.raw("DATE_FORMAT(p.updated_at, '%Y-%m-%d') as payrollDate"),
       )
       .orderBy("p.month", "desc")
       .orderBy("emp.first_name");
+
+    await Promise.all(rows.map(async (row) => {
+      const structure = await salaryForMonth(knex, companyId, row.salaryEmployeeId, row.month, row.salary_structure_snapshot) || {};
+      const mapping = { basicSalary: "basic", hra: "hra", allowances: "allowances", bonus: "incentives", pf: "pf", esi: "esi", pt: "pt", tds: "tds", otherDeductions: "other_deductions", employerPF: "pf", employerESI: "esi" };
+      for (const [alias, field] of Object.entries(mapping)) row[alias] = Number(structure[field] || 0);
+      row.totalCTC = Number(row.grossEarnings || 0) + row.employerPF + row.employerESI;
+      delete row.salaryEmployeeId;
+      delete row.salary_structure_snapshot;
+    }));
 
     const ytdTotal = trendRaw.reduce(
       (sum, row) => sum + Number(row.amount || 0),

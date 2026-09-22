@@ -577,131 +577,188 @@ const registerUser = async (req, res) => {
   }
 };
 
-  const login = async (req, res) => {
-    const identifier = String(req.body?.identifier || req.body?.email || "").trim();
-    const { password } = req.body;
+const login = async (req, res) => {
+  const identifier = String(
+    req.body?.identifier || req.body?.email || "",
+  ).trim();
+  const { password } = req.body;
 
-    if (!identifier || !password) {
-      return res.status(400).json({
-        message: "Email/mobile number and password are required",
-      });
-    }
+  if (!identifier || !password) {
+    return res.status(400).json({
+      message: "Email/mobile number and password are required",
+    });
+  }
 
-    try {
-      let user = null;
+  try {
+    let user = null;
 
-      let userType = null;
+    let userType = null;
 
-      let companyId = null;
+    let companyId = null;
 
-      // 1. Check users table (Admin / Super Admin)
+    // 1. Check users table (Admin / Super Admin)
 
-      const isEmailLogin = identifier.includes("@");
-      const normalizedEmail = identifier.toLowerCase();
-      const mobileDigits = identifier.replace(/\D/g, "");
-      const mobileLastTen = mobileDigits.slice(-10);
-      const normalizedMobileSql =
-        "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(mobile, '+', ''), ' ', ''), '-', ''), '(', ''), ')', '')";
+    const isEmailLogin = identifier.includes("@");
+    const normalizedEmail = identifier.toLowerCase();
+    const mobileDigits = identifier.replace(/\D/g, "");
+    const mobileLastTen = mobileDigits.slice(-10);
+    const normalizedMobileSql =
+      "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(mobile, '+', ''), ' ', ''), '-', ''), '(', ''), ')', '')";
 
-      user = isEmailLogin
-        ? await knex("users")
-            .whereRaw("LOWER(email) = ?", [normalizedEmail])
-            .first()
-        : null;
+    user = isEmailLogin
+      ? await knex("users")
+          .whereRaw("LOWER(email) = ?", [normalizedEmail])
+          .first()
+      : null;
 
-      if (user) {
-        userType = "admin";
+    if (user) {
+      userType = "admin";
 
-        companyId = user.company_id;
-      } else {
-        // 2. Check employees table
+      companyId = user.company_id;
+    } else {
+      // 2. Check employees table
 
-        const employeeQuery = knex("employees");
-        if (isEmailLogin) {
-          employeeQuery.whereRaw("LOWER(email) = ?", [normalizedEmail]);
-        } else if (mobileLastTen.length === 10) {
-          // Prefer an exact normalized match. Only fall back to country-code
-          // tolerant last-10 matching when no exact record exists.
-          const exactMobileMatches = await knex("employees")
-            .whereRaw(`${normalizedMobileSql} = ?`, [mobileDigits])
-            .limit(2);
-          if (exactMobileMatches.length) {
-            if (exactMobileMatches.length > 1) {
-              return res.status(409).json({
-                message: "This mobile number is linked to multiple accounts. Please login with email.",
-              });
-            }
-            user = exactMobileMatches[0];
-          } else {
-            employeeQuery.whereRaw(
-              `RIGHT(${normalizedMobileSql}, 10) = ?`,
-              [mobileLastTen],
-            );
-          }
-        } else {
-          return res
-            .status(400)
-            .json({ message: "Enter a valid email or mobile number" });
-        }
-        if (user) {
-          // Exact mobile match was already resolved above.
-        } else if (isEmailLogin) {
-          user = await employeeQuery.first();
-        } else {
-          const mobileMatches = await employeeQuery.limit(2);
-          if (mobileMatches.length > 1) {
+      const employeeQuery = knex("employees");
+      if (isEmailLogin) {
+        employeeQuery.whereRaw("LOWER(email) = ?", [normalizedEmail]);
+      } else if (mobileLastTen.length === 10) {
+        // Prefer an exact normalized match. Only fall back to country-code
+        // tolerant last-10 matching when no exact record exists.
+        const exactMobileMatches = await knex("employees")
+          .whereRaw(`${normalizedMobileSql} = ?`, [mobileDigits])
+          .limit(2);
+        if (exactMobileMatches.length) {
+          if (exactMobileMatches.length > 1) {
             return res.status(409).json({
-              message: "This mobile number is linked to multiple accounts. Please login with email.",
+              message:
+                "This mobile number is linked to multiple accounts. Please login with email.",
             });
           }
-          user = mobileMatches[0] || null;
+          user = exactMobileMatches[0];
+        } else {
+          employeeQuery.whereRaw(`RIGHT(${normalizedMobileSql}, 10) = ?`, [
+            mobileLastTen,
+          ]);
         }
-
-        if (!user) {
-          return res.status(401).json({
-            message: "Invalid email/mobile number or password",
+      } else {
+        return res
+          .status(400)
+          .json({ message: "Enter a valid email or mobile number" });
+      }
+      if (user) {
+        // Exact mobile match was already resolved above.
+      } else if (isEmailLogin) {
+        user = await employeeQuery.first();
+      } else {
+        const mobileMatches = await employeeQuery.limit(2);
+        if (mobileMatches.length > 1) {
+          return res.status(409).json({
+            message:
+              "This mobile number is linked to multiple accounts. Please login with email.",
           });
         }
-
-        // Admin profiles do not have a mobile column. When a mobile belongs to
-        // an employee profile whose email is also a users-table account, login
-        // against that linked admin account so email and mobile use one password.
-        const linkedAdmin = !isEmailLogin
-          ? await knex("users")
-              .whereRaw("LOWER(email) = ?", [String(user.email).toLowerCase()])
-              .first()
-          : null;
-
-        if (linkedAdmin) {
-          user = linkedAdmin;
-          userType = "admin";
-          companyId = linkedAdmin.company_id;
-        } else {
-          userType = "employee";
-          companyId = user.company_id;
-        }
-
-        if (!companyId) {
-          return res
-            .status(403)
-            .json({ message: "Employee not assigned to any company" });
-        }
+        user = mobileMatches[0] || null;
       }
 
-      const isMatch = await bcrypt.compare(password, user.password);
-
-      if (!isMatch) {
+      if (!user) {
         return res.status(401).json({
           message: "Invalid email/mobile number or password",
         });
       }
 
-      const userRoles = await getEffectiveRolesForUser(user, userType, companyId);
+      // Admin profiles do not have a mobile column. When a mobile belongs to
+      // an employee profile whose email is also a users-table account, login
+      // against that linked admin account so email and mobile use one password.
+      const linkedAdmin = !isEmailLogin
+        ? await knex("users")
+            .whereRaw("LOWER(email) = ?", [String(user.email).toLowerCase()])
+            .first()
+        : null;
 
-      // 🔥 TOKEN WITH DEPARTMENT & DESIGNATION
+      if (linkedAdmin) {
+        user = linkedAdmin;
+        userType = "admin";
+        companyId = linkedAdmin.company_id;
+      } else {
+        userType = "employee";
+        companyId = user.company_id;
+      }
 
-      const tokenUser = {
+      if (!companyId) {
+        return res
+          .status(403)
+          .json({ message: "Employee not assigned to any company" });
+      }
+
+      if (
+        userType === "employee" &&
+        String(user.status || "active")
+          .trim()
+          .toLowerCase() === "inactive"
+      ) {
+        return res.status(403).json({
+          message: "Your employee account is inactive. Please contact HR.",
+        });
+      }
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      return res.status(401).json({
+        message: "Invalid email/mobile number or password",
+      });
+    }
+
+    const userRoles = await getEffectiveRolesForUser(user, userType, companyId);
+
+    // 🔥 TOKEN WITH DEPARTMENT & DESIGNATION
+
+    const tokenUser = {
+      id: user.id,
+
+      email: user.email,
+
+      role: user.role || "employee",
+
+      roles: userRoles,
+
+      type: userType,
+
+      company_id: companyId,
+
+      // 🔥 IMPORTANT
+
+      department_id: user.department_id || null,
+
+      designation_id: user.designation_id || null,
+    };
+
+    const accessToken = generateAccessToken(tokenUser);
+
+    const refreshToken = generateRefreshToken(tokenUser);
+
+    setAuthCookies(res, accessToken, refreshToken);
+
+    const fullName = user.first_name
+      ? `${user.first_name} ${user.last_name || ""}`.trim()
+      : user.name || "User";
+
+    res.json({
+      success: true,
+
+      message: "Login successful",
+
+      token: accessToken,
+
+      accessToken,
+
+      refreshToken,
+
+      user: {
         id: user.id,
+
+        name: fullName,
 
         email: user.email,
 
@@ -709,70 +766,27 @@ const registerUser = async (req, res) => {
 
         roles: userRoles,
 
-        type: userType,
-
-        company_id: companyId,
-
-        // 🔥 IMPORTANT
+        // 🔥 PROPER FIELDS
 
         department_id: user.department_id || null,
 
         designation_id: user.designation_id || null,
-      };
 
-      const accessToken = generateAccessToken(tokenUser);
+        company_id: companyId,
 
-      const refreshToken = generateRefreshToken(tokenUser);
+        avatar:
+          user.avatar ||
+          `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.email}`,
 
-      setAuthCookies(res, accessToken, refreshToken);
+        type: userType,
+      },
+    });
+  } catch (error) {
+    console.error("Login error:", error);
 
-      const fullName = user.first_name
-        ? `${user.first_name} ${user.last_name || ""}`.trim()
-        : user.name || "User";
-
-      res.json({
-        success: true,
-
-        message: "Login successful",
-
-        token: accessToken,
-
-        accessToken,
-
-        refreshToken,
-
-        user: {
-          id: user.id,
-
-          name: fullName,
-
-          email: user.email,
-
-          role: user.role || "employee",
-
-          roles: userRoles,
-
-          // 🔥 PROPER FIELDS
-
-          department_id: user.department_id || null,
-
-          designation_id: user.designation_id || null,
-
-          company_id: companyId,
-
-          avatar:
-            user.avatar ||
-            `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.email}`,
-
-          type: userType,
-        },
-      });
-    } catch (error) {
-      console.error("Login error:", error);
-
-      res.status(500).json({ message: "Server error during login" });
-    }
-  };
+    res.status(500).json({ message: "Server error during login" });
+  }
+};
 
 const refreshAccessToken = async (req, res) => {
   const cookies = parseCookies(req.headers.cookie);
@@ -836,6 +850,16 @@ const refreshAccessToken = async (req, res) => {
 
       if (!user) {
         return res.status(401).json({ message: "Employee not found" });
+      }
+
+      if (
+        String(user.status || "active")
+          .trim()
+          .toLowerCase() === "inactive"
+      ) {
+        return res.status(403).json({
+          message: "Your employee account is inactive. Please contact HR.",
+        });
       }
 
       if (!user.company_id) {
@@ -991,9 +1015,10 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-
 const getPasswordResetUser = async (email) => {
-  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const normalizedEmail = String(email || "")
+    .trim()
+    .toLowerCase();
   if (!normalizedEmail) return null;
 
   const adminUser = await knex("users")
@@ -1031,7 +1056,8 @@ const isMailerDeliveryError = (error) => {
 };
 
 const getPublicMailerError = (error) => ({
-  message: "Email delivery failed. Please check the email address or SMTP settings.",
+  message:
+    "Email delivery failed. Please check the email address or SMTP settings.",
   mailCode: error?.code || null,
   mailCommand: error?.command || null,
   mailResponseCode: error?.responseCode || null,
@@ -1041,7 +1067,9 @@ const getPublicMailerError = (error) => ({
 
 const initiateForgotPassword = async (req, res) => {
   try {
-    const normalizedEmail = String(req.body?.email || "").trim().toLowerCase();
+    const normalizedEmail = String(req.body?.email || "")
+      .trim()
+      .toLowerCase();
 
     if (!normalizedEmail) {
       return res.status(400).json({ message: "Email is required" });
@@ -1141,7 +1169,9 @@ const initiateForgotPassword = async (req, res) => {
 const verifyOTP = async (req, res) => {
   try {
     const { otp } = req.body;
-    const normalizedEmail = String(req.body?.email || "").trim().toLowerCase();
+    const normalizedEmail = String(req.body?.email || "")
+      .trim()
+      .toLowerCase();
 
     if (!normalizedEmail || !otp) {
       return res.status(400).json({ message: "Email and OTP are required" });
@@ -1196,7 +1226,9 @@ const verifyOTP = async (req, res) => {
 const resetPassword = async (req, res) => {
   try {
     const { newPassword, confirmPassword } = req.body;
-    const normalizedEmail = String(req.body?.email || "").trim().toLowerCase();
+    const normalizedEmail = String(req.body?.email || "")
+      .trim()
+      .toLowerCase();
 
     if (!normalizedEmail || !newPassword || !confirmPassword) {
       return res.status(400).json({ message: "All fields are required" });

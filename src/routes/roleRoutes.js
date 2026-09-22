@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // src/routes/roleRoutes.js
 const express = require('express');
 const {
@@ -29,14 +30,14 @@ router.post('/add', protect, addRole);
 router.put('/:id', protect, updateRole);
 
 // Delete role (Admin only)
-router.delete('/:id', protect, deleteRole);
+router.delete('/:id', protect, requestDeletion("role"));
 
 // Role Assignment Routes
 // Assign role to employee (Admin only)
 router.post('/assign', protect, assignRoleToEmployee);
 
 // Remove role from employee (Admin only)
-router.delete('/assignments/:id', protect, removeRoleFromEmployee);
+router.delete('/assignments/:id', protect, requestDeletion("role_assignment"));
 
 // Get all role assignments for company (Admin only)
 router.get('/assignments', protect, getRoleAssignments);

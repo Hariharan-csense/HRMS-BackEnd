@@ -1,3 +1,4 @@
+const { salaryForMonth } = require("../services/salaryHistory");
 const fs = require('fs');
 const path = require('path');
 const handlebars = require('handlebars');
@@ -151,9 +152,7 @@ const sendPayslipEmail = async (companyId, employee, payrollData, knex) => {
     .first();
   if (!company) throw new Error('Company not found');
 
-  const structure = await knex('payroll_structures')
-    .where({ employee_id: employee.id, company_id: companyId })
-    .first();
+  const structure = await salaryForMonth(knex, companyId, employee.id, payrollData.month, payrollData.salary_structure_snapshot);
 
   const department = employee?.department_id
     ? await knex('departments')

@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const knex = require("../db/db");
 const fs = require("fs");
 const path = require("path");
@@ -1027,21 +1028,7 @@ exports.deleteParameterAttachment = async (req, res) => {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    const previousPath = resolveUploadAbsolutePath(parameter.attachment_path);
-
-    await knex("kpi_parameters").where({ id: parameterId }).update({
-      attachment_path: null,
-      attachment_name: null,
-      attachment_uploaded_by_name: null,
-      attachment_uploaded_at: null,
-      updated_at: knex.fn.now(),
-    });
-
-    if (previousPath) {
-      fs.unlink(previousPath, () => {});
-    }
-
-    return res.json({ success: true, id: String(parameterId) });
+    return requestDeletion("kpi_attachment", { param: "parameterId" })(req, res);
   } catch (error) {
     console.error("KPI parameter attachment delete error:", error);
     return res.status(500).json({ message: "Unable to remove attachment." });

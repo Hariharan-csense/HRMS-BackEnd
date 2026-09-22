@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require('express');
 const router = express.Router();
 const {
@@ -26,7 +27,7 @@ router.post('/candidates/bulk', requirePermission("hr_management", "create", { s
 router.post('/candidates', requirePermission("hr_management", "create", { submodule: "recruitment" }), createCandidate);
 router.put('/candidates/:id', requirePermission("hr_management", "update", { submodule: "recruitment" }), updateCandidate);
 router.patch('/candidates/:id/status', requirePermission("hr_management", "update", { submodule: "recruitment" }), updateCandidateStatus);
-router.delete('/candidates/:id', requirePermission("hr_management", "delete", { submodule: "recruitment" }), deleteCandidate);
+router.delete('/candidates/:id', requirePermission("hr_management", "delete", { submodule: "recruitment" }), requestDeletion("candidate"));
 
 // Interview routes
 router.post('/:id/interviews', requirePermission("hr_management", "create", { submodule: "recruitment" }), createInterview);

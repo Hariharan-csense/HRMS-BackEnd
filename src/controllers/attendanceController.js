@@ -96,9 +96,7 @@ const attendanceTimeSelects = (alias = "a") => [
 ];
 
 const istDateTimeSelect = (column, aliasName) =>
-  knex.raw(
-    `DATE_FORMAT(${column}, '%Y-%m-%d %H:%i:%s') as ${aliasName}`,
-  );
+  knex.raw(`DATE_FORMAT(${column}, '%Y-%m-%d %H:%i:%s') as ${aliasName}`);
 
 const formatDateOnly = (value) => {
   if (!value) return null;
@@ -472,7 +470,11 @@ const getAttendanceStatus = async (req, res) => {
     const now = new Date();
     const { start: todayStart, end: tomorrowStart } = getDayWindow(now);
 
-    const activeAttendance = await findActiveAttendance(knex, { companyId, employeeId, at: now });
+    const activeAttendance = await findActiveAttendance(knex, {
+      companyId,
+      employeeId,
+      at: now,
+    });
 
     const todayAttendance = await knex("attendance")
       .select("attendance.*", ...attendanceTimeSelects("attendance"))
@@ -832,7 +834,8 @@ const checkIn = async (req, res) => {
       if (Number(company?.id) !== 51) {
         return res.status(403).json({
           success: false,
-          message: "With LSK is available only for CSense Management Solutions Pvt Ltd",
+          message:
+            "With LSK is available only for CSense Management Solutions Pvt Ltd",
         });
       }
     }
@@ -923,15 +926,25 @@ const parseOptionalLocation = (rawLocation) => {
 const resolveFacialAttendanceAction = async ({ companyId, employeeId }) => {
   const now = new Date();
 
-  const activeAttendance = await findActiveAttendance(knex, { companyId, employeeId, at: now });
+  const activeAttendance = await findActiveAttendance(knex, {
+    companyId,
+    employeeId,
+    at: now,
+  });
 
   if (activeAttendance) return "check-out";
 
   return "check-in";
 };
 
-const assertFacialCheckoutIsNotImmediate = async ({ companyId, employeeId }) => {
-  const activeAttendance = await findActiveAttendance(knex, { companyId, employeeId });
+const assertFacialCheckoutIsNotImmediate = async ({
+  companyId,
+  employeeId,
+}) => {
+  const activeAttendance = await findActiveAttendance(knex, {
+    companyId,
+    employeeId,
+  });
 
   if (!activeAttendance?.check_in) return;
 
@@ -1023,8 +1036,11 @@ const facialRecognitionAttendance = async (req, res) => {
       },
       faceMatch: {
         confidence: match.confidence,
+        similarity: match.similarity,
         distance: match.distance,
         threshold: match.threshold,
+        modelVersion: match.modelVersion,
+        timings: match.timings,
         comparedEmployees: match.comparedEmployees,
         skippedEmployees: match.skippedEmployees,
       },
@@ -1889,7 +1905,8 @@ const getEmployeeSummary = async (req, res) => {
     const daySummaries = dayKeysSortedDesc.map((dayKey) => {
       const dayRecords = (byDay.get(dayKey) || []).slice();
       dayRecords.sort(
-        (a, b) => new Date(a.check_in).getTime() - new Date(b.check_in).getTime(),
+        (a, b) =>
+          new Date(a.check_in).getTime() - new Date(b.check_in).getTime(),
       );
       const first = dayRecords[0];
       const dayStatus = String(first?.status || "present");
@@ -1906,7 +1923,8 @@ const getEmployeeSummary = async (req, res) => {
       const recentRecordsForDay = dayRecords
         .slice()
         .sort(
-          (a, b) => new Date(b.check_in).getTime() - new Date(a.check_in).getTime(),
+          (a, b) =>
+            new Date(b.check_in).getTime() - new Date(a.check_in).getTime(),
         )
         .slice(0, 5);
 
@@ -1936,8 +1954,7 @@ const getEmployeeSummary = async (req, res) => {
       0,
     );
 
-    const average_hours_per_day =
-      total_days > 0 ? total_hours / total_days : 0;
+    const average_hours_per_day = total_days > 0 ? total_hours / total_days : 0;
 
     const recent_records = records.slice(0, 5);
 
@@ -2780,7 +2797,8 @@ const getLiveLocationHistory = async (req, res) => {
 const getAttendanceMonthlyReport = async (req, res) => {
   const companyId = req.user.company_id;
   const month = String(req.query.month || getMonthKey());
-  if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ message: "Month must be YYYY-MM" });
+  if (!/^\d{4}-\d{2}$/.test(month))
+    return res.status(400).json({ message: "Month must be YYYY-MM" });
 
   try {
     const [year, monthNumber] = month.split("-").map(Number);
@@ -2799,10 +2817,18 @@ const getAttendanceMonthlyReport = async (req, res) => {
       .whereRaw("DATE(check_in) BETWEEN ? AND ?", [monthStart, monthEnd])
       .groupBy("employee_id")
       .select(
-        knex.raw("COUNT(DISTINCT CASE WHEN LOWER(status) IN ('present','grace','late') THEN DATE(check_in) END) as attendance_present_days"),
-        knex.raw("COUNT(DISTINCT CASE WHEN LOWER(status) IN ('half','half_day','half-day') THEN DATE(check_in) END) as attendance_half_days"),
-        knex.raw("COUNT(DISTINCT CASE WHEN LOWER(status) = 'absent' THEN DATE(check_in) END) as attendance_absent_days"),
-        knex.raw("COUNT(DISTINCT CASE WHEN LOWER(status) = 'late' THEN DATE(check_in) END) as late_days"),
+        knex.raw(
+          "COUNT(DISTINCT CASE WHEN LOWER(status) IN ('present','grace','late') THEN DATE(check_in) END) as attendance_present_days",
+        ),
+        knex.raw(
+          "COUNT(DISTINCT CASE WHEN LOWER(status) IN ('half','half_day','half-day') THEN DATE(check_in) END) as attendance_half_days",
+        ),
+        knex.raw(
+          "COUNT(DISTINCT CASE WHEN LOWER(status) = 'absent' THEN DATE(check_in) END) as attendance_absent_days",
+        ),
+        knex.raw(
+          "COUNT(DISTINCT CASE WHEN LOWER(status) = 'late' THEN DATE(check_in) END) as late_days",
+        ),
       )
       .as("att");
     const approvedLeaveByEmployee = knex("leave_applications as la")
@@ -2814,20 +2840,27 @@ const getAttendanceMonthlyReport = async (req, res) => {
       .where("la.to_date", ">=", monthStart)
       .groupBy("la.employee_id")
       .select(
-        knex.raw("SUM(CASE WHEN COALESCE(lt.is_paid, 1) = 1 THEN la.days ELSE 0 END) as paid_leave_days"),
-        knex.raw("SUM(CASE WHEN COALESCE(lt.is_paid, 1) = 0 THEN la.days ELSE 0 END) as unpaid_leave_days"),
+        knex.raw(
+          "SUM(CASE WHEN COALESCE(lt.is_paid, 1) = 1 THEN la.days ELSE 0 END) as paid_leave_days",
+        ),
+        knex.raw(
+          "SUM(CASE WHEN COALESCE(lt.is_paid, 1) = 0 THEN la.days ELSE 0 END) as unpaid_leave_days",
+        ),
       )
       .as("lv");
     const holidayRows = await knex("holidays")
       .where({ company_id: companyId })
       .whereBetween("date", [monthStart, monthEnd])
       .select("date");
-    const holidayKeys = new Set(holidayRows.map((row) => String(row.date).slice(0, 10)));
+    const holidayKeys = new Set(
+      holidayRows.map((row) => String(row.date).slice(0, 10)),
+    );
     let workingDaysInMonth = 0;
     for (let day = 1; day <= daysInMonth; day += 1) {
       const date = new Date(year, monthNumber - 1, day);
       const key = `${month}-${String(day).padStart(2, "0")}`;
-      if (date.getDay() !== 0 && date.getDay() !== 6 && !holidayKeys.has(key)) workingDaysInMonth += 1;
+      if (date.getDay() !== 0 && date.getDay() !== 6 && !holidayKeys.has(key))
+        workingDaysInMonth += 1;
     }
     const rows = await knex("employees as e")
       .leftJoin("payroll_processing as p", function () {
@@ -2836,7 +2869,11 @@ const getAttendanceMonthlyReport = async (req, res) => {
           .andOn("p.month", "=", knex.raw("?", [month]));
       })
       .leftJoin("payroll_structures as ps", function () {
-        this.on("ps.employee_id", "=", "e.id").andOn("ps.company_id", "=", "e.company_id");
+        this.on("ps.employee_id", "=", "e.id").andOn(
+          "ps.company_id",
+          "=",
+          "e.company_id",
+        );
       })
       .leftJoin(leaveBalanceByEmployee, "lb.employee_id", "e.id")
       .leftJoin(attendanceByEmployee, "att.employee_id", "e.id")
@@ -2846,14 +2883,30 @@ const getAttendanceMonthlyReport = async (req, res) => {
       .where("e.company_id", companyId)
       .where("e.status", "Active")
       .select(
-        "e.id", "e.employee_id", "e.first_name", "e.last_name", "e.salary_type", "e.monthly_salary", "e.hourly_rate", "e.doj",
-        "d.name as department_name", "dg.name as designation_name",
-        knex.raw("COALESCE(p.present_days, att.attendance_present_days + (att.attendance_half_days * 0.5), 0) as present_days"),
-        knex.raw("COALESCE(p.lop_days, lv.unpaid_leave_days, att.attendance_absent_days, 0) as lop_days"),
+        "e.id",
+        "e.employee_id",
+        "e.first_name",
+        "e.last_name",
+        "e.salary_type",
+        "e.monthly_salary",
+        "e.hourly_rate",
+        "e.doj",
+        "d.name as department_name",
+        "dg.name as designation_name",
+        knex.raw(
+          "COALESCE(p.present_days, att.attendance_present_days + (att.attendance_half_days * 0.5), 0) as present_days",
+        ),
+        knex.raw(
+          "COALESCE(p.lop_days, lv.unpaid_leave_days, att.attendance_absent_days, 0) as lop_days",
+        ),
         knex.raw("COALESCE(p.lop_amount, 0) as lop_amount"),
-        knex.raw("COALESCE(p.approved_leave_days, lv.paid_leave_days + lv.unpaid_leave_days, 0) as leave_taken"),
+        knex.raw(
+          "COALESCE(p.approved_leave_days, lv.paid_leave_days + lv.unpaid_leave_days, 0) as leave_taken",
+        ),
         knex.raw("COALESCE(lb.available_balance, 0) as leave_balance"),
-        knex.raw("CASE WHEN UPPER(COALESCE(e.salary_type, 'MONTHLY')) = 'HOURLY' THEN COALESCE(p.gross, 0) ELSE COALESCE(ps.gross, e.monthly_salary, e.salary, 0) END as monthly_salary"),
+        knex.raw(
+          "CASE WHEN UPPER(COALESCE(e.salary_type, 'MONTHLY')) = 'HOURLY' THEN COALESCE(p.gross, 0) ELSE COALESCE(ps.gross, e.monthly_salary, e.salary, 0) END as monthly_salary",
+        ),
         knex.raw("COALESCE(p.net, 0) as net_pay"),
         knex.raw("COALESCE(p.deductions, 0) as deductions"),
         knex.raw("COALESCE(p.total_days, 0) as total_days"),
@@ -2879,7 +2932,10 @@ const getAttendanceMonthlyReport = async (req, res) => {
       totalDays: daysInMonth,
       workingDays: workingDaysInMonth,
       holidayDays: daysInMonth - workingDaysInMonth,
-      payableDays: Math.max(0, Number(row.present_days || 0) + Number(row.leave_taken || 0)),
+      payableDays: Math.max(
+        0,
+        Number(row.present_days || 0) + Number(row.leave_taken || 0),
+      ),
       monthlySalary: Number(row.monthly_salary || 0),
       deductions: Number(row.deductions || 0),
       netPay: Number(row.net_pay || 0),
@@ -2888,7 +2944,9 @@ const getAttendanceMonthlyReport = async (req, res) => {
     return res.json({ success: true, month, rows: reportRows });
   } catch (error) {
     console.error("Monthly attendance report error:", error);
-    return res.status(500).json({ message: "Failed to load monthly attendance report" });
+    return res
+      .status(500)
+      .json({ message: "Failed to load monthly attendance report" });
   }
 };
 

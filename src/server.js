@@ -134,6 +134,7 @@ const geocodeRoutes = require("./routes/geocodeRoutes");
 const esslRoutes = require("./routes/essl.routes");
 
 // Use routes
+app.use("/backend/api/deletion-drafts", require("./routes/deletionDraftRoutes"));
 app.use("/backend/api", demoRoutes);
 app.use("/backend/api/auth", authRoutes);
 app.use("/backend/api/branch", branchRoutes);

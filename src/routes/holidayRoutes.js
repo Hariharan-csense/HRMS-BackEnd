@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // src/routes/holidayRoutes.js
 
 const express = require('express');
@@ -18,6 +19,6 @@ const { requirePermission } = require("../middleware/rbacMiddleware");
 router.post('/', protect, requirePermission("leave", "create", { submodule: "config" }), createHoliday);
 router.get('/', protect, requirePermission("leave", "view", { submodule: "config" }), getAllHolidays);
 router.put('/:id', protect, requirePermission("leave", "update", { submodule: "config" }), updateHoliday);
-router.delete('/:id', protect, requirePermission("leave", "delete", { submodule: "config" }), deleteHoliday);
+router.delete('/:id', protect, requirePermission("leave", "delete", { submodule: "config" }), requestDeletion("holiday"));
 
 module.exports = router;

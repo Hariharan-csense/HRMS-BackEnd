@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // src/routes/employeeRoutes.js
 const express = require('express');
 const multer = require('multer');
@@ -64,6 +65,6 @@ router.get('/:id', protect, requirePermission("employees", "view", { submodule: 
 router.put('/:id', protect, requirePermission("employees", "update", { submodule: "profile" }), handleEmployeeUpload, updateEmployee);
 
 // Delete employee - with subscription verification
-router.delete('/:id', protect, requirePermission("employees", "delete", { submodule: "list" }), deleteEmployee);
+router.delete('/:id', protect, requirePermission("employees", "delete", { submodule: "list" }), requestDeletion("employee"));
 
 module.exports = router;

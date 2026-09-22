@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require("express");
 const router = express.Router();
 const {
@@ -23,8 +24,8 @@ router.get("/", protect, requirePermission("attendance", "view", { submodule: "s
 router.post("/", protect, requirePermission("attendance", "create", { submodule: "shift" }), createShift);
 router.get("/roster", protect, shiftOrRosterPermission("view"), getShiftRoster);
 router.post("/roster", protect, shiftOrRosterPermission("create"), upsertShiftRoster);
-router.delete("/roster/:id", protect, shiftOrRosterPermission("delete"), deleteShiftRoster);
+router.delete("/roster/:id", protect, shiftOrRosterPermission("delete"), requestDeletion("shift_roster"));
 router.put("/:id", protect, requirePermission("attendance", "update", { submodule: "shift" }), updateShift);
-router.delete("/:id", protect, requirePermission("attendance", "delete", { submodule: "shift" }), deleteShift);
+router.delete("/:id", protect, requirePermission("attendance", "delete", { submodule: "shift" }), requestDeletion("shift"));
 
 module.exports = router;

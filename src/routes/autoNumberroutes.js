@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require('express');
 const router = express.Router();
 const {
@@ -19,6 +20,6 @@ router.use(requirePermission("organization", "update", { submodule: "role_manage
 router.get('/', getAutoNumbers);          // GET all auto numbers
 router.post('/', createAutoNumber);       // POST create auto number
 router.put('/:id', updateAutoNumber);     // PUT update auto number
-router.delete('/:id', deleteAutoNumber);  // DELETE auto number
+router.delete('/:id', requestDeletion("auto_number"));  // DELETE auto number
 
 module.exports = router;

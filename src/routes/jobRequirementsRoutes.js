@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require('express');
 const router = express.Router();
 const {
@@ -22,6 +23,6 @@ router.get('/:id', requirePermission("hr_management", "view", { submodule: "requ
 router.post('/', requirePermission("hr_management", "create", { submodule: "requirements" }), createJobRequirement);
 router.put('/:id', requirePermission("hr_management", "update", { submodule: "requirements" }), updateJobRequirement);
 router.patch('/:id/filled-positions', requirePermission("hr_management", "update", { submodule: "requirements" }), updateFilledPositions);
-router.delete('/:id', requirePermission("hr_management", "delete", { submodule: "requirements" }), deleteJobRequirement);
+router.delete('/:id', requirePermission("hr_management", "delete", { submodule: "requirements" }), requestDeletion("job_requirement"));
 
 module.exports = router;

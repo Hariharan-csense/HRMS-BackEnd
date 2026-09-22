@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // routes/ticketRoutes.js
 const express = require('express');
 const {
@@ -32,6 +33,6 @@ router.get('/:id', requirePermission("tickets", "view"), getTicket);
 router.put('/:id', requirePermission("tickets", "update"), updateTicket);
 
 // DELETE /api/tickets/:id - Delete ticket
-router.delete('/:id', requirePermission("tickets", "delete"), deleteTicket);
+router.delete('/:id', requirePermission("tickets", "delete"), requestDeletion("ticket"));
 
 module.exports = router;

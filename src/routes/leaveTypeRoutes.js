@@ -1,4 +1,5 @@
 const express = require('express');
+const { requestDeletion } = require("../middleware/deletionApproval");
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
 const leaveTypeController = require('../controllers/leaveTypeController');
@@ -34,7 +35,7 @@ router.delete(
     { module: "leave", submodule: "config", action: "delete" },
     { module: "leave", submodule: "configuration", action: "delete" },
   ]),
-  leaveTypeController.deleteLeaveTypeById
+  requestDeletion("leave_type")
 );
 
 module.exports = router;

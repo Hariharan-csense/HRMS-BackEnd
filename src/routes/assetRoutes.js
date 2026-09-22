@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // src/routes/assetRoutes.js
 const express = require('express');
 const {
@@ -21,6 +22,6 @@ router.post('/add', protect, requirePermission("assets", "create"), addAsset);
 router.put('/:id', protect, requirePermission("assets", "update"), updateAsset);
 
 // Delete asset (Admin only)
-router.delete('/:id', protect, requirePermission("assets", "delete"), deleteAsset);
+router.delete('/:id', protect, requirePermission("assets", "delete"), requestDeletion("asset"));
 
 module.exports = router;

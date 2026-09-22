@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require('express');
 const router = express.Router();
 const {
@@ -52,13 +53,13 @@ router.get('/stats', async (req, res) => {
 router.get('/templates', requirePermission("hr_management", "view", { submodule: "offer_letters" }), getOfferTemplates);
 router.post('/templates', requirePermission("hr_management", "create", { submodule: "offer_letters" }), createOfferTemplate);
 router.put('/templates/:id', requirePermission("hr_management", "update", { submodule: "offer_letters" }), updateOfferTemplate);
-router.delete('/templates/:id', requirePermission("hr_management", "delete", { submodule: "offer_letters" }), deleteOfferTemplate);
+router.delete('/templates/:id', requirePermission("hr_management", "delete", { submodule: "offer_letters" }), requestDeletion("offer_template"));
 
 // Offer Letters by ID (must come after templates)
 router.get('/:id', requirePermission("hr_management", "view", { submodule: "offer_letters" }), getOfferLetterById);
 router.post('/', requirePermission("hr_management", "create", { submodule: "offer_letters" }), createOfferLetter);
 router.put('/:id', requirePermission("hr_management", "update", { submodule: "offer_letters" }), updateOfferLetter);
-router.delete('/:id', requirePermission("hr_management", "delete", { submodule: "offer_letters" }), deleteOfferLetter);
+router.delete('/:id', requirePermission("hr_management", "delete", { submodule: "offer_letters" }), requestDeletion("offer_letter"));
 router.post('/:id/send', requirePermission("hr_management", "approve", { submodule: "offer_letters" }), sendOfferLetter);
 
 module.exports = router;

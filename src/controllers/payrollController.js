@@ -1,5 +1,6 @@
 // src/controllers/payrollController.js
 const knex = require("../db/db");
+const { salaryForMonth, reviseSalary, validMonth } = require("../services/salaryHistory");
 const fs = require("fs");
 const path = require("path");
 const handlebars = require("handlebars");
@@ -985,10 +986,7 @@ const saveSalaryStructure = async (req, res) => {
         tdsPercentage,
       );
 
-      // UPDATE
-      await knex("payroll_structures")
-        .where({ employee_id: actualEmployeeId, company_id: companyId })
-        .update(updatePayload);
+      await reviseSalary(knex, companyId, actualEmployeeId, updatePayload, req.body.effective_month);
 
       const updated = await knex("payroll_structures")
         .where({ employee_id: actualEmployeeId, company_id: companyId })
@@ -1025,7 +1023,7 @@ const saveSalaryStructure = async (req, res) => {
         tdsPercentage,
       );
 
-      await knex("payroll_structures").insert(insertPayload);
+      await reviseSalary(knex, companyId, actualEmployeeId, insertPayload, req.body.effective_month);
 
       const newStructure = await knex("payroll_structures")
         .where({ employee_id: actualEmployeeId, company_id: companyId })
@@ -1039,7 +1037,7 @@ const saveSalaryStructure = async (req, res) => {
     }
   } catch (error) {
     console.error("Save salary structure error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(error.status || 500).json({ message: error.status ? error.message : "Server error" });
   }
 };
 
@@ -1054,7 +1052,7 @@ const processPayroll = async (req, res) => {
 
   const { employee_id, month } = req.body;
 
-  if (!employee_id || !month) {
+  if (!employee_id || !validMonth(month)) {
     return res.status(400).json({ message: "Employee ID and Month required" });
   }
 
@@ -1106,15 +1104,18 @@ const processPayroll = async (req, res) => {
     // ===============================
     // SALARY STRUCTURE
     // ===============================
-    const structure = await knex("payroll_structures")
-      .where({ employee_id: empId, company_id: companyId })
-      .first();
+    const previousPayroll = await knex("payroll_processing")
+      .where({ employee_id: empId, company_id: companyId, month }).first();
+    const structure = await salaryForMonth(knex, companyId, empId, month, previousPayroll?.salary_structure_snapshot);
 
     const salaryType = String(employee.salary_type || "MONTHLY").toUpperCase();
     if (!structure && salaryType !== "HOURLY") {
       return res.status(400).json({ message: "Salary structure not found" });
     }
     const payrollStructure = structure || {};
+    if (previousPayroll?.status === "paid") {
+      return res.status(409).json({ message: "Paid payroll cannot be reprocessed" });
+    }
 
     const company = await knex("companies").where({ id: companyId }).first();
 
@@ -1492,6 +1493,7 @@ const processPayroll = async (req, res) => {
       {
         employee_id: empId,
         company_id: companyId,
+        salary_structure_snapshot: JSON.stringify(payrollStructure),
         month,
         total_days: totalDays,
         present_days: presentDateSet.size,
@@ -1725,13 +1727,6 @@ const getPayrollRecords = async (req, res) => {
           "payroll_processing.company_id",
         );
       })
-      .leftJoin("payroll_structures", function () {
-        this.on("payroll_processing.employee_id", "=", "payroll_structures.employee_id").andOn(
-          "payroll_structures.company_id",
-          "=",
-          "payroll_processing.company_id",
-        );
-      })
       .where("payroll_processing.company_id", companyId)
       .select(
         "payroll_processing.*",
@@ -1740,13 +1735,6 @@ const getPayrollRecords = async (req, res) => {
         "employees.employee_id as employee_code",
         "employees.doj as date_of_joining",
         "designations.name as designation_name",
-        "payroll_structures.gross as configured_gross",
-        "payroll_structures.pf as provident_fund",
-        "payroll_structures.esi as esi_deduction",
-        "payroll_structures.pt as professional_tax",
-        "payroll_structures.other_deductions",
-        "payroll_structures.tds_percentage",
-        "payroll_structures.tds as legacy_tds_percentage",
       )
       .orderBy("month", "desc");
 
@@ -1781,6 +1769,13 @@ const getPayrollRecords = async (req, res) => {
     // Admin/HR/Finance sees all in company
 
     const records = await Promise.all((await query).map(async (record) => {
+      const historical = await salaryForMonth(knex, companyId, record.employee_id, record.month, record.salary_structure_snapshot);
+      Object.assign(record, {
+        configured_gross: historical?.gross, provident_fund: historical?.pf,
+        esi_deduction: historical?.esi, professional_tax: historical?.pt,
+        other_deductions: historical?.other_deductions,
+        tds_percentage: historical?.tds_percentage, legacy_tds_percentage: historical?.tds,
+      });
       const dayTotals = normalizePayrollDayTotals({
         totalDays: record.total_days,
         payableDays: record.payable_days,
@@ -2068,9 +2063,7 @@ const payslipPreview = async (req, res) => {
       .where({ employee_id: empId, company_id: companyId })
       .first();
 
-    const structure = await knex("payroll_structures")
-      .where({ employee_id: empId, company_id: companyId })
-      .first();
+    const structure = await salaryForMonth(knex, companyId, empId, month, payroll.salary_structure_snapshot);
 
     // ===============================
     // COMPANY + LOGO BASE64
@@ -2285,6 +2278,9 @@ const getSalaryStructures = async (req, res) => {
     // Get employee details for each structure
     const structuresWithEmployeeDetails = await Promise.all(
       salaryStructures.map(async (structure) => {
+        const latestVersion = await knex("payroll_structure_history")
+          .where({ employee_id: structure.employee_id, company_id: companyId })
+          .orderBy("effective_month", "desc").first();
         const employee = await knex("employees")
           .where({ id: structure.employee_id, company_id: companyId })
           .select("first_name", "last_name", "employee_id as emp_id")
@@ -2292,6 +2288,7 @@ const getSalaryStructures = async (req, res) => {
 
         return {
           ...structure,
+          effective_month: latestVersion?.effective_month === "0001-01" ? null : latestVersion?.effective_month,
           pf_enabled: Number(structure.pf || 0) > 0,
           pf_percentage:
             Number(structure.basic || 0) > 0
@@ -2434,9 +2431,7 @@ const updateSalaryStructure = async (req, res) => {
       tdsPercentage,
     );
 
-    await knex("payroll_structures")
-      .where({ id, company_id: companyId })
-      .update(updatePayload);
+    await reviseSalary(knex, companyId, structure.employee_id, updatePayload, req.body.effective_month);
 
     const updated = await knex("payroll_structures")
       .where({ id, company_id: companyId })
@@ -2449,7 +2444,7 @@ const updateSalaryStructure = async (req, res) => {
     });
   } catch (error) {
     console.error("Update salary structure error:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(error.status || 500).json({ message: error.status ? error.message : "Server error" });
   }
 };
 

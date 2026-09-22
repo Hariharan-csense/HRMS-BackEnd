@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require('express');
 const {
   submitExpense,
@@ -62,6 +63,6 @@ router.put(
 );
 
 // Delete expense - owner/admin/finance (controller enforces access rules)
-router.delete('/:expense_id', protect, requirePermission("expenses", "delete", { submodule: "claims" }), deleteExpense);
+router.delete('/:expense_id', protect, requirePermission("expenses", "delete", { submodule: "claims" }), requestDeletion("expense", {"param":"expense_id"}));
 
 module.exports = router;

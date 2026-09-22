@@ -3,6 +3,9 @@ const canvas = require("canvas");
 const path = require("path");
 const fs = require("fs");
 const knex = require("../db/db");
+const pythonFaceService = require("../services/pythonFaceService");
+const { requirePythonFaceSchema, activeTemplatesForEngine } = require("./pythonFaceTemplateSchema");
+const { uploadRoot } = require("./uploadPaths");
 
 faceapi.env.monkeyPatch({
   Canvas: canvas.Canvas,
@@ -41,7 +44,7 @@ const loadModels = async () => {
     modelsLoaded = true;
     modelLoadError = null;
 
-    if (process.env.FACE_DESCRIPTOR_PREWARM !== "0") {
+    if (process.env.FACE_RECOGNITION_ENGINE === "legacy" && process.env.FACE_DESCRIPTOR_PREWARM !== "0") {
       setTimeout(() => {
         warmAllEmployeeDescriptors().catch((error) => {
           console.warn("Face descriptor warm-up failed:", error.message);
@@ -55,7 +58,10 @@ const loadModels = async () => {
   }
 };
 
-if (process.env.FACE_LOAD_MODELS_ON_STARTUP === "1") {
+if (
+  process.env.FACE_RECOGNITION_ENGINE === "legacy" &&
+  process.env.FACE_LOAD_MODELS_ON_STARTUP === "1"
+) {
   loadModels();
 }
 
@@ -100,6 +106,10 @@ const resolveUploadPath = (filePath) => {
   if (isWindowsAbsolute || isUncPath) return rawPath;
 
   const normalized = rawPath.replace(/^[/\\]+/, "");
+  if (/^uploads[/\\]/i.test(normalized)) {
+    return path.join(uploadRoot, normalized.replace(/^uploads[/\\]+/i, ""));
+  }
+  if (path.isAbsolute(rawPath) && fs.existsSync(rawPath)) return rawPath;
   return path.join(__dirname, "../../../", normalized);
 };
 
@@ -236,6 +246,63 @@ const getCompanyPersistedDescriptors = async (companyId) => {
     .filter(Boolean);
 };
 
+const getCompanyPythonTemplates = async (companyId) => {
+  await requirePythonFaceSchema(knex);
+
+  const rows = await knex("face_templates as ft")
+    .innerJoin("employees as e", "ft.employee_id", "e.id")
+    .where("e.company_id", companyId)
+    .where("ft.is_active", true)
+    .where("ft.model_name", "insightface")
+    .whereNotNull("ft.model_version")
+    .select("ft.template_hash", "ft.model_version", "e.id as employee_id");
+
+  return rows
+    .map((row) => {
+      try {
+        const payload = JSON.parse(row.template_hash);
+        if (!Array.isArray(payload?.embedding)) return null;
+        return {
+          employee_id: Number(row.employee_id),
+          embedding: payload.embedding.map(Number),
+          model_version: row.model_version,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+};
+
+const persistPythonEmbedding = async ({
+  employeeId,
+  companyId,
+  sourcePhoto,
+  embedding,
+  modelVersion,
+}) => {
+  const columns = await requirePythonFaceSchema(knex);
+  const payload = JSON.stringify({ version: 2, embedding });
+  await knex.transaction(async (trx) => {
+    await activeTemplatesForEngine(trx, employeeId, "python")
+      .update({ is_active: false, updated_at: knex.fn.now() });
+
+    const row = {
+      employee_id: employeeId,
+      template_hash: payload,
+      device_used: "python_face_service",
+      is_active: true,
+      created_at: knex.fn.now(),
+      updated_at: knex.fn.now(),
+    };
+    if (columns.company_id) row.company_id = companyId;
+    if (columns.model_name) row.model_name = "insightface";
+    if (columns.model_version) row.model_version = modelVersion;
+    if (columns.source_photo) row.source_photo = sourcePhoto || null;
+    await trx("face_templates").insert(row);
+  });
+};
+
 const persistEmployeeDescriptor = async ({
   employeeId,
   cacheKey,
@@ -243,6 +310,8 @@ const persistEmployeeDescriptor = async ({
   descriptor,
 }) => {
   if (!(await hasFaceTemplatesTable())) return;
+
+  const columns = await knex("face_templates").columnInfo();
 
   const templateHash = JSON.stringify({
     version: 1,
@@ -252,8 +321,7 @@ const persistEmployeeDescriptor = async ({
   });
 
   await knex.transaction(async (trx) => {
-    await trx("face_templates")
-      .where({ employee_id: employeeId, is_active: true })
+    await activeTemplatesForEngine(trx, employeeId, "legacy", Boolean(columns.model_name))
       .update({ is_active: false, updated_at: knex.fn.now() });
 
     await trx("face_templates").insert({
@@ -458,6 +526,44 @@ const warmEmployeeFaceDescriptor = async (employeeId, companyId) => {
   );
   const failures = [];
 
+  if (process.env.FACE_RECOGNITION_ENGINE !== "legacy") {
+    for (const employee of candidates) {
+      const storedPhotoPath = resolveUploadPath(employee.photo_path);
+      if (!storedPhotoPath || !fs.existsSync(storedPhotoPath)) {
+        failures.push(`Photo file missing: ${employee.photo_path}`);
+        continue;
+      }
+
+      try {
+        const result = await pythonFaceService.enroll(storedPhotoPath, {
+          employeeId,
+          companyId,
+          sourcePhoto: employee.photo_path,
+        });
+        await persistPythonEmbedding({
+          employeeId,
+          companyId,
+          sourcePhoto: employee.photo_path,
+          embedding: result.embedding,
+          modelVersion: result.model_version,
+        });
+        return {
+          ready: true,
+          employeeId: Number(employeeId),
+          modelVersion: result.model_version,
+        };
+      } catch (error) {
+        failures.push(error.message);
+      }
+    }
+
+    return {
+      ready: false,
+      employeeId: Number(employeeId),
+      reason: failures[0] || "No employee photo is available",
+    };
+  }
+
   for (const employee of candidates) {
     const storedPhotoPath = resolveUploadPath(employee.photo_path);
     if (!storedPhotoPath || !fs.existsSync(storedPhotoPath)) {
@@ -477,6 +583,62 @@ const warmEmployeeFaceDescriptor = async (employeeId, companyId) => {
     ready: false,
     employeeId: Number(employeeId),
     reason: failures[0] || "No employee photo is available",
+  };
+};
+
+const findEmployeeByPythonFace = async (
+  companyId,
+  uploadedImagePath,
+  options = {},
+) => {
+  const templates = await getCompanyPythonTemplates(companyId);
+  if (!templates.length) {
+    const error = new Error(
+      "No active Python face templates were found for this company. Ask your administrator to enroll existing employee photos with face:migrate:prod and verify the database connection. Reinstalling Python will not fix missing enrollment.",
+    );
+    error.statusCode = 400;
+    error.code = "NO_ENROLLED_FACE";
+    throw error;
+  }
+
+  const result = await pythonFaceService.recognize(uploadedImagePath, {
+    companyId,
+    templates,
+    threshold: options.threshold,
+    ambiguityMargin: options.minimumMargin,
+  });
+  if (!result.matched) {
+    const error = new Error(
+      result.reason === "AMBIGUOUS_MATCH"
+        ? "Face match is ambiguous. Please retake the photo with better lighting"
+        : "Face did not match any employee confidently",
+    );
+    error.statusCode = result.reason === "AMBIGUOUS_MATCH" ? 409 : 400;
+    error.code = result.reason;
+    error.bestMatch = result;
+    throw error;
+  }
+
+  const employee = await knex("employees")
+    .where({ id: result.employee_id, company_id: companyId })
+    .first();
+  if (!employee) {
+    const error = new Error("Matched employee is not part of this company");
+    error.statusCode = 403;
+    error.code = "TENANT_ISOLATION_FAILURE";
+    throw error;
+  }
+
+  return {
+    employee,
+    confidence: result.confidence,
+    similarity: result.similarity,
+    distance: result.distance,
+    threshold: result.threshold,
+    comparedEmployees: templates.length,
+    skippedEmployees: 0,
+    modelVersion: result.model_version,
+    timings: result.timings,
   };
 };
 
@@ -512,7 +674,11 @@ const synchronizeCompanyDescriptors = async (companyId, force = false) => {
   const now = Date.now();
   const current = companyDescriptorSync.get(key);
 
-  if (!force && current?.completedAt && now - current.completedAt < FACE_DESCRIPTOR_SYNC_TTL_MS) {
+  if (
+    !force &&
+    current?.completedAt &&
+    now - current.completedAt < FACE_DESCRIPTOR_SYNC_TTL_MS
+  ) {
     return current.result;
   }
 
@@ -579,6 +745,10 @@ const findEmployeeByFace = async (
     const error = new Error("Captured face image is required");
     error.statusCode = 400;
     throw error;
+  }
+
+  if (process.env.FACE_RECOGNITION_ENGINE !== "legacy") {
+    return findEmployeeByPythonFace(companyId, uploadedImagePath, options);
   }
 
   const threshold = Number(options.threshold) || 0.5;

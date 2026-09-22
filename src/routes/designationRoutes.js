@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // src/routes/designationRoutes.js
 const express = require('express');
 const {
@@ -21,6 +22,6 @@ router.post('/add', protect, requirePermission("organization", "create", { submo
 router.put('/:id', protect, requirePermission("organization", "update", { submodule: "designations" }), updateDesignation);
 
 // Delete designation (Admin only)
-router.delete('/:id', protect, requirePermission("organization", "delete", { submodule: "designations" }), deleteDesignation);
+router.delete('/:id', protect, requirePermission("organization", "delete", { submodule: "designations" }), requestDeletion("designation"));
 
 module.exports = router;

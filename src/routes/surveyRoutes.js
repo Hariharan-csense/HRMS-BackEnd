@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require('express');
 const router = express.Router();
 const {
@@ -24,12 +25,12 @@ router.get('/admin', protect, requirePermission("pulse_surveys", "view", { submo
 router.get('/admin/:id', protect, requirePermission("pulse_surveys", "view", { submodule: "results" }), getSurveyById);
 router.get('/admin/:id/responses', protect, requirePermission("pulse_surveys", "view", { submodule: "results" }), getSurveyResponses);
 router.put('/admin/:id/status', protect, requirePermission("pulse_surveys", "update", { submodule: "results" }), updateSurveyStatus);
-router.delete('/admin/:id', protect, requirePermission("pulse_surveys", "delete", { submodule: "results" }), deleteSurvey);
+router.delete('/admin/:id', protect, requirePermission("pulse_surveys", "delete", { submodule: "results" }), requestDeletion("survey"));
 
 // Feedback routes
 router.get('/feedback', protect, requirePermission("pulse_surveys", "view", { submodule: "feedback_inbox" }), getFeedback);
 router.put('/feedback/:id/status', protect, requirePermission("pulse_surveys", "update", { submodule: "feedback_inbox" }), updateFeedbackStatus);
-router.delete('/feedback/:id', protect, requirePermission("pulse_surveys", "delete", { submodule: "feedback_inbox" }), deleteFeedback);
+router.delete('/feedback/:id', protect, requirePermission("pulse_surveys", "delete", { submodule: "feedback_inbox" }), requestDeletion("feedback"));
 
 // Employee routes
 router.get('/active', protect, requirePermission("pulse_surveys", "view", { submodule: "my_surveys" }), getActiveSurveys);

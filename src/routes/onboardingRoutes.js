@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require('express');
 const router = express.Router();
 const {
@@ -24,7 +25,7 @@ router.get('/stats', requirePermission("hr_management", "view", { submodule: "on
 router.get('/:id', requirePermission("hr_management", "view", { submodule: "onboarding" }), getOnboardingEmployeeById);
 router.post('/', requirePermission("hr_management", "create", { submodule: "onboarding" }), createOnboardingEmployee);
 router.put('/:id', requirePermission("hr_management", "update", { submodule: "onboarding" }), updateOnboardingEmployee);
-router.delete('/:id', requirePermission("hr_management", "delete", { submodule: "onboarding" }), deleteOnboardingEmployee);
+router.delete('/:id', requirePermission("hr_management", "delete", { submodule: "onboarding" }), requestDeletion("onboarding"));
 
 // Tasks routes
 router.post('/:id/tasks', requirePermission("hr_management", "create", { submodule: "onboarding" }), createOnboardingTask);

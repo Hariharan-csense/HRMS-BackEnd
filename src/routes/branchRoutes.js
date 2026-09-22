@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // src/routes/branchRoutes.js
 const express = require('express');
 const router = express.Router();
@@ -17,7 +18,7 @@ const { requirePermission } = require("../middleware/rbacMiddleware");
 router.post('/', protect, requirePermission("organization", "create", { submodule: "branches" }), addBranch);
 router.get('/', protect, requirePermission("organization", "view", { submodule: "branches" }), getBranches);
 router.put('/:id', protect, requirePermission("organization", "update", { submodule: "branches" }), updateBranch);
-router.delete('/:id', protect, requirePermission("organization", "delete", { submodule: "branches" }), deleteBranch);
+router.delete('/:id', protect, requirePermission("organization", "delete", { submodule: "branches" }), requestDeletion("branch"));
 
 
 

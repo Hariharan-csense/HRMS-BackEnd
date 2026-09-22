@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 // src/routes/companyRoutes.js
 const express = require('express');
 const multer = require('multer');
@@ -44,6 +45,6 @@ router.put('/update', protect, requirePermission("organization", "update", { sub
 router.get('/', protect, requirePermission("organization", "view", { submodule: "company" }), getCompany);
 
 // DELETE COMPANY - Admin only + logo file delete
-router.delete('/delete', protect, requirePermission("organization", "delete", { submodule: "company" }), deleteCompany);
+router.delete('/delete', protect, requirePermission("organization", "delete", { submodule: "company" }), requestDeletion("company", {"company":true}));
 
 module.exports = router;

@@ -1,3 +1,4 @@
+const { requestDeletion } = require("../middleware/deletionApproval");
 const express = require('express');
 const router = express.Router();
 const organizationController = require('../controllers/organizationController');
@@ -12,6 +13,6 @@ router.get('/', requirePermission("organizations", "view"), organizationControll
 router.get('/:id', requirePermission("organizations", "view"), organizationController.getOrganizationById);
 router.post('/', requirePermission("organizations", "create"), organizationController.createOrganization);
 router.put('/:id', requirePermission("organizations", "update"), organizationController.updateOrganization);
-router.delete('/:id', requirePermission("organizations", "delete"), organizationController.deleteOrganization);
+router.delete('/:id', requirePermission("organizations", "delete"), requestDeletion("company"));
 
 module.exports = router;
