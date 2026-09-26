@@ -1,5 +1,6 @@
 const knex = require("../db/db");
 const { getLeaveCycleForDate } = require("./leaveBalanceService");
+const { monthStartEnd } = require("../utils/policyDates");
 
 const DEFAULT_POLICY = {
   leave: {
@@ -222,16 +223,6 @@ const isCasualLeaveType = (leaveType, policy) => {
   );
 };
 
-const monthStartEnd = (dateValue) => {
-  const date = new Date(dateValue);
-  const start = new Date(date.getFullYear(), date.getMonth(), 1);
-  const end = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-  return {
-    start: start.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10),
-  };
-};
-
 const fullMonthsBetween = (startValue, endValue) => {
   const start = new Date(startValue);
   const end = new Date(endValue);
@@ -360,7 +351,7 @@ const validatePermissionPolicy = async ({
   );
 
   if (usedUnits + requestedUnits > Number(policy.permission.maxPerMonth)) {
-    return `As per company policy Permission limit is ${policy.permission.maxPerMonth} permission unit(s) per month.`;
+    return `As per company policy Permission limit is ${policy.permission.maxPerMonth} permission unit(s) per month. For ${start.slice(0, 7)}: ${usedUnits} used${policy.permission.includePendingInUsage ? " (including pending requests)" : ""}, ${Math.max(0, Number(policy.permission.maxPerMonth) - usedUnits)} remaining; this request needs ${requestedUnits}. Each unit allows ${hoursPerPermission} hour(s).`;
   }
 
   return null;

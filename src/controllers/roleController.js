@@ -411,6 +411,7 @@ const updateRole = async (req, res) => {
       modules || defaultModules || {},
     );
     const updatedModules = { ...currentModules, ...incomingModules };
+    const roleColumns = await getRolesColumnInfo();
 
     await knex("roles")
       .where({ id })
@@ -425,7 +426,7 @@ const updateRole = async (req, res) => {
             ? data_visibility.trim()
             : role.data_visibility || "",
         modules: JSON.stringify(updatedModules),
-        use_new_rbac: true,
+        ...(roleColumns.use_new_rbac ? { use_new_rbac: true } : {}),
         description: description?.trim() || null,
         updated_at: knex.fn.now(),
       });

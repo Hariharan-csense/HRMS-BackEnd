@@ -249,22 +249,36 @@ const getCompanyPersistedDescriptors = async (companyId) => {
 const getCompanyPythonTemplates = async (companyId) => {
   await requirePythonFaceSchema(knex);
 
+  const modelVersion =
+    process.env.FACE_MODEL_VERSION ||
+    `insightface-${process.env.FACE_MODEL_NAME || "buffalo_s"}`;
+
   const rows = await knex("face_templates as ft")
     .innerJoin("employees as e", "ft.employee_id", "e.id")
     .where("e.company_id", companyId)
+    .where("ft.company_id", companyId)
+    .whereRaw("LOWER(TRIM(COALESCE(e.status, 'active'))) = ?", ["active"])
     .where("ft.is_active", true)
     .where("ft.model_name", "insightface")
-    .whereNotNull("ft.model_version")
-    .select("ft.template_hash", "ft.model_version", "e.id as employee_id");
+    .where("ft.model_version", modelVersion)
+    .select("ft.template_hash", "ft.model_name", "ft.model_version", "ft.company_id", "e.id as employee_id");
 
   return rows
     .map((row) => {
       try {
         const payload = JSON.parse(row.template_hash);
         if (!Array.isArray(payload?.embedding)) return null;
+        const embedding = payload.embedding.map(Number);
+        if (
+          !embedding.length ||
+          embedding.some((value) => !Number.isFinite(value)) ||
+          !embedding.some((value) => value !== 0)
+        ) return null;
         return {
           employee_id: Number(row.employee_id),
-          embedding: payload.embedding.map(Number),
+          company_id: Number(row.company_id),
+          embedding,
+          model_name: row.model_name,
           model_version: row.model_version,
         };
       } catch {
@@ -282,8 +296,30 @@ const persistPythonEmbedding = async ({
   modelVersion,
 }) => {
   const columns = await requirePythonFaceSchema(knex);
+  if (
+    !Array.isArray(embedding) ||
+    !embedding.length ||
+    embedding.some((value) => !Number.isFinite(Number(value))) ||
+    !embedding.some((value) => Number(value) !== 0)
+  ) {
+    const error = new Error("Face service returned an invalid embedding");
+    error.code = "INVALID_EMBEDDING";
+    error.statusCode = 503;
+    throw error;
+  }
   const payload = JSON.stringify({ version: 2, embedding });
   await knex.transaction(async (trx) => {
+    const employee = await trx("employees")
+      .where({ id: Number(employeeId), company_id: Number(companyId) })
+      .whereRaw("LOWER(TRIM(COALESCE(status, 'active'))) = ?", ["active"])
+      .forUpdate()
+      .first("id");
+    if (!employee) {
+      const error = new Error("Cannot enroll an inactive employee or an employee from another company");
+      error.code = "TENANT_ISOLATION_FAILURE";
+      error.statusCode = 403;
+      throw error;
+    }
     await activeTemplatesForEngine(trx, employeeId, "python")
       .update({ is_active: false, updated_at: knex.fn.now() });
 
@@ -596,7 +632,9 @@ const findEmployeeByPythonFace = async (
     const error = new Error(
       "No active Python face templates were found for this company. Ask your administrator to enroll existing employee photos with face:migrate:prod and verify the database connection. Reinstalling Python will not fix missing enrollment.",
     );
-    error.statusCode = 400;
+    // Missing enrollment is a server-side setup dependency, not a bad camera
+    // frame. Returning 503 lets kiosk clients stop automatic retries.
+    error.statusCode = 503;
     error.code = "NO_ENROLLED_FACE";
     throw error;
   }
@@ -630,13 +668,64 @@ const findEmployeeByPythonFace = async (
   }
 
   return {
+    verified: true,
     employee,
     confidence: result.confidence,
     similarity: result.similarity,
     distance: result.distance,
     threshold: result.threshold,
-    comparedEmployees: templates.length,
+    comparedEmployees: result.compared_employees,
     skippedEmployees: 0,
+    modelVersion: result.model_version,
+    timings: result.timings,
+  };
+};
+
+const verifyEmployeeByPythonFace = async (
+  companyId,
+  employeeId,
+  uploadedImagePath,
+  options = {},
+) => {
+  const employee = await knex("employees")
+    .where({ id: Number(employeeId), company_id: Number(companyId) })
+    .whereRaw("LOWER(TRIM(COALESCE(status, 'active'))) = ?", ["active"])
+    .first();
+  if (!employee) {
+    const error = new Error("Active employee not found in this company");
+    error.code = "TENANT_ISOLATION_FAILURE";
+    error.statusCode = 403;
+    throw error;
+  }
+  const templates = (await getCompanyPythonTemplates(companyId)).filter(
+    (template) => Number(template.employee_id) === Number(employeeId),
+  );
+  if (!templates.length) {
+    const error = new Error("No active compatible face enrollment exists for this employee");
+    error.code = "NO_ENROLLED_FACE";
+    error.statusCode = 503;
+    throw error;
+  }
+  const result = await pythonFaceService.verify(uploadedImagePath, {
+    companyId,
+    employeeId,
+    templates,
+    threshold: options.threshold,
+  });
+  if (!result.matched) {
+    const error = new Error("Face did not match the signed-in employee");
+    error.code = result.reason || "FACE_NOT_MATCHED";
+    error.statusCode = 400;
+    error.bestMatch = result;
+    throw error;
+  }
+  return {
+    verified: true,
+    employee,
+    confidence: result.confidence,
+    similarity: result.similarity,
+    distance: result.distance,
+    threshold: result.threshold,
     modelVersion: result.model_version,
     timings: result.timings,
   };
@@ -1021,6 +1110,7 @@ module.exports = {
   findEmployeeByDescriptor,
   findEmployeeByFace,
   verifyEmployeeFace,
+  verifyEmployeeByPythonFace,
   warmFaceDescriptorCache,
   warmEmployeeFaceDescriptor,
   loadModels,

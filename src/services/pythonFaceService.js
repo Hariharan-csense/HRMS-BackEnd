@@ -6,6 +6,14 @@ const serviceUrl = () =>
     process.env.PYTHON_FACE_SERVICE_URL || "http://127.0.0.1:8001",
   ).replace(/\/$/, "");
 
+const unavailable = (message, cause) => {
+  const error = new Error(message);
+  error.code = "SERVICE_UNAVAILABLE";
+  error.statusCode = 503;
+  error.cause = cause;
+  return error;
+};
+
 const request = async (endpoint, fields, imagePath) => {
   const form = new FormData();
   for (const [key, value] of Object.entries(fields)) {
@@ -30,7 +38,12 @@ const request = async (endpoint, fields, imagePath) => {
       body: form,
       signal: controller.signal,
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => null);
+    if (!payload || typeof payload !== "object") {
+      throw unavailable(
+        `Face service returned an invalid response (${response.status})`,
+      );
+    }
     if (!response.ok) {
       const detail = payload.detail || payload;
       const error = new Error(
@@ -46,13 +59,11 @@ const request = async (endpoint, fields, imagePath) => {
     }
     return payload;
   } catch (error) {
+    if (error.code && error.statusCode) throw error;
     if (error.name === "AbortError") {
-      error.code = "SERVICE_UNAVAILABLE";
-      error.statusCode = 503;
+      throw unavailable("Face service request timed out", error);
     }
-    if (!error.code) error.code = "SERVICE_UNAVAILABLE";
-    if (!error.statusCode) error.statusCode = 503;
-    throw error;
+    throw unavailable("Face service is unavailable", error);
   } finally {
     clearTimeout(timeout);
   }
@@ -84,10 +95,33 @@ const recognize = (
     imagePath,
   );
 
+const verify = (
+  imagePath,
+  { companyId, employeeId, templates, threshold },
+) =>
+  request(
+    "/api/v1/face/verify",
+    {
+      company_id: companyId,
+      employee_id: employeeId,
+      templates: JSON.stringify(templates || []),
+      threshold,
+    },
+    imagePath,
+  );
+
 const health = async () => {
-  const response = await fetch(`${serviceUrl()}/health`, { signal: AbortSignal.timeout(10000) });
-  if (!response.ok) throw new Error(`Python face service health check failed (${response.status})`);
-  return response.json();
+  try {
+    const response = await fetch(`${serviceUrl()}/health`, { signal: AbortSignal.timeout(10000) });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.model_loaded) {
+      throw unavailable(`Python face service is not ready (${response.status})`);
+    }
+    return payload;
+  } catch (error) {
+    if (error.code === "SERVICE_UNAVAILABLE") throw error;
+    throw unavailable("Python face service is unavailable", error);
+  }
 };
 
-module.exports = { enroll, recognize, health };
+module.exports = { enroll, recognize, verify, health };

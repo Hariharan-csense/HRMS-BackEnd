@@ -226,5 +226,10 @@ server.listen(PORT, () => {
     15 * 60 * 1000,
   );
   requirementClosingTimer.unref();
+  require("./services/esslSyncService")
+    .startScheduledSync()
+    .catch(() => {
+      console.error("eSSL scheduler could not be initialized. Check database connectivity.");
+    });
   //console.log(`Uploads available at: http://localhost:${PORT}/uploads`);
 });

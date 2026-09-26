@@ -1,12 +1,24 @@
-const router = require('express').Router();
-const {
-  esslHealth,
-  esslPunchTest,
-  esslPunch,
-} = require('../controllers/essl.controller');
-
-router.get('/essl/health', esslHealth);
-router.post('/essl/attendance/test', esslPunchTest);
-router.post('/essl/attendance', esslPunch);
-
+const router = require("express").Router();
+const controller = require("../controllers/essl.controller");
+const { protect } = require("../middleware/authMiddleware");
+const { requirePermission } = require("../middleware/rbacMiddleware");
+const permission = (action) => requirePermission("attendance", action, { submodule: "setup" });
+router.use("/essl", protect);
+router.get("/essl/devices", permission("view"), controller.listDevices);
+router.post("/essl/devices", permission("create"), controller.createDevice);
+router.get("/essl/devices/:id", permission("view"), controller.getDevice);
+router.put("/essl/devices/:id", permission("update"), controller.updateDevice);
+router.delete("/essl/devices/:id", permission("delete"), controller.disableDevice);
+router.get("/essl/devices/:id/status", permission("view"), controller.status);
+router.post("/essl/devices/:id/test-connection", permission("update"), controller.testConnection);
+router.post("/essl/devices/:id/sync", permission("update"), controller.syncDevice);
+router.get("/essl/devices/:id/logs", permission("view"), controller.logs);
+router.get("/essl/logs", permission("view"), controller.logs);
+router.get("/essl/sync-logs", permission("view"), controller.syncLogs);
+router.get("/essl/employees", permission("view"), controller.employees);
+router.get("/essl/mappings", permission("view"), controller.listMappings);
+router.post("/essl/mappings", permission("create"), controller.createMapping);
+router.put("/essl/mappings/:id", permission("update"), controller.updateMapping);
+router.delete("/essl/mappings/:id", permission("delete"), controller.disableMapping);
 module.exports = router;
+

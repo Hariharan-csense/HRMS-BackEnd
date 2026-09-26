@@ -8,7 +8,9 @@ const { getEmployeeShift } = require("../utils/shift.util");
 const {
   findEmployeeByDescriptor,
   findEmployeeByFace,
+  verifyEmployeeByPythonFace,
 } = require("../utils/faceRecognition");
+const { assertVerifiedFaceIdentity } = require("../utils/faceAttendanceGuard");
 const { applyEmployeeAssignmentFilter } = require("../utils/clientAssignments");
 const { APP_TIME_ZONE, getDateKey, getMonthKey } = require("../utils/dateTime");
 
@@ -987,7 +989,8 @@ const facialRecognitionAttendance = async (req, res) => {
     }
 
     const match = await findEmployeeByFace(companyId, req.file.path);
-    const employeeId = Number(match.employee.id);
+    const verifiedEmployee = assertVerifiedFaceIdentity({ match, companyId });
+    const employeeId = Number(verifiedEmployee.id);
     const action =
       requestedAction === "auto"
         ? await resolveFacialAttendanceAction({ companyId, employeeId })
@@ -1068,11 +1071,83 @@ const facialRecognitionAttendance = async (req, res) => {
 
     return res.status(err.statusCode || (duplicateOrMissing ? 400 : 500)).json({
       success: false,
+      code: err.code || undefined,
       message:
         err.statusCode || duplicateOrMissing
           ? err.message
           : "Failed to process facial attendance",
       error: err.message,
+    });
+  }
+};
+
+// True 1:1 verification for signed-in employee attendance. The Python service
+// receives only this employee's compatible templates; it never identifies
+// against the rest of the company for this route.
+const facialVerificationAttendance = async (req, res) => {
+  try {
+    const companyId = Number(req.user?.company_id);
+    const employeeId = await resolveAttendanceEmployeeId(req);
+    const requestedAction = String(req.body?.action || "auto").trim().toLowerCase();
+    if (!["auto", "check-in", "check-out"].includes(requestedAction)) {
+      return res.status(400).json({ success: false, message: "Action must be auto, check-in, or check-out" });
+    }
+    if (!req.file?.path) {
+      return res.status(400).json({ success: false, message: "Face image is required" });
+    }
+    const match = await verifyEmployeeByPythonFace(
+      companyId,
+      employeeId,
+      req.file.path,
+    );
+    assertVerifiedFaceIdentity({ match, companyId, expectedEmployeeId: employeeId });
+    const action = requestedAction === "auto"
+      ? await resolveFacialAttendanceAction({ companyId, employeeId })
+      : requestedAction;
+    const location = parseOptionalLocation(req.body.location);
+    let attendance;
+    if (action === "check-in") {
+      const shift = await getEmployeeShift(employeeId, companyId);
+      attendance = await doCheckIn({
+        employeeId, companyId, imageData: req.file.path, location,
+        deviceInfo: "Employee Facial Verification", shiftId: shift?.id || null,
+        shiftType: "regular",
+      });
+    } else {
+      await assertFacialCheckoutIsNotImmediate({ companyId, employeeId });
+      attendance = (await doCheckOut({
+        employeeId, companyId, imageData: req.file.path, location,
+        deviceInfo: "Employee Facial Verification",
+      })).attendance;
+    }
+    return res.json({
+      success: true,
+      message: action === "check-in" ? "Employee checked in successfully" : "Employee checked out successfully",
+      action,
+      employee: {
+        id: match.employee.id,
+        employee_id: match.employee.employee_id,
+        first_name: match.employee.first_name,
+        last_name: match.employee.last_name,
+      },
+      faceMatch: {
+        confidence: match.confidence,
+        similarity: match.similarity,
+        distance: match.distance,
+        threshold: match.threshold,
+        modelVersion: match.modelVersion,
+        timings: match.timings,
+      },
+      attendance,
+    });
+  } catch (err) {
+    const status = err.statusCode || (["Already checked in", "No active check-in"].includes(err.message) ? 400 : 500);
+    if (status >= 500) console.error("Facial verification error:", err.code || err.message);
+    else console.warn("Facial verification blocked:", err.code || err.message);
+    return res.status(status).json({
+      success: false,
+      code: err.code || undefined,
+      message: status >= 500 && !err.statusCode ? "Failed to process facial attendance" : err.message,
     });
   }
 };
@@ -3339,6 +3414,7 @@ module.exports = {
   checkIn,
   checkOut,
   facialRecognitionAttendance,
+  facialVerificationAttendance,
   facialRecognitionDescriptorAttendance,
   getAttendanceLogs,
   getAttendanceMonthlyReport,

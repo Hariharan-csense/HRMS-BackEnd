@@ -49,6 +49,7 @@ const getAddonModuleAliases = (addon = {}) => {
   if (key === 'hr_management' || text.includes('recruitment') || text.includes('rms')) modules.add('hr_management');
   if (key === 'exit' || text.includes('offboarding')) modules.add('exit');
   if (key === 'kpi' || text.includes('kpi')) modules.add('kpi');
+  if (key === 'essl_setup' || text.includes('essl setup')) modules.add('essl_setup');
 
   return modules;
 };

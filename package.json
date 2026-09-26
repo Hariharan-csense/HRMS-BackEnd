@@ -12,6 +12,8 @@
   "face:migrate": "node src/scripts/migrateFaceTemplates.js",
   "face:migrate:prod": "node dist/scripts/migrateFaceTemplates.js",
   "face:check": "node src/scripts/checkFaceSetup.js",
+  "face:audit": "node src/scripts/auditFaceTemplates.js",
+  "face:validate": "node src/scripts/validateFaceRecognition.js",
   "face:check:prod": "node dist/scripts/checkFaceSetup.js",
   "db:migrate:prod": "knex --knexfile knexfile.js --env development --migrations-directory ./dist/db/migrations migrate:latest"
 },

@@ -172,9 +172,10 @@ async function doCheckIn({
   shiftId = null,
   shiftType = 'regular',
   withLsk = false,
-  punchTime = null
+  punchTime = null,
+  db = knex
 }) {
-  const employee = await knex('employees')
+  const employee = await db('employees')
     .where({ id: employeeId, company_id: companyId })
     .first();
 
@@ -185,7 +186,7 @@ async function doCheckIn({
     throw new Error('Invalid punch time');
   }
 
-  const existing = await findActiveAttendance(knex, { companyId, employeeId, at: effectivePunchTime });
+  const existing = await findActiveAttendance(db, { companyId, employeeId, at: effectivePunchTime });
 
   if (existing) throw new Error('Already checked in');
 
@@ -230,7 +231,7 @@ async function doCheckIn({
   const attendanceDayKey = `${checkInTime.getFullYear()}-${String(checkInTime.getMonth() + 1).padStart(2, "0")}-${String(checkInTime.getDate()).padStart(2, "0")}`;
   // If employee already had a previous check-in (even if the first session was checked out during break),
   // then this punch is treated as continuation, and should NOT re-trigger late/half-day calculation.
-  const earliestRecord = await knex("attendance")
+  const earliestRecord = await db("attendance")
     .where({
       employee_id: employeeId,
       company_id: companyId,
@@ -321,11 +322,11 @@ async function doCheckIn({
     shift_id: finalShiftId
   };
 
-  if (clientId && await knex.schema.hasColumn('attendance', 'client_id')) {
+  if (clientId && await db.schema.hasColumn('attendance', 'client_id')) {
     insertPayload.client_id = clientId;
   }
 
-  const insertId = await knex.transaction(async (trx) => {
+  const insertId = await db.transaction(async (trx) => {
     // Serialize simultaneous check-in requests for the same employee.
     await trx('employees').where({ id: employeeId, company_id: companyId }).forUpdate().first();
     const active = await findActiveAttendance(trx, {
@@ -336,7 +337,7 @@ async function doCheckIn({
     return id;
   });
 
-  const attendance = await knex('attendance')
+  const attendance = await db('attendance')
     .select('attendance.*', ...attendanceTimeSelects('attendance'))
     .where('id', insertId)
     .first();
@@ -350,14 +351,15 @@ async function doCheckOut({
   imageData = null,
   location = null,
   deviceInfo = 'Web',
-  punchTime = null
+  punchTime = null,
+  db = knex
 }) {
   const effectivePunchTime = punchTime ? new Date(punchTime) : new Date();
   if (Number.isNaN(effectivePunchTime.getTime())) {
     throw new Error('Invalid punch time');
   }
 
-  const record = await findActiveAttendance(knex, { companyId, employeeId, at: effectivePunchTime });
+  const record = await findActiveAttendance(db, { companyId, employeeId, at: effectivePunchTime });
 
   if (!record) throw new Error('No active check-in');
 
@@ -389,7 +391,7 @@ async function doCheckOut({
     ? checkOutTime >= shiftEnd
     : false;
 
-  const updatedCount = await knex('attendance')
+  const updatedCount = await db('attendance')
     .where('id', record.id)
     .where({ company_id: companyId, employee_id: employeeId })
     .whereNull('check_out')
@@ -405,7 +407,7 @@ async function doCheckOut({
 
   if (!updatedCount) throw new Error('No active check-in');
 
-  const attendance = await knex('attendance')
+  const attendance = await db('attendance')
     .select('attendance.*', ...attendanceTimeSelects('attendance'))
     .where('id', record.id)
     .first();

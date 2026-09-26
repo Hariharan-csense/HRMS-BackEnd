@@ -103,9 +103,7 @@ const createCompany = async (req, res) => {
     payroll_cycle = 'Monthly',
     payroll_start_day = 1,
     payroll_end_day = 31,
-    address,
-    essl_api_key,
-    essl_enabled
+    address
   } = req.body;
 
   let logoPath = null;
@@ -130,8 +128,6 @@ const createCompany = async (req, res) => {
       timezone,
       payroll_cycle,
       address: address?.trim() || null,
-      essl_api_key: essl_api_key?.trim() || null,
-      essl_enabled: String(essl_enabled).toLowerCase() === 'true' || essl_enabled === true,
       logo: logoPath,
       signature: signaturePath,
       created_by: req.user.id
@@ -225,8 +221,6 @@ const updateCompany = async (req, res) => {
     payrollStartDay,
     payrollEndDay,
     address,
-    esslApiKey,
-    esslEnabled,
     removeLogo,
     removeSignature
   } = req.body;
@@ -270,10 +264,6 @@ const updateCompany = async (req, res) => {
       timezone: timezone || company.timezone,
       payroll_cycle: payrollCycle || company.payroll_cycle,
       address: address?.trim() || company.address,
-      essl_api_key: esslApiKey !== undefined ? (esslApiKey?.trim() || null) : company.essl_api_key,
-      essl_enabled: esslEnabled !== undefined
-        ? String(esslEnabled).toLowerCase() === 'true' || esslEnabled === true
-        : company.essl_enabled,
       logo: shouldRemoveLogo && !logoFile ? null : (logoPath || company.logo),
       signature: shouldRemoveSignature && !signatureFile ? null : (signaturePath || company.signature),
       updated_at: knex.fn.now()

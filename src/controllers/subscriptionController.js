@@ -1,3 +1,4 @@
+const { parseTiers, validateTiers, tierRate } = require('../utils/subscriptionTiers');
 const db = require("../db/db");
 const moment = require("moment");
 const Razorpay = require("razorpay");
@@ -94,6 +95,8 @@ const resolveSelectedUsers = (usersCount) => {
 const getTierPrice = (record, usersCount, billingCycle = "monthly") => {
   if (!record) return 0;
   const normalizedCycle = normalizeBillingCycle(billingCycle);
+  const tier = tierRate(record, usersCount, normalizedCycle);
+  if (tier !== undefined) return tier;
   const resolvedPrice =
     normalizedCycle === "yearly"
       ? (record.yearly_price ?? record.yearlyPrice)
@@ -152,6 +155,8 @@ const inferAddonModuleKey = (addon = {}) => {
 };
 
 const getAddonPriceForUsers = (addon, usersCount) => {
+  const tier = tierRate(addon, usersCount, "monthly");
+  if (tier !== undefined) return tier;
   const count = Number(usersCount || 0);
   if (count <= 5) return Number(addon.price_upto25 || 0);
   if (count <= 10) return Number(addon.price_upto50 || addon.price_upto25 || 0);
@@ -316,7 +321,8 @@ const getPlans = async (req, res) => {
         "updated_at",
       );
 
-    const plans = await query;
+    if (planColumns.pricing_tiers) query.select("pricing_tiers");
+    const plans = (await query).map(plan => ({ ...plan, pricing_tiers: parseTiers(plan.pricing_tiers) }));
 
     res.json({
       success: true,
@@ -638,7 +644,8 @@ const getAllPlans = async (req, res) => {
         "updated_at",
       );
 
-    const plans = await query;
+    if (planColumns.pricing_tiers) query.select("pricing_tiers");
+    const plans = (await query).map(plan => ({ ...plan, pricing_tiers: parseTiers(plan.pricing_tiers) }));
 
     res.json({
       success: true,
@@ -736,6 +743,11 @@ const createPlan = async (req, res) => {
         : (parseOptionalNumber(req.body.max_users) ?? 25);
     }
 
+    if (req.body.pricing_tiers !== undefined) {
+      if (!planColumns.pricing_tiers) return res.status(503).json({ message: 'Run the pricing tiers database migration before saving tiers' });
+      try { planData.pricing_tiers = JSON.stringify(isFreePlan ? [] : validateTiers(req.body.pricing_tiers)); }
+      catch (error) { return res.status(400).json({ message: error.message }); }
+    }
     const [planId] = await db("subscription_plans").insert(planData);
 
     console.log("Plan created successfully with ID:", planId);
@@ -850,6 +862,12 @@ const updatePlan = async (req, res) => {
         parseOptionalNumber(req.body.max_users) ?? existingPlan[maxUsersField];
     }
 
+    if (req.body.pricing_tiers !== undefined) {
+      if (!planColumns.pricing_tiers) return res.status(503).json({ message: 'Run the pricing tiers database migration before saving tiers' });
+      try { updateData.pricing_tiers = JSON.stringify(isFreePlan ? [] : validateTiers(req.body.pricing_tiers)); }
+      catch (error) { return res.status(400).json({ message: error.message }); }
+    }
+    if (isFreePlan && planColumns.pricing_tiers) updateData.pricing_tiers = JSON.stringify([]);
     await db("subscription_plans").where("id", id).update(updateData);
 
     res.json({
@@ -1005,6 +1023,7 @@ const getAddons = async (req, res) => {
         "id",
         "name",
         "description",
+        addonColumns.pricing_tiers ? "pricing_tiers" : db.raw("NULL as pricing_tiers"),
         moduleKeySelect,
         "price_upto25",
         "price_upto50",
@@ -1019,6 +1038,7 @@ const getAddons = async (req, res) => {
       success: true,
       data: addons.map((addon) => ({
         ...addon,
+        pricing_tiers: parseTiers(addon.pricing_tiers),
         module_key: inferAddonModuleKey(addon),
         price_upto5: Number(addon.price_upto25 || 0),
         price_upto10: Number(addon.price_upto50 || 0),
@@ -1055,6 +1075,7 @@ const getAvailableAddons = async (req, res) => {
         "id",
         "name",
         "description",
+        addonColumns.pricing_tiers ? "pricing_tiers" : db.raw("NULL as pricing_tiers"),
         moduleKeySelect,
         "price_upto25",
         "price_upto50",
@@ -1067,6 +1088,7 @@ const getAvailableAddons = async (req, res) => {
       success: true,
       data: addons.map((addon) => ({
         ...addon,
+        pricing_tiers: parseTiers(addon.pricing_tiers),
         module_key: inferAddonModuleKey(addon),
         price_upto5: Number(addon.price_upto25 || 0),
         price_upto10: Number(addon.price_upto50 || 0),
@@ -1124,6 +1146,11 @@ const createAddon = async (req, res) => {
       addonData.module_key = normalizeModuleKey(module_key);
     }
 
+    if (req.body.pricing_tiers !== undefined) {
+      if (!addonColumns.pricing_tiers) return res.status(503).json({ message: 'Run the pricing tiers database migration before saving tiers' });
+      try { addonData.pricing_tiers = JSON.stringify(validateTiers(req.body.pricing_tiers)); }
+      catch (error) { return res.status(400).json({ message: error.message }); }
+    }
     const [addonId] = await db("subscription_addons").insert(addonData);
 
     res.status(201).json({
@@ -1185,6 +1212,11 @@ const updateAddon = async (req, res) => {
       updateData.module_key = normalizeModuleKey(req.body.module_key);
     }
 
+    if (req.body.pricing_tiers !== undefined) {
+      if (!addonColumns.pricing_tiers) return res.status(503).json({ message: 'Run the pricing tiers database migration before saving tiers' });
+      try { updateData.pricing_tiers = JSON.stringify(validateTiers(req.body.pricing_tiers)); }
+      catch (error) { return res.status(400).json({ message: error.message }); }
+    }
     await db("subscription_addons").where("id", id).update(updateData);
 
     res.json({
@@ -1924,6 +1956,8 @@ const updateAddonUserAssignments = async (req, res) => {
 const getCompanySubscription = async (req, res) => {
   try {
     const companyId = req.user.company_id;
+    const { getKpiFreeUntil } = require("../utils/kpiTrial");
+    const kpiFreeUntil = await getKpiFreeUntil(companyId);
     const { getInternalFullAccessCompany } = require("../utils/internalCompany");
     const planColumns = await getPlanSchemaInfo();
     const monthlyPriceField = getPlanMonthlyPriceField(planColumns);
@@ -2057,6 +2091,7 @@ const getCompanySubscription = async (req, res) => {
               addons: [],
             }
           : null,
+        kpi_free_until: kpiFreeUntil,
         message: internalCompany
           ? "Internal company has full module access"
           : "No active subscription found",
@@ -2148,6 +2183,7 @@ const getCompanySubscription = async (req, res) => {
         seat_pool_status: seatPoolStatus,
         is_free_plan: Number(subscription.plan_price || 0) === 0,
         is_internal_company: Boolean(internalCompany),
+        kpi_free_until: kpiFreeUntil,
         addons: await getSubscriptionAddons(subscription.id),
         days_remaining: Math.max(0, daysRemaining),
         is_trial_active: isTrialActive,

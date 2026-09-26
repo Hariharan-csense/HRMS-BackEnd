@@ -7,6 +7,7 @@ const {
   checkIn,
   checkOut,
   facialRecognitionAttendance,
+  facialVerificationAttendance,
   facialRecognitionDescriptorAttendance,
   getAttendanceLogs,
   getAttendanceMonthlyReport,
@@ -83,6 +84,14 @@ router.post(
   }),
   uploadAttendanceImage("image"),
   facialRecognitionDescriptorAttendance,
+);
+
+router.post(
+  "/facial-verification",
+  protect,
+  requirePermission("attendance", "create", { submodule: "capture" }),
+  uploadAttendanceImage("image"),
+  facialVerificationAttendance,
 );
 
 // Get attendance logs with filters

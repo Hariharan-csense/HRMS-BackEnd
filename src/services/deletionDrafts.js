@@ -282,6 +282,30 @@ const summaryFor = (archive) => {
   };
 };
 
+async function executeArchive(trx, archive) {
+  // Delete children before parents, preserving FK checks throughout.
+  let remaining = [...archive.roots];
+  while (remaining.length) {
+    const retry = [];
+    for (const root of remaining) {
+      try {
+        await trx(root.table).where(root.where).del();
+      } catch (error) {
+        if (error.code === "ER_ROW_IS_REFERENCED_2") retry.push(root);
+        else throw error;
+      }
+    }
+    if (retry.length === remaining.length)
+      fail(
+        409,
+        "Other records still depend on this record. Nothing was deleted.",
+      );
+    remaining = retry;
+  }
+  for (const update of archive.updates)
+    await trx(update.table).where(update.key).update(update.after);
+}
+
 async function createDraft(user, entity, id, reason, conn = db) {
   return conn.transaction(async (trx) => {
     const caps = await capabilities(user, trx);
@@ -316,9 +340,11 @@ async function createDraft(user, entity, id, reason, conn = db) {
     const existing = await trx("deletion_drafts")
       .where({ pending_key: pendingKey })
       .first();
-    if (existing) return { id: existing.id, duplicate: true };
+    if (existing && !caps.superadmin)
+      return { id: existing.id, duplicate: true };
     const schema = await readSchema(trx);
     const archive = await makeArchive(trx, entity, item, schema, companyId);
+    if (caps.superadmin) await executeArchive(trx, archive);
     const label =
       item.row.name ||
       item.row.company_name ||
@@ -326,21 +352,40 @@ async function createDraft(user, entity, id, reason, conn = db) {
       item.row.employee_id ||
       item.row.title ||
       `${entity} #${id}`;
-    const [draftId] = await trx("deletion_drafts").insert({
+    const draftData = {
       company_id: companyId,
       entity,
       record_id: String(id),
       record_code: entity === "employee" ? item.row.employee_id || null : null,
       record_label: String(label).slice(0, 255),
-      status: "pending",
-      pending_key: pendingKey,
+      status: caps.superadmin ? "deleted" : "pending",
+      pending_key: caps.superadmin ? null : pendingKey,
       archive: encrypt(archive),
       summary: JSON.stringify(summaryFor(archive)),
       requested_by: actorId(user),
       requested_by_name: user.name || user.email || actorId(user),
       reason: String(reason || "").slice(0, 2000) || null,
-    });
-    return { id: draftId, duplicate: false };
+    };
+    if (caps.superadmin)
+      Object.assign(draftData, {
+        reviewed_by: actorId(user),
+        reviewed_by_name: user.name || user.email || actorId(user),
+        reviewed_at: trx.fn.now(),
+        review_note:
+          "Deleted directly by Superadmin; CEO approval is not required.",
+        updated_at: trx.fn.now(),
+      });
+    let draftId = existing?.id;
+    if (existing) {
+      // Preserve who originally requested a pending deletion.
+      delete draftData.requested_by;
+      delete draftData.requested_by_name;
+      delete draftData.reason;
+      await trx("deletion_drafts").where({ id: draftId }).update(draftData);
+    } else {
+      [draftId] = await trx("deletion_drafts").insert(draftData);
+    }
+    return { id: draftId, duplicate: false, deleted: caps.superadmin };
   });
 }
 
@@ -360,6 +405,11 @@ async function actOnDraft(user, id, action, note, conn = db) {
     if (action === "restore") {
       if (draft.status !== "deleted")
         fail(409, "Only an approved deletion can be restored");
+      if (
+        draft.review_note ===
+        "Deleted directly by Superadmin; CEO approval is not required."
+      )
+        fail(403, "Records deleted directly by Superadmin cannot be restored");
       await restoreArchive(trx, decrypt(draft.archive), await readSchema(trx));
       await trx("deletion_drafts")
         .where({ id })
@@ -399,27 +449,7 @@ async function actOnDraft(user, id, action, note, conn = db) {
           "The record or linked data changed after this request. Cancel it and submit a new request.",
         );
       }
-      // Delete children before parents, preserving FK checks throughout.
-      let remaining = [...latest.roots];
-      while (remaining.length) {
-        const retry = [];
-        for (const root of remaining) {
-          try {
-            await trx(root.table).where(root.where).del();
-          } catch (error) {
-            if (error.code === "ER_ROW_IS_REFERENCED_2") retry.push(root);
-            else throw error;
-          }
-        }
-        if (retry.length === remaining.length)
-          fail(
-            409,
-            "Other records still depend on this record. Nothing was deleted.",
-          );
-        remaining = retry;
-      }
-      for (const update of latest.updates)
-        await trx(update.table).where(update.key).update(update.after);
+      await executeArchive(trx, latest);
     }
     const status = {
       approve: "deleted",

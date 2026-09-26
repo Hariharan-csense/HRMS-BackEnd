@@ -1,10 +1,15 @@
 const knex = require("../db/db");
 const { hasPermission, parseModulesFromDb } = require("../utils/rbac");
+const { hasSubscribedModuleAccess } = require("../utils/subscriptionAccess");
 
 const isSuperAdmin = (user) => {
   const roles = Array.isArray(user?.roles) ? user.roles : [];
-  const hasSuperAdminRole = roles.some((r) => String(r || "").toLowerCase() === "superadmin");
-  return hasSuperAdminRole || String(user?.role || "").toLowerCase() === "superadmin";
+  const hasSuperAdminRole = roles.some(
+    (r) => String(r || "").toLowerCase() === "superadmin",
+  );
+  return (
+    hasSuperAdminRole || String(user?.role || "").toLowerCase() === "superadmin"
+  );
 };
 
 const isAdmin = (user) => {
@@ -35,7 +40,9 @@ const hasDefaultAdminAccess = (user, moduleKey, submoduleKey) => {
 
 const getRoleNamesFromUser = (user) => {
   const roleNames = new Set();
-  const primaryRole = String(user?.role || "").trim().toLowerCase();
+  const primaryRole = String(user?.role || "")
+    .trim()
+    .toLowerCase();
   if (primaryRole) roleNames.add(primaryRole);
 
   if (
@@ -47,7 +54,10 @@ const getRoleNamesFromUser = (user) => {
 
   // For employee-scoped users, role assignments are loaded from the DB below.
   // Do not trust stale token/localStorage role arrays for permission decisions.
-  if (String(user?.type || "").toLowerCase() !== "employee" && Array.isArray(user?.roles)) {
+  if (
+    String(user?.type || "").toLowerCase() !== "employee" &&
+    Array.isArray(user?.roles)
+  ) {
     user.roles.forEach((roleName) => {
       if (roleName) roleNames.add(String(roleName).toLowerCase());
     });
@@ -135,8 +145,16 @@ const requirePermission = (moduleKey, action, options = {}) => {
   return async (req, res, next) => {
     try {
       const context = await resolveRbacContext(req);
-      if (context.isTopAuthority || context.isAdmin) return next();
-      if (hasDefaultAdminAccess(req.user, moduleKey, options.submodule)) return next();
+      if (context.isTopAuthority) return next();
+      if (!(await hasSubscribedModuleAccess(req.user, moduleKey))) {
+        return res.status(403).json({
+          success: false,
+          message: `Module ${moduleKey} is not included in the subscribed package`,
+        });
+      }
+      if (context.isAdmin) return next();
+      if (hasDefaultAdminAccess(req.user, moduleKey, options.submodule))
+        return next();
 
       // Pulse self-service pages should be available to employees; controller logic still
       // verifies the employee is invited to the requested survey before returning data.
@@ -160,7 +178,7 @@ const requirePermission = (moduleKey, action, options = {}) => {
           moduleKey,
           action,
           submoduleKey: options.submodule,
-        })
+        }),
       );
 
       if (!allowed) {
@@ -173,7 +191,9 @@ const requirePermission = (moduleKey, action, options = {}) => {
       return next();
     } catch (error) {
       console.error("RBAC permission check failed:", error);
-      return res.status(500).json({ success: false, message: "RBAC permission check failed" });
+      return res
+        .status(500)
+        .json({ success: false, message: "RBAC permission check failed" });
     }
   };
 };
@@ -182,13 +202,27 @@ const requireAnyPermission = (permissions = []) => {
   return async (req, res, next) => {
     try {
       const context = await resolveRbacContext(req);
-      if (context.isTopAuthority || context.isAdmin) return next();
+      if (context.isTopAuthority) return next();
+      const packageModuleResults = await Promise.all(
+        permissions.map((permission) =>
+          hasSubscribedModuleAccess(req.user, permission.module),
+        ),
+      );
+      const hasPackageModule = packageModuleResults.some(Boolean);
+      if (!hasPackageModule) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Required modules are not included in the subscribed package",
+        });
+      }
+      if (context.isAdmin) return next();
       for (const requiredPermission of permissions) {
         if (
           hasDefaultAdminAccess(
             req.user,
             requiredPermission.module,
-            requiredPermission.submodule
+            requiredPermission.submodule,
           )
         ) {
           return next();
@@ -202,8 +236,8 @@ const requireAnyPermission = (permissions = []) => {
             moduleKey: requiredPermission.module,
             action: requiredPermission.action,
             submoduleKey: requiredPermission.submodule,
-          })
-        )
+          }),
+        ),
       );
 
       if (!allowed) {
@@ -216,7 +250,9 @@ const requireAnyPermission = (permissions = []) => {
       return next();
     } catch (error) {
       console.error("RBAC any-permission check failed:", error);
-      return res.status(500).json({ success: false, message: "RBAC permission check failed" });
+      return res
+        .status(500)
+        .json({ success: false, message: "RBAC permission check failed" });
     }
   };
 };

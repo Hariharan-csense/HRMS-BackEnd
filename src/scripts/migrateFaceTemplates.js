@@ -14,11 +14,38 @@ const migrate = async () => {
   const employees = await knex("employees")
     .whereNotNull("company_id")
     .whereRaw("LOWER(TRIM(COALESCE(status, 'active'))) = 'active'")
-    .select("id", "company_id")
+    .select("id", "company_id", "profile_photo")
     .orderBy("id");
+  const employeeIdsWithPhotos = new Set(
+    employees
+      .filter((employee) => String(employee.profile_photo || "").trim())
+      .map((employee) => Number(employee.id)),
+  );
+  if (await knex.schema.hasTable("employee_documents")) {
+    const documentColumns = await knex("employee_documents").columnInfo();
+    const photoDocuments = await knex("employee_documents")
+      .whereNotNull("file_path")
+      .whereIn("employee_id", employees.map((employee) => employee.id))
+      .modify((query) => {
+        if (documentColumns.type && documentColumns.fieldname) {
+          query.whereRaw("LOWER(COALESCE(type, fieldname, '')) = 'photo'");
+        } else if (documentColumns.type) query.whereRaw("LOWER(type) = 'photo'");
+        else if (documentColumns.fieldname) query.whereRaw("LOWER(fieldname) = 'photo'");
+        else query.whereRaw("1 = 0");
+      })
+      .distinct("employee_id");
+    photoDocuments.forEach((row) => employeeIdsWithPhotos.add(Number(row.employee_id)));
+  }
   let ready = 0;
   let skipped = 0;
   let alreadyReady = 0;
+  const failures = {
+    no_photo: 0,
+    no_face: 0,
+    multiple_faces: 0,
+    invalid_or_low_quality: 0,
+    service_or_other: 0,
+  };
 
   for (const employee of employees) {
     if (!force && enrolled.has(Number(employee.id))) { alreadyReady += 1; continue; }
@@ -29,6 +56,12 @@ const migrate = async () => {
     if (result.ready) ready += 1;
     else {
       skipped += 1;
+      const reason = String(result.reason || "");
+      if (!employee.profile_photo && /No employee photo|photo/i.test(reason)) failures.no_photo += 1;
+      else if (/NO_FACE|No face/i.test(reason)) failures.no_face += 1;
+      else if (/MULTIPLE_FACES|Multiple faces/i.test(reason)) failures.multiple_faces += 1;
+      else if (/INVALID_IMAGE|LOW_IMAGE_QUALITY|FACE_TOO_SMALL|quality/i.test(reason)) failures.invalid_or_low_quality += 1;
+      else failures.service_or_other += 1;
       console.warn(
         `Face enrollment skipped for employee ${employee.id}: ${result.reason}`,
       );
@@ -36,8 +69,9 @@ const migrate = async () => {
   }
 
   console.log(
-    `Face template migration complete: ${ready} newly enrolled, ${alreadyReady} already enrolled, ${skipped} failed or missing photos`,
+    `Face template migration complete: ${employees.length} total active employees, ${employeeIdsWithPhotos.size} with photos, ${ready} newly enrolled, ${alreadyReady} already enrolled, ${skipped} failed or missing photos`,
   );
+  console.log("Enrollment failure summary:", JSON.stringify(failures));
   if (skipped) process.exitCode = 1;
 };
 
