@@ -98,7 +98,11 @@ const attendanceTimeSelects = (alias = "a") => [
 ];
 
 const istDateTimeSelect = (column, aliasName) =>
-  knex.raw(`DATE_FORMAT(${column}, '%Y-%m-%d %H:%i:%s') as ${aliasName}`);
+  // Attendance timestamps are stored as UTC. Return an explicit IST offset so
+  // clients can render the value consistently across browser timezones.
+  knex.raw(
+    `DATE_FORMAT(DATE_ADD(${column}, INTERVAL 330 MINUTE), '%Y-%m-%dT%H:%i:%s+05:30') as ${aliasName}`,
+  );
 
 const formatDateOnly = (value) => {
   if (!value) return null;
@@ -176,7 +180,11 @@ const getAttendanceDateById = async (companyId, attendanceId) => {
   if (!attendanceId) return null;
   const row = await knex("attendance")
     .where({ id: attendanceId, company_id: companyId })
-    .select(knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"))
+    .select(
+      knex.raw(
+        "DATE_FORMAT(DATE_ADD(check_in, INTERVAL 330 MINUTE), '%Y-%m-%d') as attendance_date",
+      ),
+    )
     .first();
   return row?.attendance_date || null;
 };
@@ -198,7 +206,9 @@ const syncApprovedOverrideToAttendance = async ({
         })
         .select(
           "*",
-          knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"),
+          knex.raw(
+            "DATE_FORMAT(DATE_ADD(check_in, INTERVAL 330 MINUTE), '%Y-%m-%d') as attendance_date",
+          ),
         )
         .first()
     : null;
@@ -1750,7 +1760,10 @@ const createOverride = async (req, res) => {
           company_id: companyId,
           employee_id: employee.id,
         })
-        .whereRaw("DATE(check_in) = ?", [date])
+        .whereRaw(
+          "DATE(DATE_ADD(check_in, INTERVAL 330 MINUTE)) = ?",
+          [date],
+        )
         .orderByRaw("CASE WHEN device_info = 'Override' THEN 1 ELSE 0 END ASC")
         .orderBy("check_in", "desc")
         .first();
@@ -2127,7 +2140,9 @@ const getOverrides = async (req, res) => {
           .whereIn("id", attendanceIds)
           .select(
             "id",
-            knex.raw("DATE_FORMAT(check_in, '%Y-%m-%d') as attendance_date"),
+            knex.raw(
+              "DATE_FORMAT(DATE_ADD(check_in, INTERVAL 330 MINUTE), '%Y-%m-%d') as attendance_date",
+            ),
           )
       : [];
 

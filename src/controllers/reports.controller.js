@@ -997,19 +997,33 @@ const getAttendanceReport = async (req, res) => {
       monthMap[month] = bucket;
     });
 
-    const trend = monthsOrder.map((month) => ({
-      month,
-      present: monthMap[month]?.present || 0,
-      absent: monthMap[month]?.absent || 0,
-      half: monthMap[month]?.half || 0,
-    }));
+    const monthNumberByName = new Map(monthsOrder.map((month, index) => [month, index + 1]));
+    const trend = monthsOrder.map((month) => {
+      const monthNumber = monthNumberByName.get(month);
+      const monthStart = `${year}-${String(monthNumber).padStart(2, "0")}-01`;
+      const monthEnd = `${year}-${String(monthNumber).padStart(2, "0")}-${String(new Date(Date.UTC(year, monthNumber, 0)).getUTCDate()).padStart(2, "0")}`;
+      const rangeStart = reportStartDate > monthStart ? reportStartDate : monthStart;
+      const rangeEnd = reportEndDate < monthEnd ? reportEndDate : monthEnd;
+      let workingDays = 0;
+      for (let date = rangeStart; date <= rangeEnd; date = addDays(date, 1)) {
+        if (!isWeekendDateKey(date)) workingDays += 1;
+      }
+
+      const employeeDayCapacity = scopedEmployees.length * workingDays;
+      const bucket = monthMap[month] || { present: 0, absent: 0, half: 0 };
+      const percent = (value) => employeeDayCapacity
+        ? Number(((value / employeeDayCapacity) * 100).toFixed(1))
+        : 0;
+
+      return {
+        month,
+        present: percent(bucket.present + bucket.half * 0.5),
+        absent: percent(bucket.absent),
+        half: percent(bucket.half),
+      };
+    });
 
     // ========= Summary (scoped to same filters) =========
-    const totalEmployees = await knex("employees")
-      .count("* as count")
-      .where({ company_id: companyId })
-      .first();
-
     const attendanceDayRows = rows.filter((row) => {
       const statusValue = normalizeStatus(row.status);
       return !statusValue.includes("weekend") && !statusValue.includes("holiday");
@@ -1029,7 +1043,7 @@ const getAttendanceReport = async (req, res) => {
     ).length;
 
     const summary = {
-      totalEmployees: totalEmployees?.count || 0,
+      totalEmployees: scopedEmployees.length,
       avgAttendance: attendanceDayRows.length
         ? `${((presentCredit / attendanceDayRows.length) * 100).toFixed(1)}%`
         : "0%",
