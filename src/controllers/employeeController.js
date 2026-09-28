@@ -448,7 +448,7 @@ const addEmployee = async (req, res) => {
     ifsc_code,
     role = "employee",
     location_tracking_enabled = 0,
-    subscription_billing_cycle = "monthly",
+    subscription_billing_cycle,
     subscription_plan_id,
   } = req.body;
 
@@ -565,9 +565,12 @@ const addEmployee = async (req, res) => {
 
     const normalizedEmail = email && String(email).trim() ? String(email).trim().toLowerCase() : null;
     const normalizedMobile = mobile && String(mobile).trim() ? String(mobile).trim() : null;
-    const normalizedSubscriptionCycle = String(
-      subscription_billing_cycle || "monthly",
-    ).toLowerCase() === "yearly" ? "yearly" : "monthly";
+    const normalizedSubscriptionCycle =
+      !subscription_billing_cycle && !subscription_plan_id && !req.subscriptionPlanId && !req.subscription?.plan_id
+        ? null
+        : String(subscription_billing_cycle || "monthly").toLowerCase() === "yearly"
+          ? "yearly"
+          : "monthly";
     const normalizedSubscriptionPlanId = Number(
       subscription_plan_id || req.subscriptionPlanId || req.subscription?.plan_id || 0,
     ) || null;

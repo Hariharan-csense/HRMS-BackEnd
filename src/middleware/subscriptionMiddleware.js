@@ -26,6 +26,15 @@ const checkUserCreationSubscription = async (req, res, next) => {
       });
     }
 
+    const hasRequestedPlan = Boolean(req.body?.subscription_plan_id);
+    const hasRequestedCycle = Boolean(req.body?.subscription_billing_cycle);
+    if (!hasRequestedPlan && !hasRequestedCycle) {
+      req.subscription = null;
+      req.userCount = 0;
+      req.maxUsers = 0;
+      return next();
+    }
+
     const requestedCycle = ["yearly", "annual", "year"].includes(
       String(req.body?.subscription_billing_cycle || "monthly").toLowerCase(),
     )
