@@ -231,5 +231,6 @@ server.listen(PORT, () => {
     .catch(() => {
       console.error("eSSL scheduler could not be initialized. Check database connectivity.");
     });
+  require("./services/company51AutoCheckoutService").startCompany51AutoCheckout();
   //console.log(`Uploads available at: http://localhost:${PORT}/uploads`);
 });
