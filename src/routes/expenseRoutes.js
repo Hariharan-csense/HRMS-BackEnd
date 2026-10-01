@@ -63,6 +63,19 @@ router.put(
 );
 
 // Delete expense - owner/admin/finance (controller enforces access rules)
-router.delete('/:expense_id', protect, requirePermission("expenses", "delete", { submodule: "claims" }), requestDeletion("expense", {"param":"expense_id"}));
+router.delete(
+  '/:expense_id',
+  protect,
+  requirePermission("expenses", "delete", { submodule: "claims" }),
+  (req, res, next) => {
+    // CEO approval is required only when the Admin account initiates deletion.
+    // Employees and other authorized roles delete directly through the
+    // expense controller, which still checks ownership and pending status.
+    if (String(req.user?.role || '').toLowerCase() === 'admin') {
+      return requestDeletion("expense", { param: "expense_id" })(req, res, next);
+    }
+    return deleteExpense(req, res, next);
+  },
+);
 
 module.exports = router;
